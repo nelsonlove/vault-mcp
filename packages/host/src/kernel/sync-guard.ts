@@ -154,10 +154,18 @@ export type SyncVerdict =
  * device just made or renamed (#529 review 1). They are rarely used, so the
  * wider check costs little.
  */
-const DESTINATION_UNNAMED = new Set(["obsidian_assign_address", "obsidian_refile_address", "obsidian_renumber_address", "obsidian_periodic_note"]);
+const DESTINATION_UNNAMED = new Set([
+  "obsidian_assign_address",
+  "obsidian_refile_address",
+  "obsidian_renumber_address",
+  "obsidian_periodic_note",
+  // Names only the .base file; the new item lands in the folder the base's own config picks (#529 review 2).
+  "obsidian_base_create",
+]);
 
 /** True when a waiting server change is at `path`, under it (a folder), or is a folder that holds it. */
 function pendingTouches(pending: string, target: string): boolean {
+  target = target.replace(/\/+$/, "");
   return pending === target || pending.startsWith(target + "/") || target.startsWith(pending + "/");
 }
 
@@ -267,7 +275,9 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   let v = judgeSync(deps.read(), deps.now(), targets, anyPending);
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
-  const shouldWait = !deps.skipWait && (kind === "content" || settings.mode !== "warn");
+  // The hold skips the wait only for a cause every write meets; a path cause still waits (#529 review 2).
+  const held = deps.skipWait === true && v.kind === "behind" && v.scope === "connection";
+  const shouldWait = !held && (kind === "content" || settings.mode !== "warn");
   if (shouldWait) {
     const deadline = deps.now() + settings.waitSeconds * 1000;
     const poll = Math.max(50, deps.pollMs ?? 500);
@@ -326,7 +336,9 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
         if (v.kind === "behind" && v.scope === "connection") holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
       },
     });
-    if (d === null) holdUntil = 0;
+    // Clear the hold only after a call that was really judged and found clean:
+    // a tool the guard does not check says nothing about the link (#529 review 2).
+    if (d === null && deps.settings.enabled && syncKindOf(tool, args) !== null) holdUntil = 0;
     return d;
   };
 }

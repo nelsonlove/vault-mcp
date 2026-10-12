@@ -327,7 +327,7 @@ describe("#529 review: tools that do not name where they write, the hold, and th
   const deps = (state, settings = {}) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, ...settings }), read: () => state, now: () => NOW, sleep: async () => {} });
   test("the scheme tools and periodic_note check every pending change", async () => {
     const s = synced({ pendingPaths: ["Elsewhere/X.md"] });
-    for (const [tool, args] of [["obsidian_renumber_address", { path: "A.md", to_address: "06.20" }], ["obsidian_assign_address", { path: "A.md", scope: "06" }], ["obsidian_refile_address", { path: "A.md" }], ["obsidian_periodic_note", { period: "daily" }]]) {
+    for (const [tool, args] of [["obsidian_renumber_address", { path: "A.md", to_address: "06.20" }], ["obsidian_assign_address", { path: "A.md", scope: "06" }], ["obsidian_refile_address", { path: "A.md" }], ["obsidian_periodic_note", { period: "daily" }], ["obsidian_base_create", { path: "Bases/X.base", name: "N" }]]) {
       const d = await decideSync(tool, args, deps(s));
       assert.equal(d.refuse.code, SYNC_BEHIND, tool);
       assert.match(d.refuse.message, /does not name where it writes/);
@@ -356,5 +356,33 @@ describe("#529 review: tools that do not name where they write, the hold, and th
     const after3 = sleeps.length;
     await guard("obsidian_move_note", { from: "D.md", to: "W.md" });
     assert.equal(sleeps.length, after3, "a connection cause holds: no second wait");
+  });
+});
+
+describe("#529 review 2: the hold skips only a connection wait, and only a checked call clears it", () => {
+  test("held after a disconnect, a call that meets a path cause still waits", async () => {
+    let t = NOW;
+    let state = synced({ socketOpen: false });
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    const n = sleeps.length;
+    state = synced({ pendingPaths: ["C.md"] });
+    await guard("obsidian_move_note", { from: "C.md", to: "D.md" });
+    assert.ok(sleeps.length > n, "reconnected with a backlog: the path cause waits");
+  });
+  test("a tool the guard does not check does not clear a connection hold", async () => {
+    let t = NOW;
+    const state = synced({ socketOpen: false });
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    const n = sleeps.length;
+    assert.equal(await guard("obsidian_snippet_write", { name: "x" }), null);
+    await guard("obsidian_move_note", { from: "E.md", to: "F.md" });
+    assert.equal(sleeps.length, n, "still held: no second wait");
+  });
+  test("a target with a trailing slash still matches", () => {
+    assert.equal(judgeSync(synced({ pendingPaths: ["Dir/x.md"] }), NOW, ["Dir/"]).kind, "behind");
   });
 });
