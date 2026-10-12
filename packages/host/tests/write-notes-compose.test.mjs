@@ -2,7 +2,7 @@
  * write-notes-compose.test.mjs — the pure composition/stamping logic behind
  * obsidian_write_notes (slice B1). Obsidian-free, so this is a real unit test:
  * uuidv7 minting, canonical field order, the accept-forbidden guard, and the
- * stamp merge (mint-only-when-absent, preserve identity, default proposed).
+ * stamp merge (mint-only-when-absent, preserve identity, no acceptance-status added — #519).
  */
 
 import { test, describe } from "node:test";
@@ -276,7 +276,7 @@ describe("composeNote — stamp:false is verbatim", () => {
 });
 
 describe("composeNote — stamp mints and orders", () => {
-  test("a new note gets uid, created, modified, default acceptance-status:proposed, canonical order", () => {
+  test("a new note gets uid, created, modified, NO acceptance-status (#519), canonical order", () => {
     const { frontmatter, stamped } = composeNote({
       frontmatter: { name: "N" },
       body: "hi",
@@ -291,8 +291,8 @@ describe("composeNote — stamp mints and orders", () => {
     assert.equal(frontmatter.uid, "MINTED");
     assert.equal(frontmatter.created, "TS(5)");
     assert.equal(frontmatter.modified, "TS(5)");
-    assert.equal(frontmatter["acceptance-status"], "proposed");
-    assert.deepEqual(Object.keys(frontmatter), ["name", "uid", "created", "modified", "acceptance-status"]);
+    assert.equal("acceptance-status" in frontmatter, false, "stamp adds no acceptance-status (#519)");
+    assert.deepEqual(Object.keys(frontmatter), ["name", "uid", "created", "modified"]);
   });
 
   test("uid is seeded from the note's created timestamp", () => {

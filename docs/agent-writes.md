@@ -49,10 +49,9 @@ every agent stops reimplementing them:
 - **`modified`** — always now.
 - **Canonical field order** — `name`/`title`, `uid`, `created`, `modified`, then everything
   else in its existing order, with **`acceptance-status` pinned last**.
-- **`acceptance-status: proposed`** — defaulted **only when absent** from both payload and
-  disk.
+- **`acceptance-status`** — not added by stamp (#519: the key is retired in this vault; a note is confirmed by a `verified` entry). An existing on-disk value is carried forward when the payload is silent.
 
-**Stamping never writes acceptance.** It defaults `acceptance-status: proposed`, never mints or
+**Stamping never writes acceptance.** It adds no `acceptance-status` at all, never mints or
 elevates to `accepted`, and preserves an existing on-disk `acceptance-status` **verbatim**
 (including a human-granted `accepted` — changing it would destroy the human's decision). Any
 item whose frontmatter introduces `accepted`/`accepted-by`/`accepted-on`, or introduces, changes, blanks or removes a filled live `verified` field (#406; removing a blank one is allowed), is **rejected**

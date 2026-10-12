@@ -9,9 +9,9 @@
 //
 // ── The invariants this file is the point of ─────────────────────────────────
 //
-//  1. `stamp` NEVER writes acceptance. It defaults `acceptance-status: proposed`
-//     ONLY when the field is absent from BOTH the payload and the existing note,
-//     and it NEVER mints or elevates to `accepted`. An existing acceptance-status
+//  1. `stamp` NEVER writes acceptance. It adds NO `acceptance-status` of its own
+//     (#519: the vault retired the key; a note is confirmed by a `verified` entry
+//     only Nelson writes), and it NEVER mints or elevates to `accepted`. An existing acceptance-status
 //     on disk is PRESERVED verbatim (including a human-granted `accepted`) —
 //     changing it would destroy the human's decision, which the invariant equally
 //     forbids ("never change an existing acceptance-status value"). The only way
@@ -152,9 +152,9 @@ function seedMs(created: unknown, now: number): number {
  *
  * Under `stamp`, fills uid (uuidv7, created-seeded, only when absent — an
  * existing on-disk uid always wins so it is NEVER overwritten), `created` (when
- * missing) and `modified` (always now), defaults `acceptance-status: proposed`
- * only when absent from both payload and disk, and enforces canonical field
- * order. Without `stamp`, the note is written verbatim from the payload.
+ * missing) and `modified` (always now), carries an existing on-disk
+ * `acceptance-status` forward when the payload is silent (it never adds one,
+ * #519), and enforces canonical field order. Without `stamp`, the note is written verbatim from the payload.
  */
 export function composeNote(args: ComposeArgs): ComposeResult {
   const payload: Record<string, unknown> = { ...(args.frontmatter ?? {}) };
@@ -186,8 +186,10 @@ export function composeNote(args: ComposeArgs): ComposeResult {
 
     // acceptance-status: payload's value, else preserve the existing on-disk
     // value VERBATIM (never changed — including a human-granted `accepted`),
-    // else default `proposed`. The accept-forbidden guard below rejects an
-    // accepted value the payload introduces; a preserved existing one is allowed.
+    // else NOTHING: stamp never adds the key (#519; it is retired, and a note is
+    // confirmed by a `verified` entry only Nelson writes). The accept-forbidden
+    // guard below rejects an accepted value the payload introduces; a preserved
+    // existing one is allowed.
     //
     // DEMOTION RULE — when the payload is silent (as it is on every ordinary
     // stamped write that isn't itself editing acceptance), stamping must never
@@ -208,9 +210,8 @@ export function composeNote(args: ComposeArgs): ComposeResult {
     // introducing or changing INTO the accepted family); it is only stamp's own
     // SILENT default-filling, when the payload says nothing at all, that must
     // preserve rather than invent.
-    if (!("acceptance-status" in merged)) {
-      if ("acceptance-status" in existing) merged["acceptance-status"] = existing["acceptance-status"];
-      else merged["acceptance-status"] = "proposed";
+    if (!("acceptance-status" in merged) && "acceptance-status" in existing) {
+      merged["acceptance-status"] = existing["acceptance-status"];
     }
 
     // verified (#406): the payload's value, else preserve a FILLED existing
