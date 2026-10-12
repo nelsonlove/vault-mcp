@@ -1,0 +1,236 @@
+// The Sync guard (kernel/sync-guard.ts): 01.43, Nelson's pick A of 2026-10-12,
+// on "Make vault-mcp check Obsidian Sync before a write, behind a setting".
+import { test, describe } from "node:test";
+import assert from "node:assert/strict";
+import {
+  normalizeSyncGuard,
+  DEFAULT_SYNC_GUARD,
+  MAX_WAIT_SECONDS,
+  judgeSync,
+  STALE_SERVER_MS,
+  syncKindOf,
+  decideSync,
+  readSyncSnapshot,
+  SYNC_BEHIND,
+  SYNC_UNKNOWN,
+} from "../src/kernel/sync-guard.ts";
+import { MCP_SURFACE_INVENTORY } from "../src/kernel/operations/inventory-mcp.ts";
+import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore } from "../src/kernel/index.ts";
+import { makeGuarded, withSyncWarning } from "../src/mcp/guarded.ts";
+
+const NOW = 1_800_000_000_000;
+const synced = (over = {}) => ({ state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: 0, lastMessageTs: NOW - 1000, ...over } });
+const behind = (status = "Indexing...") => synced({ syncStatus: status });
+
+describe("settings", () => {
+  test("ships off, refuse, 30 s, warn on unknown", () => {
+    assert.deepEqual({ ...DEFAULT_SYNC_GUARD }, { enabled: false, mode: "refuse", waitSeconds: 30, onUnknown: "warn" });
+    assert.deepEqual(normalizeSyncGuard(undefined), { ...DEFAULT_SYNC_GUARD });
+  });
+  test("a hand-edited value is coerced, never a crash; enabled only on a literal true; the wait is clamped", () => {
+    assert.deepEqual(normalizeSyncGuard({ enabled: "yes", mode: "nope", waitSeconds: "5", onUnknown: 3 }), { ...DEFAULT_SYNC_GUARD });
+    assert.equal(normalizeSyncGuard({ enabled: true }).enabled, true);
+    assert.equal(normalizeSyncGuard({ waitSeconds: -4 }).waitSeconds, 0);
+    assert.equal(normalizeSyncGuard({ waitSeconds: 1e9 }).waitSeconds, MAX_WAIT_SECONDS);
+    assert.equal(normalizeSyncGuard({ mode: "warn", onUnknown: "refuse" }).mode, "warn");
+    assert.equal(normalizeSyncGuard({ mode: "warn", onUnknown: "refuse" }).onUnknown, "refuse");
+  });
+});
+
+describe("judgeSync — what behind means", () => {
+  test("synced only when ready, no error, not paused, Fully synced, nothing to pull, and a fresh server message", () => {
+    assert.deepEqual(judgeSync(synced(), NOW), { kind: "synced" });
+    assert.deepEqual(judgeSync({ state: "off" }, NOW), { kind: "off" });
+  });
+  test("each cause of behind", () => {
+    for (const [over, re] of [
+      [{ ready: false }, /not ready/],
+      [{ error: "boom" }, /error/],
+      [{ pause: true }, /paused/],
+      [{ syncStatus: "Uploading a.md" }, /Uploading a\.md/],
+      [{ newServerFiles: 3 }, /3 server change/],
+      [{ lastMessageTs: NOW - STALE_SERVER_MS - 1 }, /no message from the Sync server/],
+    ]) {
+      const v = judgeSync(synced(over), NOW);
+      assert.equal(v.kind, "behind", JSON.stringify(over));
+      assert.match(v.status, re);
+    }
+  });
+  test("a missing or changed field is unknown, and names the field", () => {
+    const v = judgeSync(synced({ syncStatus: undefined, lastMessageTs: "x" }), NOW);
+    assert.equal(v.kind, "unknown");
+    assert.match(v.why, /syncStatus/);
+    assert.match(v.why, /server\.lastMessageTs/);
+  });
+});
+
+describe("the kind of each write, from the inventory", () => {
+  test("the note's tools: structure kinds and content kinds", () => {
+    for (const t of ["obsidian_move_note", "obsidian_move_notes", "obsidian_assign_address", "obsidian_refile_address", "obsidian_renumber_address", "obsidian_delete_note", "obsidian_trash", "obsidian_create_note_from_template", "obsidian_base_create", "obsidian_periodic_note"]) {
+      assert.equal(syncKindOf(t, {}), "structure", t);
+    }
+    for (const t of ["obsidian_patch_note", "obsidian_manage_frontmatter", "obsidian_rename_heading", "obsidian_append_note", "obsidian_append_at_heading"]) {
+      assert.equal(syncKindOf(t, {}), "content", t);
+    }
+  });
+  test("write_note: a create is structure, an overwrite is content; a write_notes item without if_rev is a create", () => {
+    assert.equal(syncKindOf("obsidian_write_note", { overwrite: false }), "structure");
+    assert.equal(syncKindOf("obsidian_write_note", {}), "structure");
+    assert.equal(syncKindOf("obsidian_write_note", { overwrite: true }), "content");
+    assert.equal(syncKindOf("obsidian_write_notes", { create_only: true }), "structure");
+    assert.equal(syncKindOf("obsidian_write_notes", { create_only: false }), "content");
+  });
+  test("a read, a non-note write and an unknown tool are not checked", () => {
+    assert.equal(syncKindOf("obsidian_read_note", {}), null);
+    assert.equal(syncKindOf("obsidian_claim_scope", {}), null);
+    assert.equal(syncKindOf("no_such_tool", {}), null);
+  });
+  test("only mutating rows carry a kind", () => {
+    for (const r of MCP_SURFACE_INVENTORY) if (r.syncKind !== undefined) assert.equal(r.readOnly, false, r.tool);
+  });
+});
+
+// A fake clock: sleep advances it, so a wait costs no wall time.
+function clock(states) {
+  let t = NOW;
+  let i = 0;
+  const sleeps = [];
+  return {
+    sleeps,
+    deps: (settings) => ({
+      settings: normalizeSyncGuard({ enabled: true, ...settings }),
+      read: () => states[Math.min(i++, states.length - 1)],
+      now: () => t,
+      sleep: async (ms) => { sleeps.push(ms); t += ms; },
+      pollMs: 1000,
+    }),
+  };
+}
+
+describe("decideSync", () => {
+  test("off, a tool it does not check, Sync off, or synced: nothing to say", async () => {
+    assert.equal(await decideSync("obsidian_move_note", {}, { ...clock([behind()]).deps({}), settings: { ...DEFAULT_SYNC_GUARD } }), null);
+    assert.equal(await decideSync("obsidian_read_note", {}, clock([behind()]).deps({})), null);
+    assert.equal(await decideSync("obsidian_move_note", {}, clock([{ state: "off" }]).deps({})), null);
+    assert.equal(await decideSync("obsidian_move_note", {}, clock([synced()]).deps({})), null);
+  });
+  test("refuse: a structure write waits the whole wait, then is refused with sync_behind and the status", async () => {
+    const c = clock([behind()]);
+    const d = await decideSync("obsidian_move_note", {}, c.deps({ waitSeconds: 5 }));
+    assert.equal(d.refuse.code, SYNC_BEHIND);
+    assert.match(d.refuse.message, /Indexing\.\.\./);
+    assert.match(d.refuse.message, /Nothing was written/);
+    assert.equal(c.sleeps.reduce((a, b) => a + b, 0), 5000);
+  });
+  test("a write that catches up during the wait goes on with nothing to say", async () => {
+    const c = clock([behind(), behind(), synced()]);
+    assert.equal(await decideSync("obsidian_trash", {}, c.deps({})), null);
+    assert.equal(c.sleeps.length, 2);
+  });
+  test("mode wait: waits, then goes on with a warning", async () => {
+    const d = await decideSync("obsidian_move_note", {}, clock([behind()]).deps({ mode: "wait", waitSeconds: 2 }));
+    assert.match(d.warn, /behind after waiting 2 s/);
+  });
+  test("mode warn: no wait at all, only a warning", async () => {
+    const c = clock([behind()]);
+    const d = await decideSync("obsidian_move_note", {}, c.deps({ mode: "warn" }));
+    assert.match(d.warn, /behind \(Indexing/);
+    assert.equal(c.sleeps.length, 0);
+  });
+  test("a content write always waits, then warns, in every mode", async () => {
+    for (const mode of ["refuse", "wait", "warn"]) {
+      const c = clock([behind()]);
+      const d = await decideSync("obsidian_append_note", {}, c.deps({ mode, waitSeconds: 1 }));
+      assert.ok(d.warn, mode);
+      assert.ok(c.sleeps.length > 0, `${mode}: waited`);
+    }
+  });
+  test("unknown state: warn by default, refuse with sync_unknown when set", async () => {
+    const u = { state: "unknown", why: "the Sync plugin is on but has no instance" };
+    assert.match((await decideSync("obsidian_move_note", {}, clock([u]).deps({}))).warn, /cannot read/);
+    const r = await decideSync("obsidian_move_note", {}, clock([u]).deps({ onUnknown: "refuse" }));
+    assert.equal(r.refuse.code, SYNC_UNKNOWN);
+  });
+});
+
+describe("readSyncSnapshot — only the named fields", () => {
+  test("no Sync plugin, or one that is off: off", () => {
+    assert.deepEqual(readSyncSnapshot({}), { state: "off" });
+    assert.deepEqual(readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: false, instance: {} } } } }), { state: "off" });
+  });
+  test("on with no instance: unknown; a throwing getter: unknown", () => {
+    assert.equal(readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: true } } } }).state, "unknown");
+    const app = { internalPlugins: { plugins: { sync: { enabled: true, get instance() { throw new Error("secret-key-material"); } } } } };
+    const s = readSyncSnapshot(app);
+    assert.equal(s.state, "unknown");
+    assert.doesNotMatch(JSON.stringify(s), /secret/);
+  });
+  test("copies the six fields and nothing else: never the key or the salt", () => {
+    const inst = { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: [1, 2], server: { lastMessageTs: NOW }, key: "KEY-BYTES", salt: "SALT-BYTES", deviceName: "MacBook Pro" };
+    const s = readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: true, instance: inst } } } });
+    assert.deepEqual(s, { state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: 2, lastMessageTs: NOW } });
+    assert.doesNotMatch(JSON.stringify(s), /KEY|SALT/);
+  });
+});
+
+// ── through the guard ─────────────────────────────────────────────────────────
+function kernelHarness() {
+  const files = new Map();
+  const adapter = { async exists(p) { return files.has(p); }, async mkdir() {}, async write(p, d) { files.set(p, d); }, async append(p, d) { files.set(p, (files.get(p) ?? "") + d); } };
+  const journal = new WriteJournal(adapter, "j", () => new Date("2026-10-12T12:00:00Z"));
+  const kernel = new Kernel(new WriteQueue(1000), journal, { uid: () => undefined, rev: () => undefined }, new IdempotencyStore(), new LockStore());
+  const records = () => (files.get("j/2026-10.jsonl") ?? "").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  return { kernel, records };
+}
+const RW = { annotations: { readOnlyHint: false } };
+const ACTOR = { transport: "mcp", client: "t", connection: "c" };
+const tick = () => new Promise((r) => setTimeout(r, 5));
+const okHandler = (flag) => async () => { flag.ran = true; return { content: [{ type: "text", text: "ok" }], structuredContent: { moved: true } }; };
+
+describe("makeGuarded with the Sync guard", () => {
+  test("a refusal returns the coded error before the queue: the handler never runs and nothing is journaled", async () => {
+    const { kernel, records } = kernelHarness();
+    const g = makeGuarded({
+      getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR,
+      syncGuard: async () => ({ refuse: { code: SYNC_BEHIND, message: "behind" } }),
+    });
+    const flag = { ran: false };
+    const res = await g(RW, okHandler(flag), "obsidian_move_note")({ from: "A.md", to: "B.md", idempotency_key: "k1", if_rev: 1 }, {});
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /^Error \[sync_behind\]: behind/);
+    assert.equal(flag.ran, false);
+    await tick();
+    assert.deepEqual(records(), []);
+  });
+  test("a warning goes on the result and on the journal record; the write runs", async () => {
+    const { kernel, records } = kernelHarness();
+    const g = makeGuarded({
+      getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR,
+      syncGuard: async () => ({ warn: "Sync is behind" }),
+    });
+    const flag = { ran: false };
+    const res = await g(RW, okHandler(flag), "obsidian_append_note")({ path: "A.md", content: "x", idempotency_key: "k2" }, {});
+    assert.equal(flag.ran, true);
+    assert.equal(res.structuredContent.sync_warning, "Sync is behind");
+    assert.match(res.content.at(-1).text, /^Warning \[sync_behind\]: Sync is behind/);
+    await tick();
+    assert.equal(records().at(-1).syncWarning, "Sync is behind");
+  });
+  test("the guard is consulted after the protection check: a call missing its protection is refused for that, not for Sync", async () => {
+    const { kernel } = kernelHarness();
+    let asked = 0;
+    const g = makeGuarded({
+      getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR,
+      syncGuard: async () => { asked++; return { refuse: { code: SYNC_BEHIND, message: "behind" } }; },
+    });
+    const res = await g(RW, okHandler({}), "obsidian_append_note")({ path: "A.md", content: "x" }, {});
+    assert.match(res.content[0].text, /protection_required/);
+    assert.equal(asked, 0);
+  });
+  test("withSyncWarning leaves a result alone when there is no warning or no envelope", () => {
+    const r = { content: [{ type: "text", text: "ok" }] };
+    assert.equal(withSyncWarning(r, undefined), r);
+    assert.equal(withSyncWarning("x", "w"), "x");
+    assert.deepEqual(withSyncWarning(r, "w").content.length, 2);
+  });
+});

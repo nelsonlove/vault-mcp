@@ -115,7 +115,22 @@ export interface McpSurfaceRow {
    * (2026-09-29), exempt until #427 gives the kernel a revision it can check.
    */
   protectionNote?: string;
+  /**
+   * What the Sync guard (`kernel/sync-guard.ts`; 01.43, Nelson's pick A of
+   * 2026-10-12) treats this write as: `structure` (a rename, move, delete or
+   * create: waits for Obsidian Sync, then is refused if Sync is still behind)
+   * or `content` (an edit or append: waits, then goes on with a warning).
+   * Argument-dependent like `protection`. Absent: the guard does not check
+   * the tool.
+   */
+  syncKind?: SyncKindSpec;
 }
+
+/** A row's Sync kind: a kind, or argument-dependent (`arg`, its `values` as strings, `otherwise`). */
+export type SyncKindSpec =
+  | "structure"
+  | "content"
+  | { arg: string; values: Record<string, "structure" | "content">; otherwise: "structure" | "content" };
 
 /** One class of write protection (01.33 rule 6f). */
 export type ProtectionClass = "token" | "key" | "both" | "exempt";
@@ -156,16 +171,16 @@ const CORE_FS: McpSurfaceRow[] = [
   { tool: "obsidian_get_backlinks", readOnly: true, module: "core", distribution: "public-default", paths: ["path"], postcondition: "Return the visible notes that wikilink to a target." },
   { tool: "obsidian_get_outlinks", readOnly: true, module: "core", distribution: "public-default", paths: ["path"], postcondition: "Return a note's outbound wikilinks, unresolved where the destination is hidden." },
   { tool: "obsidian_force_reindex", readOnly: true, module: "core", distribution: "public-default", postcondition: "Rebuild the backend index; a no-op against Obsidian's live metadata cache." },
-  { tool: "obsidian_manage_frontmatter", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Get, set or delete one top-level frontmatter field on a visible note.", protection: { arg: "op", values: { set: "token", delete: "token" }, otherwise: "exempt" } },
-  { tool: "obsidian_patch_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Insert or replace content at a named heading or block anchor.", protection: { arg: "op", values: { replace: "token", append: "key", prepend: "key" }, otherwise: "token" } },
-  { tool: "obsidian_write_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", nativeAction: { id: NOTE_WRITE_V1.id, version: NOTE_WRITE_V1.version }, postcondition: "Create or overwrite one visible note with exact content, or with the given frontmatter above content as its body.", protection: { arg: "overwrite", values: { true: "token" }, otherwise: "exempt" } },
-  { tool: "obsidian_append_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Append markdown to a note's end, creating it if absent.", protection: "key" },
-  { tool: "obsidian_move_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["from", "to"], postcondition: "Move or rename one note through Obsidian's link-aware file manager.", protection: "key" },
+  { tool: "obsidian_manage_frontmatter", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Get, set or delete one top-level frontmatter field on a visible note.", protection: { arg: "op", values: { set: "token", delete: "token" }, otherwise: "exempt" }, syncKind: "content" },
+  { tool: "obsidian_patch_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Insert or replace content at a named heading or block anchor.", protection: { arg: "op", values: { replace: "token", append: "key", prepend: "key" }, otherwise: "token" }, syncKind: "content" },
+  { tool: "obsidian_write_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", nativeAction: { id: NOTE_WRITE_V1.id, version: NOTE_WRITE_V1.version }, postcondition: "Create or overwrite one visible note with exact content, or with the given frontmatter above content as its body.", protection: { arg: "overwrite", values: { true: "token" }, otherwise: "exempt" }, syncKind: { arg: "overwrite", values: { true: "content" }, otherwise: "structure" } },
+  { tool: "obsidian_append_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Append markdown to a note's end, creating it if absent.", protection: "key", syncKind: "content" },
+  { tool: "obsidian_move_note", readOnly: false, module: "core", distribution: "public-optional", paths: ["from", "to"], postcondition: "Move or rename one note through Obsidian's link-aware file manager.", protection: "key", syncKind: "structure" },
   // D07 lists no deletion capability in the public profile, and the threat
   // model's control #8 says the public surface uses trash rather than hard
   // delete. `obsidian_trash` already provides the recoverable form, so the
   // unrecoverable one is excluded rather than merely optional.
-  { tool: "obsidian_delete_note", readOnly: false, module: "core", distribution: "excluded", paths: ["path"], discovered: "none", postcondition: "Permanently delete a note; backlinks are NOT updated.", protection: "both" },
+  { tool: "obsidian_delete_note", readOnly: false, module: "core", distribution: "excluded", paths: ["path"], discovered: "none", postcondition: "Permanently delete a note; backlinks are NOT updated.", protection: "both", syncKind: "structure" },
 ];
 
 // ── core, hand-registered in server.ts ───────────────────────────────────────
@@ -178,20 +193,20 @@ const CORE_DIRECT: McpSurfaceRow[] = [
   { tool: "obsidian_vault_info", readOnly: true, module: "core", distribution: "public-default", postcondition: "Return vault name, base path, config directory and attachment folder." },
   { tool: "obsidian_environment_info", readOnly: true, module: "core", distribution: "public-default", postcondition: "Return Obsidian version, plugin version, platform and enabled plugins." },
   { tool: "obsidian_get_command_ids", readOnly: true, module: "core", distribution: "public-default", postcondition: "Return every registered Obsidian command id and name." },
-  { tool: "obsidian_append_at_heading", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Insert content at the end of a named heading's section.", protection: "key" },
-  { tool: "obsidian_trash", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Move a note to the system trash, recoverably.", protection: "both" },
+  { tool: "obsidian_append_at_heading", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Insert content at the end of a named heading's section.", protection: "key", syncKind: "content" },
+  { tool: "obsidian_trash", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Move a note to the system trash, recoverably.", protection: "both", syncKind: "structure" },
   { tool: "obsidian_open_in_editor", readOnly: false, module: "core", distribution: "public-default", paths: ["path"], discovered: "none", postcondition: "Open a note in Obsidian's editor; changes workspace state, not vault content.", protection: "not-a-write" },
   // Generic command execution. Threat-model control #9: an opaque operation
   // whose effects cannot be inspected or bounded before execution is absent
   // from the public surface.
   { tool: "obsidian_run_command", readOnly: false, module: "core", distribution: "private", paths: ["file_path"], postcondition: "Execute an Obsidian command by id; effects are whatever that command does.", gate: "per-call command-policy refusal for opaque QuickAdd/js-engine ids", protection: "key" },
-  { tool: "obsidian_move_notes", readOnly: false, module: "core", distribution: "public-optional", paths: ["moves"], postcondition: "Move or rename several notes sequentially through the link-aware file manager.", protection: "key" },
+  { tool: "obsidian_move_notes", readOnly: false, module: "core", distribution: "public-optional", paths: ["moves"], postcondition: "Move or rename several notes sequentially through the link-aware file manager.", protection: "key", syncKind: "structure" },
   // The standing proof that an argument-derived blast radius is not enough:
   // this one names a target and then discovers, rewrites and reports notes of
   // its own. Bounded only by the allowlist, and only when one is active.
   { tool: "obsidian_repoint_link", readOnly: false, module: "core", distribution: "public-optional", paths: ["target_path"], discovered: "unbounded", postcondition: "Rewrite dangling wikilinks matching a name to point at a target, across every visible note.", protection: "exempt", protectionNote: "Temporarily exempt (Nelson's \"a\", 2026-09-29): ruled token, but its only named path is target_path, the note links point AT, so an if_rev would check the wrong file; back to token with #427." },
-  { tool: "obsidian_rename_heading", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "unbounded", postcondition: "Rename one heading in a note and rewrite every link to it across every visible note.", protection: "token" },
-  { tool: "obsidian_write_notes", readOnly: false, module: "core", distribution: "public-optional", paths: ["notes"], postcondition: "Write several notes in one call, each as its own guarded, journaled write.", unguardedRegistration: "registers through origRegister so the dispatcher takes no queue slot; each ITEM runs through a real makeGuarded wrapper", gate: "!opts.codeMode", protection: "per-item" },
+  { tool: "obsidian_rename_heading", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "unbounded", postcondition: "Rename one heading in a note and rewrite every link to it across every visible note.", protection: "token", syncKind: "content" },
+  { tool: "obsidian_write_notes", readOnly: false, module: "core", distribution: "public-optional", paths: ["notes"], postcondition: "Write several notes in one call, each as its own guarded, journaled write.", unguardedRegistration: "registers through origRegister so the dispatcher takes no queue slot; each ITEM runs through a real makeGuarded wrapper", gate: "!opts.codeMode", protection: "per-item", syncKind: { arg: "create_only", values: { true: "structure" }, otherwise: "content" } },
   { tool: "obsidian_check_links", readOnly: true, module: "core", distribution: "public-default", paths: ["scope"], postcondition: "Report dangling wikilinks, duplicate uids and uid coverage; never repairs." },
   { tool: "obsidian_resolve_uid", readOnly: true, module: "core", distribution: "public-default", paths: ["path"], postcondition: "Resolve a uid to its visible path or a path to its uid; report duplicates without choosing." },
   { tool: "obsidian_claim_scope", readOnly: false, module: "core", distribution: "public-optional", paths: ["scope"], discovered: "none", postcondition: "Record an advisory, expiring claim over a path prefix and disclose overlaps; blocks nothing.", protection: "not-a-write" },
@@ -225,7 +240,7 @@ const NAV: McpSurfaceRow[] = [
   { tool: "obsidian_open_workspace", readOnly: false, module: "core", distribution: "public-default", discovered: "none", postcondition: "Load a saved workspace layout.", gate: "runtime: core Workspaces plugin enabled", protection: "not-a-write" },
   { tool: "obsidian_save_workspace", readOnly: false, module: "core", distribution: "public-default", discovered: "none", postcondition: "Save the current layout under a name.", gate: "runtime: core Workspaces plugin enabled", protection: "not-a-write" },
   { tool: "obsidian_list_workspaces", readOnly: true, module: "core", distribution: "public-default", postcondition: "List saved workspace names.", gate: "runtime: core Workspaces plugin enabled" },
-  { tool: "obsidian_periodic_note", readOnly: false, module: "core", distribution: "public-optional", postcondition: "Open or create a daily, weekly or monthly note.", gate: "runtime: Periodic Notes, else core Daily Notes", protection: "exempt" },
+  { tool: "obsidian_periodic_note", readOnly: false, module: "core", distribution: "public-optional", postcondition: "Open or create a daily, weekly or monthly note.", gate: "runtime: Periodic Notes, else core Daily Notes", protection: "exempt", syncKind: "structure" },
   { tool: "obsidian_open_bookmark", readOnly: false, module: "core", distribution: "public-default", discovered: "none", postcondition: "Open a bookmark by title.", gate: "runtime: core Bookmarks plugin enabled", protection: "not-a-write" },
   { tool: "obsidian_list_bookmarks", readOnly: true, module: "core", distribution: "public-default", postcondition: "List bookmarks whose targets are visible under the current scope.", gate: "runtime: core Bookmarks plugin enabled" },
   { tool: "obsidian_plugin_info", readOnly: true, module: "core", distribution: "public-default", postcondition: "Report a community plugin's running, on-disk and cached versions." },
@@ -247,7 +262,7 @@ const INTEGRATIONS: McpSurfaceRow[] = [
   // Runs another plugin's command, so its effects are that command's.
   { tool: "obsidian_fileclass_insert_fields", readOnly: false, module: "core", distribution: "private", paths: ["path"], postcondition: "Run Metadata Menu's insert-missing-fields against a note.", gate: "app.plugins.plugins['metadata-menu'] loaded + command-policy check", protection: "token" },
   // A Templater template is code; its output cannot be inspected before it runs.
-  { tool: "obsidian_create_note_from_template", readOnly: false, module: "core", distribution: "private", paths: ["template_path", "target_path"], postcondition: "Create a note by executing a Templater template.", gate: "app.plugins.plugins['templater-obsidian'] loaded", protection: "key" },
+  { tool: "obsidian_create_note_from_template", readOnly: false, module: "core", distribution: "private", paths: ["template_path", "target_path"], postcondition: "Create a note by executing a Templater template.", gate: "app.plugins.plugins['templater-obsidian'] loaded", protection: "key", syncKind: "structure" },
   { tool: "obsidian_import_apple_notes", readOnly: false, module: "core", distribution: "private", paths: ["output_folder"], postcondition: "Drive the Importer plugin's Apple Notes import headlessly into a folder.", gate: "app.plugins.plugins['obsidian-importer'] loaded + version in KNOWN_GOOD_IMPORTER_VERSIONS", protection: "key" },
 ];
 
@@ -260,7 +275,7 @@ const CLI: McpSurfaceRow[] = [
   { tool: "obsidian_cli", readOnly: false, module: "core", distribution: "excluded", refusesUnderScope: true, postcondition: "Run any official Obsidian CLI subcommand; effects are that subcommand's.", gate: "settings.rawCliProxy === true AND the CLI binary resolves", protection: "key" },
   { tool: "obsidian_note_history", readOnly: true, module: "core", distribution: "public-default", paths: ["path"], postcondition: "List a note's File Recovery version history.", gate: "the CLI binary resolves" },
   { tool: "obsidian_note_diff", readOnly: true, module: "core", distribution: "public-default", paths: ["path"], postcondition: "Diff two File Recovery or Sync versions of a note.", gate: "the CLI binary resolves" },
-  { tool: "obsidian_base_create", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", refusesUnderScope: true, postcondition: "Create a new item inside a Bases file.", gate: "the CLI binary resolves", protection: "key" },
+  { tool: "obsidian_base_create", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", refusesUnderScope: true, postcondition: "Create a new item inside a Bases file.", gate: "the CLI binary resolves", protection: "key", syncKind: "structure" },
   // Both refuse OUTRIGHT under any active allowlist, the same unconditional
   // shape as obsidian_cli and obsidian_base_create beside them — a plugin id
   // is not a path, so the operation cannot be bounded by one.
@@ -309,9 +324,9 @@ const SCHEME: McpSurfaceRow[] = [
   // header cites as the reason the optimistic default is wrong. (Their result
   // envelopes report `filesChanged: 1`, counting only the moved note — a
   // separate under-count, noted here rather than fixed in this PR.)
-  { tool: "obsidian_assign_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to the next free address in a scope; never overwrites, because it always targets a free slot.", protection: "key" },
-  { tool: "obsidian_refile_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to the folder its own address expects, or report it already correct.", protection: "key" },
-  { tool: "obsidian_renumber_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to a specific address, optionally displacing the occupant first.", protection: "key" },
+  { tool: "obsidian_assign_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to the next free address in a scope; never overwrites, because it always targets a free slot.", protection: "key", syncKind: "structure" },
+  { tool: "obsidian_refile_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to the folder its own address expects, or report it already correct.", protection: "key", syncKind: "structure" },
+  { tool: "obsidian_renumber_address", readOnly: false, module: "scheme", distribution: "public-optional", paths: ["path"], gate: "schemeModuleEnabled(ctx.getSettings())", postcondition: "Move a note to a specific address, optionally displacing the occupant first.", protection: "key", syncKind: "structure" },
 ];
 
 // The four `obsidian_vocab*` rows, the two `base_*` rows and the two health
