@@ -149,7 +149,7 @@ export function registerWriteNotesTool(
         "A NEW note's path may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): that item is refused with `unsafe_name`. [ ] are allowed only in the name of a note under an existing archive folder (one the plugin's archive pattern names) that no other note links to, never in a folder name. " +
         "Set `stamp: true` to make the server the single owner of frontmatter conventions: it mints a created-seeded " +
         "UUIDv7 `uid` only when absent (an existing uid is never overwritten), sets `created` (if missing) and `modified` " +
-        "(always), enforces canonical field order, and defaults `acceptance-status: proposed` only when absent. Stamping " +
+        "(always), enforces canonical field order, and adds no `acceptance-status` (an existing one on disk is kept). Stamping " +
         "NEVER writes acceptance, and any item whose frontmatter sets accepted/accepted-by/accepted-on is REJECTED " +
         "(Error [accept_forbidden]) — acceptance is a human gesture, in no API. `stamp` is opt-in per call; leave it off " +
         "for templates/blueprints, where a uid on a merge-payload would corrupt every instance.",
@@ -181,7 +181,7 @@ export function registerWriteNotesTool(
         stamp: z
           .boolean()
           .default(false)
-          .describe("Opt-in server-side stamping: uid (v7, created-seeded, only if absent) + created/modified + canonical order + default acceptance-status:proposed. Never writes acceptance."),
+          .describe("Opt-in server-side stamping: uid (v7, created-seeded, only if absent) + created/modified + canonical order. Adds no acceptance-status; never writes acceptance."),
         intent: z
           .string()
           .min(1)

@@ -7,7 +7,7 @@
  *   • per-item journal records (Stewardship sees each note individually)
  *   • an if_rev conflict on one item leaves the others untouched
  *   • idempotency dedupe replays instead of re-writing
- *   • stamp mints uid/created/modified + default proposed, end-to-end on disk
+ *   • stamp mints uid/created/modified and adds no acceptance-status (#519), end-to-end on disk
  *   • the accept-forbidden guard rejects an item WITHOUT dispatching (no record)
  */
 
@@ -291,7 +291,7 @@ describe("obsidian_write_notes — idempotency dedupe", () => {
 });
 
 describe("obsidian_write_notes — stamp end-to-end", () => {
-  test("stamp mints uid + created/modified + default proposed and orders the block", async () => {
+  test("stamp mints uid + created/modified, adds no acceptance-status (#519), and orders the block", async () => {
     const { call, vault, records } = harness();
     const res = await call({
       notes: [{ path: "Stamp/S.md", frontmatter: { name: "S" }, body: "hi" }],
@@ -303,14 +303,40 @@ describe("obsidian_write_notes — stamp end-to-end", () => {
     assert.equal(body.written[0].stamped, true);
 
     const content = vault.get("Stamp/S.md").content;
-    // canonical order: name, uid, created, modified, acceptance-status
-    assert.match(content, /^---\nname: "S"\nuid: "uid-42"\ncreated: "TS\(42\)"\nmodified: "TS\(42\)"\nacceptance-status: "proposed"\n---\nhi$/);
+    // canonical order: name, uid, created, modified; no acceptance-status (#519)
+    assert.match(content, /^---\nname: "S"\nuid: "uid-42"\ncreated: "TS\(42\)"\nmodified: "TS\(42\)"\n---\nhi$/);
 
     await tick();
     const recs = records();
     assert.equal(recs.length, 1);
     assert.equal(recs[0].op, "obsidian_write_notes");
     assert.equal(recs[0].outcome, "ok");
+  });
+
+  test("#519: a stamped create WITHOUT frontmatter gets uid/created/modified and no acceptance-status", async () => {
+    const { call, vault } = harness();
+    const body = structured(await call({ notes: [{ path: "Stamp/Bare.md", body: "x" }], stamp: true }));
+    assert.equal(body.count, 1);
+    const content = vault.get("Stamp/Bare.md").content;
+    assert.match(content, /^---\nuid: "uid-42"\ncreated: "TS\(42\)"\nmodified: "TS\(42\)"\n---\nx$/);
+    assert.doesNotMatch(content, /acceptance-status/);
+  });
+
+  test("#519: a stamped create WITH frontmatter keeps the payload's keys and adds no acceptance-status", async () => {
+    const { call, vault } = harness();
+    await call({ notes: [{ path: "Stamp/Fm.md", frontmatter: { title: "T", tags: ["a"] }, body: "y" }], stamp: true });
+    const content = vault.get("Stamp/Fm.md").content;
+    assert.match(content, /title: "T"/);
+    assert.match(content, /uid: "uid-42"/);
+    assert.doesNotMatch(content, /acceptance-status/);
+  });
+
+  test("#519: the payload's own non-accepted acceptance-status is still written as given; accepted is still refused", async () => {
+    const { call, vault } = harness();
+    await call({ notes: [{ path: "Stamp/Own.md", frontmatter: { "acceptance-status": "draft" }, body: "z" }], stamp: true });
+    assert.match(vault.get("Stamp/Own.md").content, /acceptance-status: "draft"/);
+    const bad = structured(await call({ notes: [{ path: "Stamp/Bad.md", frontmatter: { "accepted-by": "me" }, body: "z" }], stamp: true }));
+    assert.equal(bad.errors[0].code, "accept_forbidden");
   });
 
   test("stamp preserves an existing uid and acceptance-status (never overwritten)", async () => {
