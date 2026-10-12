@@ -150,6 +150,8 @@ export interface JournalRecord {
    * Absent for plain-path calls. Capped like `target.paths`.
    */
   addressedAs?: Array<{ ref: string; path: string }>;
+  /** The Sync guard's warning, when the write went on while Obsidian Sync was behind or unreadable (kernel/sync-guard.ts). */
+  syncWarning?: string;
   /** On a `deduped` record: the `ts` of the record whose result was replayed. */
   dedupeOf?: string;
   /**

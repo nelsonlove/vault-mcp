@@ -243,6 +243,12 @@ export interface MutationContext {
    */
   addressedAs?: Array<{ ref: string; path: string }>;
   /**
+   * The Sync guard's warning (kernel/sync-guard.ts), when the call went on
+   * while this Mac's Obsidian Sync was behind or could not be read.
+   * Journal-only, like `intent`; NOT part of idempotency identity.
+   */
+  syncWarning?: string;
+  /**
    * Retry-collapsing key. A second call carrying a key this kernel has already
    * completed replays that result without executing anything or taking a queue
    * slot; one that is still IN FLIGHT awaits the first call and adopts its
@@ -630,6 +636,7 @@ export class Kernel {
     idempotencyKey?: string;
     intent?: string;
     addressedAs?: Array<{ ref: string; path: string }>;
+    syncWarning?: string;
   } {
     return {
       ...(mc.ifRev !== undefined ? { ifRev: mc.ifRev } : {}),
@@ -638,6 +645,7 @@ export class Kernel {
       ...(mc.addressedAs !== undefined && mc.addressedAs.length > 0
         ? { addressedAs: mc.addressedAs.slice(0, MAX_JOURNALED_PATHS) }
         : {}),
+      ...(mc.syncWarning !== undefined ? { syncWarning: mc.syncWarning.slice(0, MAX_JOURNALED_ERROR) } : {}),
     };
   }
 
@@ -676,6 +684,7 @@ export class Kernel {
       ...(mc.addressedAs !== undefined && mc.addressedAs.length > 0
         ? { addressedAs: mc.addressedAs.slice(0, MAX_JOURNALED_PATHS) }
         : {}),
+      ...(mc.syncWarning !== undefined ? { syncWarning: mc.syncWarning.slice(0, MAX_JOURNALED_ERROR) } : {}),
     });
   }
 

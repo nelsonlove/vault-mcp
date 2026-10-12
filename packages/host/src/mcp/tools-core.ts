@@ -13,6 +13,7 @@ import { findObsidianBinary } from "./tools-cli.js";
 import type { SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import type { CliCommandPolicy } from "./cli-policy.js";
 import type { SeamConsult } from "./seam.js";
+import { judgeSync, normalizeSyncGuard, readSyncSnapshot, type SyncGuardSettings, type SyncVerdict } from "../kernel/sync-guard.js";
 
 export interface ServerCtx {
   pluginVersion: string;
@@ -88,6 +89,8 @@ export interface ServerCtx {
   recordIdentification?: () => unknown;
   /** `recordFolders` (#482): the folder indicator; coerced through `normalizeRecordFolders`, absent ⇒ today's defaults. */
   recordFolders?: () => unknown;
+  /** The Sync guard's settings (kernel/sync-guard.ts), live per call; coerced through `normalizeSyncGuard`; absent ⇒ off. */
+  syncGuard?: () => unknown;
   // `getVocabularies` was here until the read-tier satellite extraction (suite
   // split, S7). It carried `settings.vocabularies` to the vocab module's tool
   // layer; that module is now the `vaultmcp-vocab` plugin, which owns its own
@@ -159,6 +162,18 @@ export interface ServerCtx {
    */
 }
 
+function syncGuardReport(settings: SyncGuardSettings, v: SyncVerdict): Record<string, unknown> {
+  return {
+    enabled: settings.enabled,
+    mode: settings.mode,
+    wait_seconds: settings.waitSeconds,
+    on_unknown: settings.onUnknown,
+    sync: v.kind,
+    ...(v.kind === "behind" ? { status: v.status } : {}),
+    ...(v.kind === "unknown" ? { why: v.why } : {}),
+  };
+}
+
 const RO = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
 export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
@@ -183,6 +198,11 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
           // obsidian_cli registers only when this is non-null — surfaced here so
           // its absence is diagnosable, like the integration gates above.
           cli_binary: findObsidianBinary(),
+          // The Sync guard (01.43): its settings and what it reads of Obsidian
+          // Sync now — off, synced, behind (with the status) or unknown (with
+          // why: an Obsidian update can change the internal fields). Only the
+          // verdict travels, never the Sync plugin's object.
+          sync_guard: syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), judgeSync(readSyncSnapshot(app), Date.now())),
         });
       } catch (e) { return fail(e); }
     }

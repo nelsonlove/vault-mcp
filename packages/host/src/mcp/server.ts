@@ -26,6 +26,7 @@ import { registerLinkTools, obsidianLinkSource } from "./tools-links.js";
 import { registerConformanceDebtTools, registerConformanceDebtRenderTool } from "./tools-conformance-debt.js";
 import { obsidianDebtRenderSource } from "./obsidian-debt-source.js";
 import { resolveConventions } from "../conformance/vault-conventions.js";
+import { decideSync, normalizeSyncGuard, readSyncSnapshot } from "../kernel/sync-guard.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
@@ -351,6 +352,15 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   };
   const guardedOpts = {
     getSettings: () => ctx.getSettings(),
+    // The Sync guard (01.43, pick A of 2026-10-12): settings read live per
+    // call, the Sync state read fresh on each look. See readSyncSnapshot.
+    syncGuard: (tool: string, args: Record<string, unknown>) =>
+      decideSync(tool, args, {
+        settings: normalizeSyncGuard(ctx.syncGuard?.()),
+        read: () => readSyncSnapshot(app),
+        now: () => Date.now(),
+        sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+      }),
     kernel: ctx.kernel,
     actor,
     wholeReads,
