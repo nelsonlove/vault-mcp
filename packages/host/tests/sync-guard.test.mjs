@@ -11,6 +11,7 @@ import {
   syncKindOf,
   decideSync,
   readSyncSnapshot,
+  createSyncGuard,
   SYNC_BEHIND,
   SYNC_UNKNOWN,
 } from "../src/kernel/sync-guard.ts";
@@ -45,7 +46,7 @@ describe("judgeSync — what behind means", () => {
   test("each cause of behind", () => {
     for (const [over, re] of [
       [{ ready: false }, /not ready/],
-      [{ error: "boom" }, /error/],
+      [{ error: true }, /error/],
       [{ pause: true }, /paused/],
       [{ syncStatus: "Uploading a.md" }, /Uploading a\.md/],
       [{ newServerFiles: 3 }, /3 server change/],
@@ -55,6 +56,10 @@ describe("judgeSync — what behind means", () => {
       assert.equal(v.kind, "behind", JSON.stringify(over));
       assert.match(v.status, re);
     }
+  });
+  test("error counts only as a literal true (it is a boolean, false when well; measured 2026-10-12)", () => {
+    assert.deepEqual(judgeSync(synced({ error: false }), NOW), { kind: "synced" });
+    assert.deepEqual(judgeSync(synced({ error: "stale" }), NOW), { kind: "synced" });
   });
   test("a missing or changed field is unknown, and names the field", () => {
     const v = judgeSync(synced({ syncStatus: undefined, lastMessageTs: "x" }), NOW);
@@ -150,6 +155,33 @@ describe("decideSync", () => {
     assert.match((await decideSync("obsidian_move_note", {}, clock([u]).deps({}))).warn, /cannot read/);
     const r = await decideSync("obsidian_move_note", {}, clock([u]).deps({ onUnknown: "refuse" }));
     assert.equal(r.refuse.code, SYNC_UNKNOWN);
+    assert.equal((await decideSync("obsidian_move_note", {}, clock([u]).deps({}))).code, SYNC_UNKNOWN, "the warning carries its own code");
+  });
+});
+
+describe("createSyncGuard — one wait for a burst, not one per call", () => {
+  test("after a wait runs out, the next calls within waitSeconds are judged at once; a synced call clears the hold", async () => {
+    let t = NOW;
+    let state = behind();
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({
+      settings: normalizeSyncGuard({ enabled: true, waitSeconds: 10 }),
+      read: () => state,
+      now: () => t,
+      sleep: async (ms) => { sleeps.push(ms); t += ms; },
+      pollMs: 1000,
+    }));
+    assert.equal((await guard("obsidian_write_notes", { create_only: true })).refuse.code, SYNC_BEHIND);
+    const waited = sleeps.length;
+    assert.ok(waited > 0);
+    assert.equal((await guard("obsidian_write_notes", { create_only: true })).refuse.code, SYNC_BEHIND);
+    assert.ok((await guard("obsidian_append_note", {})).warn);
+    assert.equal(sleeps.length, waited, "no second wait inside the hold");
+    state = synced();
+    assert.equal(await guard("obsidian_move_note", {}), null);
+    state = behind();
+    await guard("obsidian_move_note", {});
+    assert.ok(sleeps.length > waited, "a synced call cleared the hold, so the next one waits again");
   });
 });
 
@@ -206,7 +238,7 @@ describe("makeGuarded with the Sync guard", () => {
     const { kernel, records } = kernelHarness();
     const g = makeGuarded({
       getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR,
-      syncGuard: async () => ({ warn: "Sync is behind" }),
+      syncGuard: async () => ({ warn: "Sync is behind", code: SYNC_BEHIND }),
     });
     const flag = { ran: false };
     const res = await g(RW, okHandler(flag), "obsidian_append_note")({ path: "A.md", content: "x", idempotency_key: "k2" }, {});
@@ -227,10 +259,30 @@ describe("makeGuarded with the Sync guard", () => {
     assert.match(res.content[0].text, /protection_required/);
     assert.equal(asked, 0);
   });
-  test("withSyncWarning leaves a result alone when there is no warning or no envelope", () => {
+  test("a retry whose idempotency key the kernel holds steps past the guard and is replayed", async () => {
+    const { kernel } = kernelHarness();
+    let asked = 0;
+    let refuse = false;
+    const g = makeGuarded({
+      getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR,
+      syncGuard: async () => { asked++; return refuse ? { refuse: { code: SYNC_BEHIND, message: "behind" } } : null; },
+    });
+    const flag = { ran: false };
+    const args = { from: "A.md", to: "B.md", idempotency_key: "k-retry" };
+    const first = await g(RW, okHandler(flag), "obsidian_move_note")(args, {});
+    assert.equal(first.isError, undefined);
+    refuse = true;
+    const again = await g(RW, okHandler(flag), "obsidian_move_note")(args, {});
+    assert.equal(asked, 1, "the retry was not put to the Sync guard");
+    assert.notEqual(again.isError, true, "replayed, not refused for Sync");
+  });
+  test("withSyncWarning: no warning, no envelope or an error result pass through; the code is the warning's own", () => {
     const r = { content: [{ type: "text", text: "ok" }] };
+    const w = { text: "w", code: SYNC_UNKNOWN };
     assert.equal(withSyncWarning(r, undefined), r);
-    assert.equal(withSyncWarning("x", "w"), "x");
-    assert.deepEqual(withSyncWarning(r, "w").content.length, 2);
+    assert.equal(withSyncWarning("x", w), "x");
+    const err = { isError: true, content: [{ type: "text", text: "Error" }] };
+    assert.equal(withSyncWarning(err, w), err);
+    assert.match(withSyncWarning(r, w).content[1].text, /^Warning \[sync_unknown\]: w/);
   });
 });

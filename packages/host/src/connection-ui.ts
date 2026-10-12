@@ -874,8 +874,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .addText((t) => {
         t.setValue(String(sg.waitSeconds));
         t.inputEl.addEventListener("change", async () => {
-          const n = Number(t.getValue().trim());
-          if (!Number.isFinite(n)) {
+          const raw = t.getValue().trim();
+          const n = Number(raw);
+          if (raw === "" || !Number.isFinite(n)) {
             t.setValue(String(this.plugin.settings.syncGuard.waitSeconds));
             return;
           }

@@ -149,7 +149,8 @@ export function judgeSync(s: SyncSnapshot, now: number): SyncVerdict {
   if (bad.length) return { kind: "unknown", why: `Sync fields missing or changed: ${bad.join(", ")}` };
   const status = f.syncStatus as string;
   if (f.ready === false) return { kind: "behind", status: `not ready (${status})` };
-  if (f.error) return { kind: "behind", status: `error (${status})` };
+  // Measured 2026-10-12 on the Pro: `error` is a boolean (false when well). Only a literal true counts.
+  if (f.error === true) return { kind: "behind", status: `error (${status})` };
   if (f.pause === true) return { kind: "behind", status: "paused" };
   if (status !== "Fully synced") return { kind: "behind", status };
   if ((f.newServerFiles as number) > 0) return { kind: "behind", status: `${f.newServerFiles} server change(s) not yet pulled` };
@@ -185,7 +186,7 @@ export const SYNC_BEHIND = "sync_behind";
 /** The code a refusal carries when the Sync state cannot be read and `onUnknown` is `refuse`. */
 export const SYNC_UNKNOWN = "sync_unknown";
 
-export type SyncDecision = null | { refuse: { code: string; message: string } } | { warn: string };
+export type SyncDecision = null | { refuse: { code: string; message: string } } | { warn: string; code: string };
 
 export interface SyncGuardDeps {
   settings: SyncGuardSettings;
@@ -195,6 +196,10 @@ export interface SyncGuardDeps {
   sleep: (ms: number) => Promise<void>;
   /** How often to look again while waiting. */
   pollMs?: number;
+  /** Judge at once, with no wait: set by createSyncGuard while a recent wait has already run out. */
+  skipWait?: boolean;
+  /** Told when a wait ran out with Sync still behind. */
+  onWaitExpired?: () => void;
 }
 
 /**
@@ -211,7 +216,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   let v = judgeSync(deps.read(), deps.now());
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
-  const shouldWait = kind === "content" || settings.mode !== "warn";
+  const shouldWait = !deps.skipWait && (kind === "content" || settings.mode !== "warn");
   if (shouldWait) {
     const deadline = deps.now() + settings.waitSeconds * 1000;
     const poll = Math.max(50, deps.pollMs ?? 500);
@@ -221,6 +226,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
+    deps.onWaitExpired?.();
   }
   const waited = shouldWait ? ` after waiting ${settings.waitSeconds} s` : "";
   if (kind === "structure" && settings.mode === "refuse") {
@@ -228,13 +234,13 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
       refuse: {
         code: SYNC_BEHIND,
         message:
-          `'${tool}' renames, moves, deletes or creates a note, and this Mac's Obsidian Sync is behind${waited}: ${v.status}. ` +
+          `'${tool}' is a structure write (it can rename, move, delete or create a note), and this Mac's Obsidian Sync is behind${waited}: ${v.status}. ` +
           "Nothing was written. Such a write holds only once the other devices pull it, and made while Sync is behind it can come back as a twin. " +
           "Retry when Sync says Fully synced. (vault-mcp setting: Sync guard.)",
       },
     };
   }
-  return { warn: `Obsidian Sync on this Mac is behind${waited} (${v.status}); the write went on. (vault-mcp setting: Sync guard.)` };
+  return { warn: `Obsidian Sync on this Mac is behind${waited} (${v.status}); the write went on. (vault-mcp setting: Sync guard.)`, code: SYNC_BEHIND };
 }
 
 function unknownDecision(tool: string, why: string, settings: SyncGuardSettings): SyncDecision {
@@ -246,5 +252,28 @@ function unknownDecision(tool: string, why: string, settings: SyncGuardSettings)
       },
     };
   }
-  return { warn: `The Sync guard cannot read Obsidian Sync's state (${why}); the write went on unchecked.` };
+  return { warn: `The Sync guard cannot read Obsidian Sync's state (${why}); the write went on unchecked.`, code: SYNC_UNKNOWN };
+}
+
+/**
+ * The guard as the host uses it: `decideSync` with one shared memory. Once a
+ * wait has run out with Sync still behind, the calls that follow within the
+ * next `waitSeconds` are judged at once, with no second wait, so a batch (each
+ * `obsidian_write_notes` item is its own guarded call) or a burst of calls pays
+ * the wait once, not once per call. A call that finds Sync synced clears it.
+ */
+export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "onWaitExpired">) {
+  let holdUntil = 0;
+  return async (tool: string, args: Record<string, unknown>): Promise<SyncDecision> => {
+    const deps = base();
+    const d = await decideSync(tool, args, {
+      ...deps,
+      skipWait: deps.now() < holdUntil,
+      onWaitExpired: () => {
+        holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
+      },
+    });
+    if (d === null) holdUntil = 0;
+    return d;
+  };
 }
