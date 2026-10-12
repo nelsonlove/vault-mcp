@@ -1,5 +1,6 @@
 import { App, Modal, PluginSettingTab, Setting, Notice } from "obsidian";
 import { archivePatternRegExp } from "./kernel/record-guard.js";
+import { MAX_WAIT_SECONDS } from "./kernel/sync-guard.js";
 import type VaultMcpPlugin from "./main.js";
 import { buildRegisterCommand } from "./register-command.js";
 import { bridgeDestPath } from "./paths.js";
@@ -835,6 +836,70 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       t.inputEl.addEventListener("change", () => void commit());
       this.recordFieldCommits.push(commit);
     });
+
+    // ── Sync guard (01.43, Nelson's pick A of 2026-10-12) ─────────────────────
+    // Before a write, wait for this Mac's Obsidian Sync; then refuse a rename,
+    // move, delete or create that is still behind, and warn on an edit or
+    // append. kernel/sync-guard.ts holds the rule; these four keys drive it.
+    containerEl.createEl("h4", { text: "Sync guard" });
+    const sg = this.plugin.settings.syncGuard;
+    new Setting(containerEl)
+      .setName("Check Obsidian Sync before a write")
+      .setDesc(
+        "On: before an agent's write, vault-mcp waits for this Mac's Obsidian Sync to say Fully synced. A rename, move, delete " +
+          "or create that is still behind after the wait is handled as the mode below says; an edit or append goes on with a " +
+          "warning. It checks only this Mac: it cannot know what another device has pulled. Off: no check. Applies immediately."
+      )
+      .addToggle((t) =>
+        t.setValue(sg.enabled).onChange(async (value) => {
+          this.plugin.settings.syncGuard.enabled = value;
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("When a rename, move, delete or create finds Sync behind")
+      .setDesc("Refuse: wait, then refuse (nothing written). Wait: wait, then go on with a warning. Warn: do not wait, only warn.")
+      .addDropdown((d) =>
+        d
+          .addOptions({ refuse: "Refuse", wait: "Wait", warn: "Warn" })
+          .setValue(sg.mode)
+          .onChange(async (v) => {
+            this.plugin.settings.syncGuard.mode = v === "wait" || v === "warn" ? v : "refuse";
+            await this.plugin.saveSettings();
+          })
+      );
+    new Setting(containerEl)
+      .setName("Wait for Fully synced (seconds)")
+      .setDesc(`How long a write waits for Sync before the rule above applies. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`)
+      .addText((t) => {
+        t.setValue(String(sg.waitSeconds));
+        t.inputEl.addEventListener("change", async () => {
+          const raw = t.getValue().trim();
+          const n = Number(raw);
+          if (raw === "" || !Number.isFinite(n)) {
+            t.setValue(String(this.plugin.settings.syncGuard.waitSeconds));
+            return;
+          }
+          this.plugin.settings.syncGuard.waitSeconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, n));
+          t.setValue(String(this.plugin.settings.syncGuard.waitSeconds));
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("When Sync cannot be read")
+      .setDesc(
+        "The Sync state comes from an internal Obsidian API that an update can change. Warn: the write goes on with a warning. " +
+          "Refuse: the write is refused. When the Sync plugin is off in this vault, the guard does nothing."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({ warn: "Warn", refuse: "Refuse" })
+          .setValue(sg.onUnknown)
+          .onChange(async (v) => {
+            this.plugin.settings.syncGuard.onUnknown = v === "refuse" ? "refuse" : "warn";
+            await this.plugin.saveSettings();
+          })
+      );
 
     // ── observation capture ─────────────────────────────────────────────────
     //

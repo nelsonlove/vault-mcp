@@ -51,7 +51,7 @@ function fakeAdapter() {
  * and 5), by wiring the identical resolveGuardedPath/guardedOpts server.ts
  * wires — not a reimplementation of resolution for the test's own sake.
  */
-function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, schemes, schemeNotes, wholeReads } = {}) {
+function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, schemes, schemeNotes, wholeReads, syncGuard } = {}) {
   const vault = new Map();        // path -> { content, rev }
   const existingFm = new Map();   // path -> parsed frontmatter (metadata cache stand-in)
   let clock = 100;
@@ -96,6 +96,7 @@ function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, sc
     ...(wholeReads ? { wholeReads, noteStat: (path) => (vault.has(path) ? { mtime: vault.get(path).rev, size: vault.get(path).content.length } : undefined) } : {}),
     ...(uids ? { uids } : {}),
     ...(schemes ? { schemes: () => schemes, schemeNotes: () => schemeNotes ?? [] } : {}),
+    ...(syncGuard ? { syncGuard } : {}),
   };
   const guarded = makeGuarded(guardedOpts);
   const guardedWrite = guarded(
@@ -637,5 +638,23 @@ describe("obsidian_write_notes — per item, as write_note (01.33.5)", () => {
     assert.equal(again.count, 1, "the replay reports the first result");
     assert.deepEqual(again.errors, []);
     assert.equal(writeCalls.filter((p) => p === "E/Once.md").length, 1);
+  });
+});
+
+// #507: the Sync guard's warning reaches the batch's caller, per item.
+describe("obsidian_write_notes — the Sync guard's warning", () => {
+  test("a content item written while Sync is behind carries sync_warning on its row; a refused create carries sync_behind", async () => {
+    const existing = new Map([["Inbox/A.md", { content: "old", rev: 5 }]]);
+    const { call } = harness({
+      existing,
+      syncGuard: async (_tool, args) =>
+        args.create_only ? { refuse: { code: "sync_behind", message: "behind" } } : { warn: "Sync is behind", code: "sync_behind" },
+    });
+    const body = structured(
+      await call({ notes: [{ path: "Inbox/A.md", body: "new", if_rev: 5, idempotency_key: "w1" }, { path: "Inbox/N.md", body: "n" }], stamp: false })
+    );
+    assert.equal(body.written.length, 1);
+    assert.equal(body.written[0].sync_warning, "Sync is behind");
+    assert.equal(body.errors[0].code, "sync_behind");
   });
 });

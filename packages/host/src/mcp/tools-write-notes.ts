@@ -108,7 +108,7 @@ export interface WriteNotesDeps {
 }
 
 type PerItemResult =
-  | { ok: true; path: string; created: boolean; stamped: boolean; rev?: number }
+  | { ok: true; path: string; created: boolean; stamped: boolean; rev?: number; sync_warning?: string }
   | { ok: false; path: string; code: string; error: string };
 
 /** Pull `Error [code]: message` out of a guarded-write error envelope. */
@@ -282,12 +282,16 @@ export function registerWriteNotesTool(
             results.push({ ok: false, path: item.path, code, error });
           } else {
             const created = envelope?.structuredContent?.created === true;
+            // The Sync guard's warning (#507) is on the item's envelope; carry it
+            // to the item's row, or the batch's caller would never see it.
+            const syncWarning = envelope?.structuredContent?.sync_warning;
             results.push({
               ok: true,
               path: item.path,
               created,
               stamped: composed.stamped,
               ...(deps.revOf ? { rev: deps.revOf(resolvedPath) } : {}),
+              ...(typeof syncWarning === "string" ? { sync_warning: syncWarning } : {}),
             });
           }
         } catch (e) {
@@ -304,7 +308,7 @@ export function registerWriteNotesTool(
         count: written.length,
         error_count: errors.length,
         stamped: doStamp,
-        written: written.map(({ path, created, stamped, rev }) => ({ path, created, stamped, ...(rev !== undefined ? { rev } : {}) })),
+        written: written.map(({ path, created, stamped, rev, sync_warning }) => ({ path, created, stamped, ...(rev !== undefined ? { rev } : {}), ...(sync_warning !== undefined ? { sync_warning } : {}) })),
         errors: errors.map(({ path, code, error }) => ({ path, code, error })),
       };
       // Partial failure is tolerated; total failure carries the MCP error flag

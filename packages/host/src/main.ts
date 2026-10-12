@@ -25,6 +25,7 @@ import { runHostAdoption, LEGACY_PLUGIN_ID, PLUGIN_ID } from "./id-migration.js"
 import { territoriesOnLoad } from "./territory-policy.js";
 import { conventionsOnLoad } from "./conventions-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
+import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
 import { EMPTY_VAULT_CONVENTIONS, resolveConventions, type VaultConventions } from "./conformance/vault-conventions.js";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
@@ -208,6 +209,14 @@ interface VaultMcpSettings {
    */
   recordFolders: RecordFolders;
   /**
+   * The Sync guard (kernel/sync-guard.ts; 01.43, Nelson's pick A of
+   * 2026-10-12): before a write, wait for this Mac's Obsidian Sync to be
+   * "Fully synced", then refuse a rename, move, delete or create that is still
+   * behind (`mode`), and let an edit or append go on with a warning. Off when
+   * the plugin ships; coerced through `normalizeSyncGuard` on load.
+   */
+  syncGuard: SyncGuardSettings;
+  /**
    * The in-Obsidian dev tool-runner ("Vault MCP: Run tool…" — src/tool-runner.ts).
    * Default ON: it grants nothing the MCP surface doesn't already grant — it
    * invokes the same guarded captured tools a code-mode connection gets, so
@@ -272,6 +281,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   vaultConventions: resolveConventions(EMPTY_VAULT_CONVENTIONS),
   recordIdentification: { ...DEFAULT_RECORD_IDENTIFICATION },
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
+  syncGuard: { ...DEFAULT_SYNC_GUARD },
 };
 
 class DiagnosticsModal extends Modal {
@@ -357,6 +367,8 @@ export default class VaultMcpPlugin extends Plugin {
     // rather than crashing the probe or the settings tab. The rule is the
     // kernel's (`normalizeRecordIdentification`), tested there.
     this.settings.recordIdentification = normalizeRecordIdentification(this.settings.recordIdentification);
+    // The Sync guard: a partial or hand-edited value is coerced, never a crash; absent ⇒ off.
+    this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any
     // value that isn't an explicit `false` reads as enforced (same
     // fail-toward-the-safe-default discipline as the cliPolicy/protected-
@@ -757,6 +769,7 @@ export default class VaultMcpPlugin extends Plugin {
       enforceRecordImmutability: () => this.settings.enforceRecordImmutability,
       recordIdentification: () => this.settings.recordIdentification,
       recordFolders: () => this.settings.recordFolders,
+      syncGuard: () => this.settings.syncGuard,
       serverIdentity,
       sessions: {
         // LIFECYCLE ONLY (condition 7 — the host mints). `get` is deliberately

@@ -338,6 +338,56 @@ The acceptance family is a non-configurable floor. Configuration may extend it, 
 | Risk | A pattern that does not compile matches nothing (it never widens); empty means no folder is an archive. The filesystem server and the triage plugin have no settings and never give or keep a bracket name |
 | Recovery | Re-enter the pattern |
 
+## Sync guard
+
+Before an agent's write, vault-mcp can wait for this Mac's Obsidian Sync to say "Fully synced" (01.43; Nelson's pick A, 2026-10-12). The version check (`if_rev`) holds only inside one Mac, so a rename made while Sync is behind can come back as a twin folder from another device. The guard reads Sync's internal state (an undocumented Obsidian API: `ready`, `error`, `pause`, `syncStatus`, the count of `newServerFiles` and `server.lastMessageTs`, and nothing else of that object, which also holds the vault's key). Sync is behind when it is not ready, has an error, is paused, does not say "Fully synced", has server changes to pull, or has had no server message for 2 minutes. It proves only that this Mac is current: it cannot know what another device has pulled, and it covers only writes through vault-mcp. `obsidian_doctor` reports the settings and what the guard reads now (`sync_guard`).
+
+A rename, move, delete or create (the structure kinds: `syncKind` on each row of `inventory-mcp.ts`) waits, then follows the mode. An edit or append always waits, then goes on with a warning. The kinds follow the ruling's list: structure = `obsidian_move_note`, `obsidian_move_notes`, the three scheme address tools, `obsidian_delete_note`, `obsidian_trash`, `obsidian_create_note_from_template`, `obsidian_base_create`, `obsidian_periodic_note`, `obsidian_write_note` with `overwrite: false` and an `obsidian_write_notes` item without `if_rev`; content = an overwrite, a patch, a frontmatter change, a heading rename, an append. An append or overwrite that happens to create a missing note counts as content, and a tool with no `syncKind` (an import, a command, a satellite's tools) is not checked. Once a wait has run out with Sync still behind, calls on the same MCP connection in the next `waitSeconds` are judged at once without a second wait, so a batch pays the wait once; a retry whose `idempotency_key` the kernel already holds skips the guard and is replayed. Keep the wait under the MCP client's own timeout (about 60 s), or a content write may land after the caller has given up. A refusal is `Error [sync_behind]` (or `Error [sync_unknown]`), before the write queue, so it is not journaled. A warning goes on the result (`sync_warning`, and a `Warning [sync_behind]` or `Warning [sync_unknown]` text line; on an `obsidian_write_notes` item, `sync_warning` on that item's row in `written`) and on the journal record (`syncWarning`).
+
+### Check Obsidian Sync before a write
+
+| Field | Value |
+|---|---|
+| Key | `syncGuard.enabled` |
+| Default | Off (turned on per vault) |
+| Effect | On: the guard runs before each agent write it classifies. Off: no check. When the Sync plugin is off in the vault, the guard does nothing |
+| Takes effect | Live, per call |
+| Risk | On: a structure write can wait up to the wait below, and in Refuse mode is refused while Sync is behind |
+| Recovery | Turn it off |
+
+### When a rename, move, delete or create finds Sync behind
+
+| Field | Value |
+|---|---|
+| Key | `syncGuard.mode` |
+| Default | Refuse |
+| Effect | Refuse: wait, then refuse with `sync_behind`, nothing written. Wait: wait, then go on with a warning. Warn: no wait, only a warning |
+| Takes effect | Live, per call |
+| Risk | Wait and Warn let a rename go on while Sync is behind, which is how a twin folder is made |
+| Recovery | Set it back to Refuse |
+
+### Wait for Fully synced (seconds)
+
+| Field | Value |
+|---|---|
+| Key | `syncGuard.waitSeconds` |
+| Default | 30 (0 to 600) |
+| Effect | How long a write waits for Sync before the mode applies. The wait is before the write queue, so it holds no other write |
+| Takes effect | Live, per call |
+| Risk | A long wait makes a caller wait as long |
+| Recovery | Lower it |
+
+### When Sync cannot be read
+
+| Field | Value |
+|---|---|
+| Key | `syncGuard.onUnknown` |
+| Default | Warn |
+| Effect | When the Sync plugin is on but its state cannot be read (no instance, or an Obsidian update changed the fields). Warn: the write goes on with a warning. Refuse: refused with `sync_unknown` |
+| Takes effect | Live, per call |
+| Risk | Refuse can stop every classified write after an Obsidian update until vault-mcp is fixed |
+| Recovery | Set it to Warn, or turn the guard off |
+
 ## Conformance
 
 ### Vault conventions

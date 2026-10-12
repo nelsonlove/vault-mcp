@@ -19,6 +19,7 @@
 // live Obsidian classes.
 
 import { protectionRefusal, requirementNote } from "../kernel/write-protection.js";
+import type { SyncDecision } from "../kernel/sync-guard.js";
 import { z } from "zod";
 import { guardCall, collectPaths, type GuardSettings } from "../guard.js";
 import {
@@ -312,6 +313,15 @@ export interface GuardedOpts {
    * combination with its own test.
    */
   schemeNotes?: () => string[];
+  /**
+   * The Sync guard (kernel/sync-guard.ts; 01.43, Nelson's pick A of
+   * 2026-10-12), consulted after the protection check and BEFORE the write
+   * queue: a wait for Obsidian Sync never holds the queue, and a refusal never
+   * reaches it (so it is not journaled). A warning goes on the journal record
+   * (`syncWarning`) and on the result. Absent ⇒ no check (tests, bare embeds,
+   * a host without Sync).
+   */
+  syncGuard?: (tool: string, args: Record<string, unknown>) => Promise<SyncDecision>;
 }
 
 // ── uid addressing ───────────────────────────────────────────────────────────
@@ -607,6 +617,15 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // `protection` (kernel/write-protection.ts), read over the RESOLVED args.
   const missing = protectionRefusal(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, { ifRev, idempotencyKey });
   if (missing) return codedError(missing.code, missing.message);
+  // The Sync guard: wait for this Mac's Obsidian Sync, then refuse a
+  // structure write that is still behind, or warn. Here, before the queue.
+  // A call whose idempotency key the kernel already holds is a retry it will
+  // replay (or join, or refuse as a mismatch) with no new write, so it is not
+  // made to wait for Sync or refused for it: the guard steps aside for it.
+  const keyKnown = idempotencyKey !== undefined && opts.kernel.idempotency.has(idempotencyKey);
+  const sync = opts.syncGuard && !keyKnown ? await opts.syncGuard(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>) : null;
+  if (sync && "refuse" in sync) return codedError(sync.refuse.code, sync.refuse.message);
+  const syncWarning = sync && "warn" in sync ? { text: sync.warn, code: sync.code } : undefined;
   // The operation reaches the write queue here. Marked rather than assumed:
   // every refusal above this line — read-only mode, the allowlist, an
   // unresolved uid or address, an unenforceable if_rev — returns without ever
@@ -622,7 +641,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
     ...resolved.schemeResolved,
   ];
   try {
-    return await opts.kernel.runMutation(
+    return withSyncWarning(await opts.kernel.runMutation(
       {
         op: name ?? def?.title ?? "unknown",
         args: toolArgs,
@@ -633,6 +652,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
         ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
         ...(intent !== undefined ? { intent } : {}),
         ...(addressedAs.length > 0 ? { addressedAs } : {}),
+        ...(syncWarning !== undefined ? { syncWarning: syncWarning.text } : {}),
       },
       async () => {
         // Inside the queued closure: this runs at DEQUEUE, after the kernel's
@@ -661,7 +681,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
         }
         return handler(toolArgs, extra);
       }
-    );
+    ), syncWarning);
   } catch (e) {
     // Kernel-level failures are typed tool errors; anything else the handler
     // threw keeps propagating to the SDK exactly as before.
@@ -671,4 +691,24 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
     if (e instanceof IdempotencyMismatchError) return codedError(e.code, e.message);
     throw e;
   }
+}
+
+/**
+ * Put the Sync guard's warning on a result envelope: a `sync_warning` field in
+ * `structuredContent` (when the result has one) and one more text item,
+ * `Warning [sync_behind]` or `Warning [sync_unknown]`, so a caller that reads
+ * either sees it. A result that is not an envelope, an error result, or no
+ * warning passes through unchanged.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function withSyncWarning(result: any, warning: { text: string; code: string } | undefined): any {
+  // An error result wrote nothing, so a warning that "the write went on" would be false there.
+  if (warning === undefined || !result || typeof result !== "object" || !Array.isArray(result.content) || result.isError) return result;
+  return {
+    ...result,
+    content: [...result.content, { type: "text", text: `Warning [${warning.code}]: ${warning.text}` }],
+    ...(result.structuredContent && typeof result.structuredContent === "object"
+      ? { structuredContent: { ...result.structuredContent, sync_warning: warning.text } }
+      : {}),
+  };
 }
