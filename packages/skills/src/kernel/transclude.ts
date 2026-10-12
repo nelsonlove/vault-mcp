@@ -42,6 +42,10 @@ const safeLabel = (s: string): string => s.replace(/--(!?)>/g, "--$1›");
  *  are left raw and warned). */
 export const transclusionOpen = (label: string): string => `<!-- transcluded from: ${safeLabel(label)} -->`;
 export const transclusionClose = (label: string): string => `<!-- end transclusion: ${safeLabel(label)} -->`;
+/** The marker that stands where an embed of a guarded-territory note would
+ *  have been (01.61 rule 8a): it names no path, because the name is case
+ *  material too. */
+export const TRANSCLUSION_GUARDED = "<!-- transclusion refused: a note in a guarded territory (01.61 rule 8a) -->";
 /** The marker that stands where a refused embed would have been inlined (the
  *  acceptance gate): names the path, carries none of its text. */
 export const transclusionRefused = (path: string): string => `<!-- transclusion refused: ${safeLabel(path)} is not accepted -->`;
@@ -151,6 +155,12 @@ interface ResolveContext {
    *  note is later accepted), and a warning says why. Applies at every depth. */
   accept?: (src: EmbedSource) => boolean;
   refused?: Set<string>;
+  /** GUARDED TERRITORIES (01.61 rule 8a): when this says a target is in one,
+   *  the embed is refused before the acceptance gate, a marker that names NO
+   *  path stands in its place, nothing is added to `sources` or `refused`, and
+   *  the count goes up; the caller reports the count only. */
+  guarded?: (src: EmbedSource) => boolean;
+  guardedCount?: { n: number };
 }
 
 async function resolveBody(body: string, fromPath: string, ctx: ResolveContext): Promise<string> {
@@ -184,6 +194,11 @@ async function resolveBody(body: string, fromPath: string, ctx: ResolveContext):
     if (ctx.chain.includes(src.path)) {
       ctx.warnings.push(`${fromPath}: transclusion cycle through ${src.path} — left unresolved`);
       keep(); continue;
+    }
+    if (ctx.guarded?.(src)) {
+      if (ctx.guardedCount) ctx.guardedCount.n += 1;
+      out.push(TRANSCLUSION_GUARDED);
+      continue;
     }
     if (ctx.accept && !ctx.accept(src)) {
       ctx.warnings.push(`${fromPath}: transclusion ${m[0]} refused — ${src.path} is not accepted (no \`verified\` entry naming a \`human:\` actor; 01.41 rule 8), so its text does not reach the compiled prompt`);
@@ -241,8 +256,8 @@ export async function resolveTransclusions(
   lookup: EmbedLookup,
   warnings: string[],
   sources?: Set<string>,
-  gate?: { accept: (src: EmbedSource) => boolean; refused: Set<string> },
+  gate?: { accept: (src: EmbedSource) => boolean; refused: Set<string>; guarded?: (src: EmbedSource) => boolean; guardedCount?: { n: number } },
 ): Promise<string> {
   if (!body.includes("![[")) return body;
-  return resolveBody(body, sourcePath, { lookup, warnings, chain: [sourcePath], sources, accept: gate?.accept, refused: gate?.refused });
+  return resolveBody(body, sourcePath, { lookup, warnings, chain: [sourcePath], sources, accept: gate?.accept, refused: gate?.refused, guarded: gate?.guarded, guardedCount: gate?.guardedCount });
 }

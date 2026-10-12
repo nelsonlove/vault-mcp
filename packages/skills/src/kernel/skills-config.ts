@@ -42,6 +42,10 @@ export interface SkillsConfig {
   includeRoots: string[];
   /** Folders under an include root the compiler must not read. */
   excludeRoots: string[];
+  /** 01.61 rule 8a: folders whose notes never reach the fleet-wide plugin. */
+  guardedRoots: string[];
+  /** 01.61 rule 8a's exception: exact vault paths of the data-loss rule policies under a guarded root. */
+  fleetWideRules: string[];
   /** Tags mode: `#{tagPrefix}{kind}` (e.g. `agent/` -> `#agent/skill`). */
   tagPrefix: string;
   /** How the vault-skills frontmatter fields are namespaced. */
@@ -75,6 +79,8 @@ export const DEFAULT_SKILLS_CONFIG: SkillsConfig = {
   typeMap: {},
   includeRoots: [],
   excludeRoots: [],
+  guardedRoots: [],
+  fleetWideRules: [],
   tagPrefix: "agent/",
   fieldMode: "prefix",
   fieldPrefix: "",
@@ -104,6 +110,10 @@ export function skillsConfigOf(config: Record<string, unknown>): SkillsConfig {
     // line can never read as "the whole vault".
     includeRoots: [...resolveTerritories(config.includeRoots)],
     excludeRoots: [...resolveTerritories(config.excludeRoots)],
+    guardedRoots: [...resolveTerritories(config.guardedRoots)],
+    // Exact paths, not prefixes: the same trim-and-strip as a root. A line that
+    // is not a note path is KEPT, so the compile can say it matches nothing.
+    fleetWideRules: [...resolveTerritories(config.fleetWideRules)],
     tagPrefix: str("tagPrefix"),
     fieldMode,
     fieldPrefix: str("fieldPrefix"),
@@ -126,7 +136,7 @@ export function skillsConfigOf(config: Record<string, unknown>): SkillsConfig {
 export function fieldsOf(s: SkillsConfig): DetectConfig {
   return {
     mode: s.fieldMode, prefix: s.fieldPrefix, key: s.fieldKey, typeSource: s.typeSource, tagPrefix: s.tagPrefix,
-    typeMap: s.typeMap, includeRoots: s.includeRoots, excludeRoots: s.excludeRoots,
+    typeMap: s.typeMap, includeRoots: s.includeRoots, excludeRoots: s.excludeRoots, guardedRoots: s.guardedRoots, fleetWideRules: s.fleetWideRules,
   };
 }
 
@@ -197,6 +207,12 @@ export function validateSkillsConfig(config: Record<string, unknown>): string[] 
   }
   if (resolveTerritories(config.includeRoots).length === 0) {
     problems.push("include roots are EMPTY: nothing will be read until you name the folders to compile");
+  }
+  for (const p of resolveTerritories(config.fleetWideRules)) {
+    if (!/\.md$/i.test(p)) problems.push(`fleetWideRules: '${p}' is not a note path (no .md) — the list names policy notes exactly, so this line matches nothing`);
+  }
+  if (resolveTerritories(config.fleetWideRules).length > 0 && resolveTerritories(config.guardedRoots).length === 0) {
+    problems.push("fleetWideRules is set but guardedRoots is EMPTY: the list is only an exception inside a guarded territory, so it does nothing");
   }
   if (config.preloadCap !== undefined &&
       !(typeof config.preloadCap === "number" && Number.isFinite(config.preloadCap) && config.preloadCap >= 0)) {

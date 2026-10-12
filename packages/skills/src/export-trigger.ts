@@ -13,7 +13,7 @@
 // the cache has settled and every cascaded link rewrite is done, so validation always runs
 // against the consistent post-rename tree.
 
-import { fieldView, detectKind, inRoots, type DetectConfig } from "./kernel/exporter.js";
+import { fieldView, detectKind, compiles, type DetectConfig } from "./kernel/exporter.js";
 
 /** A debounced trigger, plus a `cancel()` to drop a pending call (e.g. on plugin unload,
  *  so a queued export never fires against a torn-down plugin). */
@@ -72,7 +72,7 @@ export function handleNoteChanged(file: unknown, deps: ChangeTriggerDeps): void 
   const cfg = deps.fields();
   // A typed note OUTSIDE the compiled roots is not export-relevant: the compile
   // would not read it, so its edits must not re-run the export (#404).
-  if (typeof path === "string" && !inRoots(path, cfg.includeRoots, cfg.excludeRoots)) return;
+  if (typeof path === "string" && !compiles(path, cfg)) return;
   const { view } = fieldView(fm, cfg);
   const kind = detectKind(view, fm, cfg);
   if (kind && kind !== "ambiguous") deps.requestExport();
@@ -90,8 +90,8 @@ export function handleNoteRenamed(file: unknown, oldPath: unknown, deps: ChangeT
   const path = (file as { path?: unknown } | null)?.path;
   if (typeof oldPath === "string" && deps.isSource?.(oldPath)) { deps.requestExport(); return; }
   const cfg = deps.fields();
-  const wasIn = typeof oldPath === "string" && inRoots(oldPath, cfg.includeRoots, cfg.excludeRoots);
-  const isIn = typeof path === "string" && inRoots(path, cfg.includeRoots, cfg.excludeRoots);
+  const wasIn = typeof oldPath === "string" && compiles(oldPath, cfg);
+  const isIn = typeof path === "string" && compiles(path, cfg);
   if (!wasIn && !isIn) return;
   const fm = deps.getFrontmatter(file);
   if (!fm) { if (wasIn) deps.requestExport(); return; }
