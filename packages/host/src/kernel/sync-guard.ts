@@ -6,9 +6,12 @@
 // copy of the vault and Sync merges them later. On 2026-10-10 a folder was
 // renamed on the Pro while the Pro's Sync still said "Indexing…", the rename
 // never reached the server, and the Air's writes under the old path came back
-// as a twin folder. This guard waits for "Fully synced" before a write, then
-// refuses a STRUCTURE write (rename, move, delete, create) that is still
-// behind, and lets a CONTENT write (edit, append) go on with a warning.
+// as a twin folder. This guard waits, before a write, while this Mac is
+// disconnected from the Sync server or has a server change waiting at a path
+// the write names; then it refuses a STRUCTURE write (rename, move, delete,
+// create) that is still behind, and lets a CONTENT write (edit, append) go on
+// with a warning. Since #528 it does not judge Sync's status text, which says
+// "Indexing..." for most of a busy day.
 //
 // Obsidian-free and pure: the Sync state arrives as a plain snapshot
 // (server.ts reads it from Obsidian's internal Sync plugin, one named field at
@@ -23,6 +26,7 @@
 // does not go through vault-mcp, is not covered (01.43 rule 7).
 
 import { MCP_SURFACE_INVENTORY, type SyncKindSpec } from "./operations/inventory-mcp.js";
+import { collectPaths } from "../guard.js";
 
 // ── settings ─────────────────────────────────────────────────────────────────
 
@@ -38,7 +42,7 @@ export interface SyncGuardSettings {
    * wait and only warns. Content writes always wait, then warn.
    */
   mode: SyncGuardMode;
-  /** How long to wait for "Fully synced", in seconds. */
+  /** How long to wait for Sync to catch up (connected, nothing pending at the write's paths), in seconds. */
   waitSeconds: number;
   /** When the Sync object is missing or its fields have changed shape. */
   onUnknown: SyncGuardOnUnknown;
@@ -80,9 +84,13 @@ export interface SyncFields {
   ready: unknown;
   error: unknown;
   pause: unknown;
+  /** The status text ("Fully synced", "Indexing...", "Uploading …"). Reported, never judged: measured
+   *  2026-10-12, it says "Indexing..." for most of the day while the fleet writes (#528). */
   syncStatus: unknown;
-  /** The length of `newServerFiles`, or undefined when it is not an array. */
-  newServerFiles: unknown;
+  /** The paths of `newServerFiles` (server changes not yet pulled), or undefined when it is not an array. */
+  pendingPaths: unknown;
+  /** Whether the socket to the Sync server is open (`server.socket.readyState === 1`); false when there is no socket. */
+  socketOpen: unknown;
   /** `server.lastMessageTs`, ms since the epoch. */
   lastMessageTs: unknown;
 }
@@ -109,6 +117,7 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
     const inst = plugin.instance;
     if (!inst || typeof inst !== "object") return { state: "unknown", why: "the Sync plugin is on but has no instance" };
     const nsf = inst.newServerFiles;
+    const socket = inst.server?.socket;
     return {
       state: "fields",
       fields: {
@@ -116,7 +125,9 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
         error: inst.error,
         pause: inst.pause,
         syncStatus: inst.syncStatus,
-        newServerFiles: Array.isArray(nsf) ? nsf.length : undefined,
+        // Only the path of each waiting server change (a vault path), never the record.
+        pendingPaths: Array.isArray(nsf) ? nsf.map((e: { path?: unknown }) => (typeof e?.path === "string" ? e.path : "")).filter(Boolean) : undefined,
+        socketOpen: socket == null ? false : socket.readyState === 1,
         lastMessageTs: inst.server?.lastMessageTs,
       },
     };
@@ -125,37 +136,53 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
   }
 }
 
-/** "Fully synced" can stay on screen after the socket drops: a server message older than this means the link is not alive. */
+/** A status can stay on screen after the socket drops: a server message older than this means the link is not alive. */
 export const STALE_SERVER_MS = 2 * 60 * 1000;
 
 export type SyncVerdict = { kind: "off" } | { kind: "synced" } | { kind: "behind"; status: string } | { kind: "unknown"; why: string };
 
+/** True when a waiting server change is at `path`, under it (a folder), or is a folder that holds it. */
+function pendingTouches(pending: string, target: string): boolean {
+  return pending === target || pending.startsWith(target + "/") || target.startsWith(pending + "/");
+}
+
 /**
- * Judge a snapshot. Behind when `ready` is false, or `error` or `pause` is
- * true, or `syncStatus` is not "Fully synced", or server changes wait to be
- * pulled, or the last server message is older than STALE_SERVER_MS. Unknown
- * when a field the test needs is missing or of another type.
+ * Judge a snapshot for a write that names `targets` (vault paths; none for a
+ * general reading such as obsidian_doctor's). Behind when Sync is not ready,
+ * has an error, is paused, has no open socket to its server, has had no
+ * server message for STALE_SERVER_MS, or has a server change waiting to be
+ * pulled at one of the targets (or a folder holding one, or a note under a
+ * target folder). The status text is NOT judged (#528): measured on the Pro
+ * on 2026-10-12, it said "Indexing..." through 45 minutes of fleet writes
+ * while the socket was open and changes flowed, so judging it refused nearly
+ * every create. Local indexing and uploads are not behind: this Mac's own
+ * change goes up after it is written. Unknown when a field the test needs is
+ * missing or of another type.
  */
-export function judgeSync(s: SyncSnapshot, now: number): SyncVerdict {
+export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string[] = []): SyncVerdict {
   if (s.state === "off") return { kind: "off" };
   if (s.state === "unknown") return { kind: "unknown", why: s.why };
   const f = s.fields;
   const bad: string[] = [];
   if (typeof f.ready !== "boolean") bad.push("ready");
   if (typeof f.pause !== "boolean") bad.push("pause");
-  if (typeof f.syncStatus !== "string") bad.push("syncStatus");
-  if (typeof f.newServerFiles !== "number") bad.push("newServerFiles");
+  if (!Array.isArray(f.pendingPaths)) bad.push("newServerFiles");
+  if (typeof f.socketOpen !== "boolean") bad.push("server.socket");
   if (typeof f.lastMessageTs !== "number" || !Number.isFinite(f.lastMessageTs)) bad.push("server.lastMessageTs");
   if (bad.length) return { kind: "unknown", why: `Sync fields missing or changed: ${bad.join(", ")}` };
-  const status = f.syncStatus as string;
+  const status = typeof f.syncStatus === "string" ? f.syncStatus : "?";
   if (f.ready === false) return { kind: "behind", status: `not ready (${status})` };
   // Measured 2026-10-12 on the Pro: `error` is a boolean (false when well). Only a literal true counts.
   if (f.error === true) return { kind: "behind", status: `error (${status})` };
   if (f.pause === true) return { kind: "behind", status: "paused" };
-  if (status !== "Fully synced") return { kind: "behind", status };
-  if ((f.newServerFiles as number) > 0) return { kind: "behind", status: `${f.newServerFiles} server change(s) not yet pulled` };
+  if (f.socketOpen === false) return { kind: "behind", status: "disconnected from the Sync server" };
   const age = now - (f.lastMessageTs as number);
   if (age > STALE_SERVER_MS) return { kind: "behind", status: `no message from the Sync server for ${Math.round(age / 1000)} s` };
+  const pending = f.pendingPaths as string[];
+  for (const t of targets) {
+    const hit = pending.find((p) => pendingTouches(p, t));
+    if (hit !== undefined) return { kind: "behind", status: `a server change to '${hit}' is not yet pulled` };
+  }
   return { kind: "synced" };
 }
 
@@ -213,7 +240,8 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   if (!settings.enabled) return null;
   const kind = syncKindOf(tool, args);
   if (kind === null) return null;
-  let v = judgeSync(deps.read(), deps.now());
+  const targets = collectPaths(args);
+  let v = judgeSync(deps.read(), deps.now(), targets);
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
   const shouldWait = !deps.skipWait && (kind === "content" || settings.mode !== "warn");
@@ -222,7 +250,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     const poll = Math.max(50, deps.pollMs ?? 500);
     while (v.kind === "behind" && deps.now() < deadline) {
       await deps.sleep(Math.min(poll, Math.max(0, deadline - deps.now())));
-      v = judgeSync(deps.read(), deps.now());
+      v = judgeSync(deps.read(), deps.now(), targets);
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
@@ -236,7 +264,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
         message:
           `'${tool}' is a structure write (it can rename, move, delete or create a note), and this Mac's Obsidian Sync is behind${waited}: ${v.status}. ` +
           "Nothing was written. Such a write holds only once the other devices pull it, and made while Sync is behind it can come back as a twin. " +
-          "Retry when Sync says Fully synced. (vault-mcp setting: Sync guard.)",
+          "Retry when Sync has pulled that change, or is connected again. (vault-mcp setting: Sync guard.)",
       },
     };
   }

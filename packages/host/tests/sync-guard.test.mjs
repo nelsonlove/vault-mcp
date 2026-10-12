@@ -20,8 +20,9 @@ import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore } from ".
 import { makeGuarded, withSyncWarning } from "../src/mcp/guarded.ts";
 
 const NOW = 1_800_000_000_000;
-const synced = (over = {}) => ({ state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: 0, lastMessageTs: NOW - 1000, ...over } });
-const behind = (status = "Indexing...") => synced({ syncStatus: status });
+const synced = (over = {}) => ({ state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Fully synced", pendingPaths: [], socketOpen: true, lastMessageTs: NOW - 1000, ...over } });
+// Behind for every write: the socket to the Sync server is closed.
+const behind = () => synced({ socketOpen: false });
 
 describe("settings", () => {
   test("ships off, refuse, 30 s, warn on unknown", () => {
@@ -39,7 +40,7 @@ describe("settings", () => {
 });
 
 describe("judgeSync — what behind means", () => {
-  test("synced only when ready, no error, not paused, Fully synced, nothing to pull, and a fresh server message", () => {
+  test("synced when ready, no error, not paused, connected, with a fresh server message and nothing pending at the write's paths", () => {
     assert.deepEqual(judgeSync(synced(), NOW), { kind: "synced" });
     assert.deepEqual(judgeSync({ state: "off" }, NOW), { kind: "off" });
   });
@@ -48,8 +49,7 @@ describe("judgeSync — what behind means", () => {
       [{ ready: false }, /not ready/],
       [{ error: true }, /error/],
       [{ pause: true }, /paused/],
-      [{ syncStatus: "Uploading a.md" }, /Uploading a\.md/],
-      [{ newServerFiles: 3 }, /3 server change/],
+      [{ socketOpen: false }, /disconnected/],
       [{ lastMessageTs: NOW - STALE_SERVER_MS - 1 }, /no message from the Sync server/],
     ]) {
       const v = judgeSync(synced(over), NOW);
@@ -57,15 +57,32 @@ describe("judgeSync — what behind means", () => {
       assert.match(v.status, re);
     }
   });
+  test("#528: the status text is not judged: Indexing and Uploading are synced while connected", () => {
+    for (const st of ["Indexing...", "Uploading a.md", "Downloading b.md", "anything new"]) {
+      assert.deepEqual(judgeSync(synced({ syncStatus: st }), NOW, ["X.md"]), { kind: "synced" }, st);
+    }
+  });
+  test("#528: a pending server change counts only at the write's own paths (the note, a folder holding it, or a note under a target folder)", () => {
+    const s = synced({ pendingPaths: ["A/B.md", "Busy/Other.md", "Dir"] });
+    assert.equal(judgeSync(s, NOW, ["A/B.md"]).kind, "behind");
+    assert.match(judgeSync(s, NOW, ["A/B.md"]).status, /A\/B\.md/);
+    assert.equal(judgeSync(s, NOW, ["A"]).kind, "behind", "a folder target holding a pending note");
+    assert.equal(judgeSync(s, NOW, ["Dir/New.md"]).kind, "behind", "a pending folder holding the target");
+    assert.equal(judgeSync(s, NOW, ["Busy/Mine.md"]).kind, "synced", "a pending note beside the target does not count");
+    assert.equal(judgeSync(s, NOW, ["AB.md"]).kind, "synced", "a name that only starts the same does not count");
+    assert.equal(judgeSync(s, NOW).kind, "synced", "with no targets (the doctor's reading) pending changes are not judged");
+  });
   test("error counts only as a literal true (it is a boolean, false when well; measured 2026-10-12)", () => {
     assert.deepEqual(judgeSync(synced({ error: false }), NOW), { kind: "synced" });
     assert.deepEqual(judgeSync(synced({ error: "stale" }), NOW), { kind: "synced" });
   });
   test("a missing or changed field is unknown, and names the field", () => {
-    const v = judgeSync(synced({ syncStatus: undefined, lastMessageTs: "x" }), NOW);
+    const v = judgeSync(synced({ pendingPaths: undefined, socketOpen: undefined, lastMessageTs: "x" }), NOW);
     assert.equal(v.kind, "unknown");
-    assert.match(v.why, /syncStatus/);
+    assert.match(v.why, /newServerFiles/);
+    assert.match(v.why, /server\.socket/);
     assert.match(v.why, /server\.lastMessageTs/);
+    assert.equal(judgeSync(synced({ syncStatus: undefined }), NOW).kind, "synced", "the status text is optional now");
   });
 });
 
@@ -123,7 +140,7 @@ describe("decideSync", () => {
     const c = clock([behind()]);
     const d = await decideSync("obsidian_move_note", {}, c.deps({ waitSeconds: 5 }));
     assert.equal(d.refuse.code, SYNC_BEHIND);
-    assert.match(d.refuse.message, /Indexing\.\.\./);
+    assert.match(d.refuse.message, /disconnected/);
     assert.match(d.refuse.message, /Nothing was written/);
     assert.equal(c.sleeps.reduce((a, b) => a + b, 0), 5000);
   });
@@ -139,7 +156,7 @@ describe("decideSync", () => {
   test("mode warn: no wait at all, only a warning", async () => {
     const c = clock([behind()]);
     const d = await decideSync("obsidian_move_note", {}, c.deps({ mode: "warn" }));
-    assert.match(d.warn, /behind \(Indexing/);
+    assert.match(d.warn, /behind \(disconnected/);
     assert.equal(c.sleeps.length, 0);
   });
   test("a content write always waits, then warns, in every mode", async () => {
@@ -197,11 +214,18 @@ describe("readSyncSnapshot — only the named fields", () => {
     assert.equal(s.state, "unknown");
     assert.doesNotMatch(JSON.stringify(s), /secret/);
   });
-  test("copies the six fields and nothing else: never the key or the salt", () => {
-    const inst = { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: [1, 2], server: { lastMessageTs: NOW }, key: "KEY-BYTES", salt: "SALT-BYTES", deviceName: "MacBook Pro" };
+  test("copies the named fields and nothing else: never the key or the salt, only each pending change's path", () => {
+    const inst = { ready: true, error: null, pause: false, syncStatus: "Indexing...", newServerFiles: [{ path: "a.md", hash: "HASH-1", device: "MacBook Air" }, { path: "b/c.md" }], server: { lastMessageTs: NOW, socket: { readyState: 1 } }, key: "KEY-BYTES", salt: "SALT-BYTES", deviceName: "MacBook Pro" };
     const s = readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: true, instance: inst } } } });
-    assert.deepEqual(s, { state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Fully synced", newServerFiles: 2, lastMessageTs: NOW } });
-    assert.doesNotMatch(JSON.stringify(s), /KEY|SALT/);
+    assert.deepEqual(s, { state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Indexing...", pendingPaths: ["a.md", "b/c.md"], socketOpen: true, lastMessageTs: NOW } });
+    assert.doesNotMatch(JSON.stringify(s), /KEY|SALT|HASH|MacBook/);
+  });
+  test("no socket, or one that is not open, is socketOpen false", () => {
+    const base = { ready: true, error: false, pause: false, syncStatus: "x", newServerFiles: [], key: "K" };
+    const read = (server) => readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: true, instance: { ...base, server } } } } }).fields.socketOpen;
+    assert.equal(read({ lastMessageTs: NOW }), false);
+    assert.equal(read({ lastMessageTs: NOW, socket: null }), false);
+    assert.equal(read({ lastMessageTs: NOW, socket: { readyState: 3 } }), false);
   });
 });
 
@@ -284,5 +308,17 @@ describe("makeGuarded with the Sync guard", () => {
     const err = { isError: true, content: [{ type: "text", text: "Error" }] };
     assert.equal(withSyncWarning(err, w), err);
     assert.match(withSyncWarning(r, w).content[1].text, /^Warning \[sync_unknown\]: w/);
+  });
+});
+
+describe("#528: decideSync judges pending changes at the call's own paths", () => {
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  test("a move whose source has a server change waiting is refused; one elsewhere goes on", async () => {
+    const s = synced({ syncStatus: "Indexing...", pendingPaths: ["Inbox/A.md"] });
+    assert.equal((await decideSync("obsidian_move_note", { from: "Inbox/A.md", to: "Done/A.md" }, deps(s))).refuse.code, SYNC_BEHIND);
+    assert.equal(await decideSync("obsidian_move_note", { from: "Inbox/B.md", to: "Done/B.md" }, deps(s)), null);
+  });
+  test("a create while Sync says Indexing and is connected goes on with nothing to say", async () => {
+    assert.equal(await decideSync("obsidian_write_note", { path: "New/N.md", overwrite: false }, deps(synced({ syncStatus: "Indexing...", pendingPaths: ["Other/X.md"] }))), null);
   });
 });
