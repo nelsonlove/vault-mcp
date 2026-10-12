@@ -120,8 +120,10 @@ describe("vaultmcp-skills satellite: the six published tools", () => {
 // ── 2. the settings tab's fields ────────────────────────────────────────────
 
 describe("vaultmcp-skills satellite: settings fields", () => {
-  test("renders fourteen fields — the nine from the standalone settings tab, exportOnSave, the preload cap, and the three #404 settings (type map, include roots, exclude roots)", () => {
-    assert.equal(SKILLS_FIELDS.length, 14);
+  test("renders sixteen fields — the nine from the standalone settings tab, exportOnSave, the preload cap, the three #404 settings (type map, include roots, exclude roots), and the two of 01.61 rule 8a (guarded territories, fleet-wide rules)", () => {
+    assert.equal(SKILLS_FIELDS.length, 16);
+    assert.equal(SKILLS_FIELDS.find((f) => f.key === "guardedRoots").type, "lines");
+    assert.equal(SKILLS_FIELDS.find((f) => f.key === "fleetWideRules").type, "lines");
     assert.equal(SKILLS_FIELDS.find((f) => f.key === "typeMap").type, "typemap");
     assert.equal(SKILLS_FIELDS.find((f) => f.key === "includeRoots").type, "lines");
     assert.equal(SKILLS_FIELDS.find((f) => f.key === "excludeRoots").type, "lines");

@@ -44,6 +44,24 @@ export interface DetectConfig extends FieldConfig {
   /** Folders under an include root the compiler must NOT read (a template folder,
    *  a natively-loaded folder). Same boundary rule. */
   excludeRoots?: readonly string[];
+  /** GUARDED TERRITORIES (01.61 rule 8a): folders whose notes never reach the
+   *  fleet-wide plugin, at any depth: not as a compile unit, and not through an
+   *  embed (`![[X]]` of a note there is refused, and neither its text nor its
+   *  name is written into the output or a warning). Same boundary rule as the
+   *  roots. A guarded territory's policies travel only in its own lead's
+   *  charter, which this compile does not build. */
+  guardedRoots?: readonly string[];
+  /** THE ONE EXCEPTION to `guardedRoots` (01.61 rule 8a as amended 2026-10-12,
+   *  on Nelson's ruling on "Revise the divorce-area rules around data loss"):
+   *  the vault paths, EXACTLY (no folders, no prefixes), of the policy notes
+   *  under a guarded territory that state its data-loss rules and hold no case
+   *  content. Each compiles into the fleet-wide plugin like any policy, whether
+   *  or not an include root covers it; it must still pass rule 8 and be typed
+   *  `policy`, and it still needs a parent agent in the compile. A listed path
+   *  that is not a policy is refused, and a listed path outside every guarded
+   *  root is ignored as an exception (named in a warning). The operator writes
+   *  the list; nothing in a note can put itself on it. */
+  fleetWideRules?: readonly string[];
 }
 
 export const DEFAULT_FIELDS: FieldConfig = { mode: "prefix", prefix: "", key: "vault-skills" };
@@ -89,12 +107,43 @@ export function inRoots(path: string, include: readonly string[] | undefined, ex
   if (include === undefined) return true;
   return include.some((r) => matchesTerritoryPrefix(path, r));
 }
+
+/** A vault path as the exception list compares it: NFC, case folded, no
+ *  leading `/` or `./`. The Mac's disk ignores case and Unicode form, so the
+ *  list must too, or a respelled path would leave a rule out in silence. */
+function listKey(p: string): string {
+  return p.normalize("NFC").replace(/^(\.\/|\/)+/, "").toLowerCase();
+}
+
+/** Where a vault path stands against the guarded territories (01.61 rule 8a):
+ *  `"outside"` (no guarded root covers it), `"rule"` (it is on the
+ *  `fleetWideRules` list and under a guarded root), or `"territory"` (under a
+ *  guarded root and not on the list: it never reaches the fleet-wide plugin). */
+export type GuardedReach = "outside" | "rule" | "territory";
+export function guardedReach(path: string, fields: Pick<DetectConfig, "guardedRoots" | "fleetWideRules">): GuardedReach {
+  const guarded = fields.guardedRoots ?? [];
+  const pn = path.normalize("NFC");
+  if (!guarded.some((r) => matchesTerritoryPrefix(pn, r.normalize("NFC")))) return "outside";
+  const key = listKey(path);
+  return (fields.fleetWideRules ?? []).some((p) => listKey(p) === key) ? "rule" : "territory";
+}
+
+/** Whether the compile reads a path: a guarded territory never, a listed
+ *  fleet-wide rule always (subject to the exclude roots), anything else by the
+ *  roots. The one predicate collection, the agent picker and the export
+ *  trigger share. */
+export function compiles(path: string, fields: DetectConfig): boolean {
+  const reach = guardedReach(path, fields);
+  if (reach === "territory") return false;
+  if (reach === "rule") return !(fields.excludeRoots ?? []).some((r) => matchesTerritoryPrefix(path, r));
+  return inRoots(path, fields.includeRoots, fields.excludeRoots);
+}
 /** The vault paths of the AGENT notes a mark could attach to: inside the roots and
  *  mapped to `agent`, exactly as the compile would see them. Pure, so the GUI
  *  picker's filter (commands.ts) is pinned headlessly rather than read as a claim. */
 export function agentCandidates(notes: ReadonlyArray<{ path: string; frontmatter?: Record<string, unknown> | null }>, fields: DetectConfig): string[] {
   return notes
-    .filter((n) => n.frontmatter && inRoots(n.path, fields.includeRoots, fields.excludeRoots))
+    .filter((n) => n.frontmatter && compiles(n.path, fields))
     .filter((n) => detectKind(fieldView(n.frontmatter!, fields).view, n.frontmatter!, fields) === "agent")
     .map((n) => n.path);
 }
@@ -280,7 +329,12 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
   const acceptanceHere: Map<string, SourceAcceptance> = acceptance ?? new Map();
   // Embeds are gated like notes (01.41 rule 8 is over the prompt's TEXT): an
   // embed target without a human verification is not inlined, at any depth.
+  // A guarded territory is refused at every embed depth too (01.61 rule 8a):
+  // its text and its name stay out of the output and the warnings.
+  const guardedEmbeds = { n: 0 };
   const gate = {
+    guarded: (p: string) => guardedReach(p, fields) === "territory",
+    guardedCount: guardedEmbeds,
     accept: (e: { path: string; content: string; frontmatter?: Record<string, unknown> | null }) => {
       if (!acceptedEmbed(e)) return false;
       const rec = embedAcceptance(e);
@@ -292,6 +346,8 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
   const resolve = warnings
     ? (body: string, from: string, sources: Set<string>) => resolveTransclusions(body, from, src.embed, warnings, sources, gate)
     : null;
+  let guardedSkipped = 0;
+  let listedNotPolicy = 0;
   // Frontmatter-mode notes whose `type` the map does not name: counted per
   // spelling and reported ONCE per spelling, so an operator who has not mapped
   // `Note/AgentPolicy` yet sees "17 notes carry it" rather than 17 lines — and
@@ -301,7 +357,12 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
   // not a candidate and would flood the list.
   const unmapped = new Map<string, number>();
   for (const note of await src.notes()) {
-    if (!inRoots(note.path, fields.includeRoots, fields.excludeRoots)) continue;
+    const reach = guardedReach(note.path, fields);
+    if (reach === "territory") {
+      if (note.frontmatter) guardedSkipped += 1;
+      continue;
+    }
+    if (!compiles(note.path, fields)) continue;
     const fm = note.frontmatter;
     if (!fm) continue; // both modes key off frontmatter (type: field, or the note's tags: list)
     const { view, parent } = fieldView(fm, fields);
@@ -314,6 +375,13 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
       if ((fields.typeSource ?? "frontmatter") === "frontmatter" && typeof view.type === "string" && /agent|skill|policy|command/i.test(view.type)) {
         unmapped.set(view.type, (unmapped.get(view.type) ?? 0) + 1);
       }
+      continue;
+    }
+    // A listed fleet-wide rule compiles only as a POLICY (01.61 rule 8a): the
+    // exception is for the data-loss rules, and any other kind stays in the
+    // territory. Counted, not named: its path is case material.
+    if (reach === "rule" && kind !== "policy") {
+      listedNotPolicy += 1;
       continue;
     }
     // THE ACCEPTANCE GATE (01.41 rule 8; 01.61 rule 11 as strict exclusion,
@@ -344,6 +412,14 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
     warnings?.push(`${n} note(s) carry type '${spelling}', which the type map does not name — skipped (map it to skill/agent/policy/command in the plugin settings, or leave it unmapped on purpose)`);
   }
   if (excludedHere.length || refusedHere.size) warnings?.push(excludedWarning(excludedHere, refusedHere));
+  if (guardedSkipped) warnings?.push(`${guardedSkipped} typed note(s) under a guarded territory kept out of the fleet-wide plugin (01.61 rule 8a); they travel only in the territory's own lead's charter`);
+  if (listedNotPolicy) warnings?.push(`${listedNotPolicy} note(s) on the fleet-wide rules list are not policies — kept out (01.61 rule 8a: only the data-loss rules, as policy notes, compile fleet-wide)`);
+  if (guardedEmbeds.n) warnings?.push(`${guardedEmbeds.n} embed(s) of a note in a guarded territory refused (01.61 rule 8a); a marker stands in place of each, naming no path`);
+  for (const p of fields.fleetWideRules ?? []) {
+    if (!(fields.guardedRoots ?? []).some((r) => matchesTerritoryPrefix(p, r))) {
+      warnings?.push(`${p}: on the fleet-wide rules list but under no guarded root — the list is only for guarded territories, so it is ignored as an exception`);
+    }
+  }
   if (fields.includeRoots !== undefined && fields.includeRoots.length === 0) {
     warnings?.push("include roots are EMPTY — nothing was read; name the folders to compile in the plugin settings");
   }

@@ -42,6 +42,10 @@ export interface SkillsConfig {
   includeRoots: string[];
   /** Folders under an include root the compiler must not read. */
   excludeRoots: string[];
+  /** 01.61 rule 8a: folders whose notes never reach the fleet-wide plugin. */
+  guardedRoots: string[];
+  /** 01.61 rule 8a's exception: exact vault paths of the data-loss rule policies under a guarded root. */
+  fleetWideRules: string[];
   /** Tags mode: `#{tagPrefix}{kind}` (e.g. `agent/` -> `#agent/skill`). */
   tagPrefix: string;
   /** How the vault-skills frontmatter fields are namespaced. */
@@ -75,6 +79,8 @@ export const DEFAULT_SKILLS_CONFIG: SkillsConfig = {
   typeMap: {},
   includeRoots: [],
   excludeRoots: [],
+  guardedRoots: [],
+  fleetWideRules: [],
   tagPrefix: "agent/",
   fieldMode: "prefix",
   fieldPrefix: "",
@@ -104,6 +110,9 @@ export function skillsConfigOf(config: Record<string, unknown>): SkillsConfig {
     // line can never read as "the whole vault".
     includeRoots: [...resolveTerritories(config.includeRoots)],
     excludeRoots: [...resolveTerritories(config.excludeRoots)],
+    guardedRoots: [...resolveTerritories(config.guardedRoots)],
+    // Exact paths, not prefixes: the same trim-and-strip as a root, and each must name a note.
+    fleetWideRules: [...resolveTerritories(config.fleetWideRules)].filter((p) => /\.md$/i.test(p)),
     tagPrefix: str("tagPrefix"),
     fieldMode,
     fieldPrefix: str("fieldPrefix"),
@@ -126,7 +135,7 @@ export function skillsConfigOf(config: Record<string, unknown>): SkillsConfig {
 export function fieldsOf(s: SkillsConfig): DetectConfig {
   return {
     mode: s.fieldMode, prefix: s.fieldPrefix, key: s.fieldKey, typeSource: s.typeSource, tagPrefix: s.tagPrefix,
-    typeMap: s.typeMap, includeRoots: s.includeRoots, excludeRoots: s.excludeRoots,
+    typeMap: s.typeMap, includeRoots: s.includeRoots, excludeRoots: s.excludeRoots, guardedRoots: s.guardedRoots, fleetWideRules: s.fleetWideRules,
   };
 }
 
