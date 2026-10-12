@@ -322,3 +322,39 @@ describe("#528: decideSync judges pending changes at the call's own paths", () =
     assert.equal(await decideSync("obsidian_write_note", { path: "New/N.md", overwrite: false }, deps(synced({ syncStatus: "Indexing...", pendingPaths: ["Other/X.md"] }))), null);
   });
 });
+
+describe("#529 review: tools that do not name where they write, the hold, and the message", () => {
+  const deps = (state, settings = {}) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, ...settings }), read: () => state, now: () => NOW, sleep: async () => {} });
+  test("the scheme tools and periodic_note check every pending change", async () => {
+    const s = synced({ pendingPaths: ["Elsewhere/X.md"] });
+    for (const [tool, args] of [["obsidian_renumber_address", { path: "A.md", to_address: "06.20" }], ["obsidian_assign_address", { path: "A.md", scope: "06" }], ["obsidian_refile_address", { path: "A.md" }], ["obsidian_periodic_note", { period: "daily" }]]) {
+      const d = await decideSync(tool, args, deps(s));
+      assert.equal(d.refuse.code, SYNC_BEHIND, tool);
+      assert.match(d.refuse.message, /does not name where it writes/);
+    }
+    assert.equal(await decideSync("obsidian_periodic_note", {}, deps(synced())), null, "nothing pending: goes on");
+    assert.equal(await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, deps(s)), null, "a move that names both ends is judged at its paths");
+  });
+  test("the message names the caller's path, not the other device's", async () => {
+    const d = await decideSync("obsidian_move_note", { from: "Dir", to: "Dir2" }, deps(synced({ pendingPaths: ["Dir/Hidden secret.md"] })));
+    assert.match(d.refuse.message, /'Dir'/);
+    assert.doesNotMatch(d.refuse.message, /Hidden secret/);
+  });
+  test("a path cause is not held for the next calls; a connection cause is", async () => {
+    let t = NOW;
+    let state = synced({ pendingPaths: ["A.md"] });
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    await guard("obsidian_move_note", { from: "A.md", to: "Z.md" });
+    const after1 = sleeps.length;
+    assert.ok(after1 > 0);
+    state = synced({ pendingPaths: ["B.md"] });
+    await guard("obsidian_move_note", { from: "B.md", to: "Y.md" });
+    assert.ok(sleeps.length > after1, "a path cause on A did not skip B's wait");
+    state = synced({ socketOpen: false });
+    await guard("obsidian_move_note", { from: "C.md", to: "X.md" });
+    const after3 = sleeps.length;
+    await guard("obsidian_move_note", { from: "D.md", to: "W.md" });
+    assert.equal(sleeps.length, after3, "a connection cause holds: no second wait");
+  });
+});

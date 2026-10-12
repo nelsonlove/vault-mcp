@@ -139,7 +139,22 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
 /** A status can stay on screen after the socket drops: a server message older than this means the link is not alive. */
 export const STALE_SERVER_MS = 2 * 60 * 1000;
 
-export type SyncVerdict = { kind: "off" } | { kind: "synced" } | { kind: "behind"; status: string } | { kind: "unknown"; why: string };
+/** `scope` says what the cause hangs on: the link to the server (every write meets it) or one write's paths. */
+export type SyncVerdict =
+  | { kind: "off" }
+  | { kind: "synced" }
+  | { kind: "behind"; status: string; scope: "connection" | "path" }
+  | { kind: "unknown"; why: string };
+
+/**
+ * Structure tools that name only the note they move, not where it goes (the
+ * scheme tools compute the destination folder) or no path at all
+ * (`obsidian_periodic_note`). For them a server change waiting ANYWHERE in the
+ * vault counts, as before #528: the destination may be a folder the other
+ * device just made or renamed (#529 review 1). They are rarely used, so the
+ * wider check costs little.
+ */
+const DESTINATION_UNNAMED = new Set(["obsidian_assign_address", "obsidian_refile_address", "obsidian_renumber_address", "obsidian_periodic_note"]);
 
 /** True when a waiting server change is at `path`, under it (a folder), or is a folder that holds it. */
 function pendingTouches(pending: string, target: string): boolean {
@@ -159,7 +174,7 @@ function pendingTouches(pending: string, target: string): boolean {
  * change goes up after it is written. Unknown when a field the test needs is
  * missing or of another type.
  */
-export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string[] = []): SyncVerdict {
+export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string[] = [], anyPending = false): SyncVerdict {
   if (s.state === "off") return { kind: "off" };
   if (s.state === "unknown") return { kind: "unknown", why: s.why };
   const f = s.fields;
@@ -171,17 +186,23 @@ export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string
   if (typeof f.lastMessageTs !== "number" || !Number.isFinite(f.lastMessageTs)) bad.push("server.lastMessageTs");
   if (bad.length) return { kind: "unknown", why: `Sync fields missing or changed: ${bad.join(", ")}` };
   const status = typeof f.syncStatus === "string" ? f.syncStatus : "?";
-  if (f.ready === false) return { kind: "behind", status: `not ready (${status})` };
+  if (f.ready === false) return { kind: "behind", status: `not ready (${status})`, scope: "connection" };
   // Measured 2026-10-12 on the Pro: `error` is a boolean (false when well). Only a literal true counts.
-  if (f.error === true) return { kind: "behind", status: `error (${status})` };
-  if (f.pause === true) return { kind: "behind", status: "paused" };
-  if (f.socketOpen === false) return { kind: "behind", status: "disconnected from the Sync server" };
+  if (f.error === true) return { kind: "behind", status: `error (${status})`, scope: "connection" };
+  if (f.pause === true) return { kind: "behind", status: "paused", scope: "connection" };
+  if (f.socketOpen === false) return { kind: "behind", status: "disconnected from the Sync server", scope: "connection" };
   const age = now - (f.lastMessageTs as number);
-  if (age > STALE_SERVER_MS) return { kind: "behind", status: `no message from the Sync server for ${Math.round(age / 1000)} s` };
+  if (age > STALE_SERVER_MS) return { kind: "behind", status: `no message from the Sync server for ${Math.round(age / 1000)} s`, scope: "connection" };
   const pending = f.pendingPaths as string[];
+  if (anyPending && pending.length > 0) {
+    return { kind: "behind", status: `${pending.length} server change(s) not yet pulled, and this tool does not name where it writes`, scope: "path" };
+  }
   for (const t of targets) {
-    const hit = pending.find((p) => pendingTouches(p, t));
-    if (hit !== undefined) return { kind: "behind", status: `a server change to '${hit}' is not yet pulled` };
+    // The message names the caller's own path, never the other device's: that
+    // one may be a note the caller's allowlist hides (#529 review).
+    if (pending.some((p) => pendingTouches(p, t))) {
+      return { kind: "behind", status: `a server change at or under '${t}' is not yet pulled`, scope: "path" };
+    }
   }
   return { kind: "synced" };
 }
@@ -226,7 +247,7 @@ export interface SyncGuardDeps {
   /** Judge at once, with no wait: set by createSyncGuard while a recent wait has already run out. */
   skipWait?: boolean;
   /** Told when a wait ran out with Sync still behind. */
-  onWaitExpired?: () => void;
+  onWaitExpired?: (v: SyncVerdict) => void;
 }
 
 /**
@@ -241,7 +262,9 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   const kind = syncKindOf(tool, args);
   if (kind === null) return null;
   const targets = collectPaths(args);
-  let v = judgeSync(deps.read(), deps.now(), targets);
+  // A structure write that does not name where it writes checks every pending change.
+  const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool));
+  let v = judgeSync(deps.read(), deps.now(), targets, anyPending);
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
   const shouldWait = !deps.skipWait && (kind === "content" || settings.mode !== "warn");
@@ -250,11 +273,11 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     const poll = Math.max(50, deps.pollMs ?? 500);
     while (v.kind === "behind" && deps.now() < deadline) {
       await deps.sleep(Math.min(poll, Math.max(0, deadline - deps.now())));
-      v = judgeSync(deps.read(), deps.now(), targets);
+      v = judgeSync(deps.read(), deps.now(), targets, anyPending);
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
-    deps.onWaitExpired?.();
+    deps.onWaitExpired?.(v);
   }
   const waited = shouldWait ? ` after waiting ${settings.waitSeconds} s` : "";
   if (kind === "structure" && settings.mode === "refuse") {
@@ -297,8 +320,10 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
     const d = await decideSync(tool, args, {
       ...deps,
       skipWait: deps.now() < holdUntil,
-      onWaitExpired: () => {
-        holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
+      onWaitExpired: (v) => {
+        // Only a cause every write meets (the link to the server) is held for the
+        // next calls; a pending change at one write's paths says nothing of others' (#529 review).
+        if (v.kind === "behind" && v.scope === "connection") holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
       },
     });
     if (d === null) holdUntil = 0;
