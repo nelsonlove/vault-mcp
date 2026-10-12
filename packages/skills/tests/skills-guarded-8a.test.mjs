@@ -183,6 +183,7 @@ describe("settings and the other readers", () => {
   test("the agent picker never offers a territory agent", () => {
     const list = [{ path: AGENT, frontmatter: fm("agent") }, { path: "80-89 Divorce/80.05 Agents/CASEFACT lead.md", frontmatter: fm("agent") }];
     assert.deepEqual(agentCandidates(list, F()), [AGENT]);
+    assert.deepEqual(agentCandidates([...list, { path: CASE_SKILL, frontmatter: fm("agent") }], F({ fleetWideRules: [RULE, CASE_SKILL] })), [AGENT], "nor a listed note typed agent");
   });
   test("an edit to a territory note does not trigger an export; an edit to the listed rule does", () => {
     let n = 0;

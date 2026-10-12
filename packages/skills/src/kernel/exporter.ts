@@ -143,7 +143,9 @@ export function compiles(path: string, fields: DetectConfig): boolean {
  *  picker's filter (commands.ts) is pinned headlessly rather than read as a claim. */
 export function agentCandidates(notes: ReadonlyArray<{ path: string; frontmatter?: Record<string, unknown> | null }>, fields: DetectConfig): string[] {
   return notes
-    .filter((n) => n.frontmatter && compiles(n.path, fields))
+    // A listed rule is a policy, never an agent to mark under: the picker offers
+    // nothing from a guarded root.
+    .filter((n) => n.frontmatter && compiles(n.path, fields) && guardedReach(n.path, fields) === "outside")
     .filter((n) => detectKind(fieldView(n.frontmatter!, fields).view, n.frontmatter!, fields) === "agent")
     .map((n) => n.path);
 }
@@ -376,6 +378,7 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
     if (!fm) continue; // both modes key off frontmatter (type: field, or the note's tags: list)
     const { view, parent } = fieldView(fm, fields);
     const kind = detectKind(view, fm, fields);
+    if (kind === "ambiguous" && reach === "rule") { listedNotPolicy += 1; continue; }
     if (kind === "ambiguous") {
       warnings?.push(`${note.path}: multiple vault-skills kind tags — skipped (tag it as exactly one of skill/agent/policy)`);
       continue;
@@ -415,7 +418,7 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
       body,
       // A parent inside a guarded territory is never in the compile; name it
       // by a marker, not its path, so the broken-edge error carries no case name.
-      parentPaths: resolveParents(src, note.path, parent).map((p) => guardedReach(p, fields) === "territory" ? "⟂a note in a guarded territory (01.61 rule 8a)" : p),
+      parentPaths: resolveParents(src, note.path, parent).map((p, i) => guardedReach(p, fields) === "territory" ? `⟂a note in a guarded territory (01.61 rule 8a), parent ${i + 1}` : p),
       sources: [...sources],
     });
   }
