@@ -111,8 +111,9 @@ export function skillsConfigOf(config: Record<string, unknown>): SkillsConfig {
     includeRoots: [...resolveTerritories(config.includeRoots)],
     excludeRoots: [...resolveTerritories(config.excludeRoots)],
     guardedRoots: [...resolveTerritories(config.guardedRoots)],
-    // Exact paths, not prefixes: the same trim-and-strip as a root, and each must name a note.
-    fleetWideRules: [...resolveTerritories(config.fleetWideRules)].filter((p) => /\.md$/i.test(p)),
+    // Exact paths, not prefixes: the same trim-and-strip as a root. A line that
+    // is not a note path is KEPT, so the compile can say it matches nothing.
+    fleetWideRules: [...resolveTerritories(config.fleetWideRules)],
     tagPrefix: str("tagPrefix"),
     fieldMode,
     fieldPrefix: str("fieldPrefix"),
@@ -206,6 +207,12 @@ export function validateSkillsConfig(config: Record<string, unknown>): string[] 
   }
   if (resolveTerritories(config.includeRoots).length === 0) {
     problems.push("include roots are EMPTY: nothing will be read until you name the folders to compile");
+  }
+  for (const p of resolveTerritories(config.fleetWideRules)) {
+    if (!/\.md$/i.test(p)) problems.push(`fleetWideRules: '${p}' is not a note path (no .md) — the list names policy notes exactly, so this line matches nothing`);
+  }
+  if (resolveTerritories(config.fleetWideRules).length > 0 && resolveTerritories(config.guardedRoots).length === 0) {
+    problems.push("fleetWideRules is set but guardedRoots is EMPTY: the list is only an exception inside a guarded territory, so it does nothing");
   }
   if (config.preloadCap !== undefined &&
       !(typeof config.preloadCap === "number" && Number.isFinite(config.preloadCap) && config.preloadCap >= 0)) {

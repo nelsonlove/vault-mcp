@@ -333,7 +333,16 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
   // its text and its name stay out of the output and the warnings.
   const guardedEmbeds = { n: 0 };
   const gate = {
-    guarded: (p: string) => guardedReach(p, fields) === "territory",
+    // A listed rule embeds only as what the list allows: a policy, not under an
+    // exclude root. Anything else on the list is territory for an embed too.
+    guarded: (e: { path: string; content: string; frontmatter?: Record<string, unknown> | null }) => {
+      const reach = guardedReach(e.path, fields);
+      if (reach === "outside") return false;
+      if (reach === "territory" || !compiles(e.path, fields)) return true;
+      let efm: Record<string, unknown> | null | undefined = e.frontmatter;
+      if (efm === undefined) { try { efm = parseGuardFrontmatter(e.content); } catch { efm = null; } }
+      return !efm || detectKind(fieldView(efm, fields).view, efm, fields) !== "policy";
+    },
     guardedCount: guardedEmbeds,
     accept: (e: { path: string; content: string; frontmatter?: Record<string, unknown> | null }) => {
       if (!acceptedEmbed(e)) return false;
@@ -404,7 +413,9 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
       frontmatter: { ...view, type: kind },
       path: note.path,
       body,
-      parentPaths: resolveParents(src, note.path, parent),
+      // A parent inside a guarded territory is never in the compile; name it
+      // by a marker, not its path, so the broken-edge error carries no case name.
+      parentPaths: resolveParents(src, note.path, parent).map((p) => guardedReach(p, fields) === "territory" ? "⟂a note in a guarded territory (01.61 rule 8a)" : p),
       sources: [...sources],
     });
   }
@@ -412,11 +423,15 @@ export async function collectNotes(src: SkillsSource, fields: DetectConfig = DEF
     warnings?.push(`${n} note(s) carry type '${spelling}', which the type map does not name — skipped (map it to skill/agent/policy/command in the plugin settings, or leave it unmapped on purpose)`);
   }
   if (excludedHere.length || refusedHere.size) warnings?.push(excludedWarning(excludedHere, refusedHere));
-  if (guardedSkipped) warnings?.push(`${guardedSkipped} typed note(s) under a guarded territory kept out of the fleet-wide plugin (01.61 rule 8a); they travel only in the territory's own lead's charter`);
+  if (guardedSkipped) warnings?.push(`${guardedSkipped} note(s) with frontmatter under a guarded territory kept out of the fleet-wide plugin (01.61 rule 8a); they travel only in the territory's own lead's charter`);
   if (listedNotPolicy) warnings?.push(`${listedNotPolicy} note(s) on the fleet-wide rules list are not policies — kept out (01.61 rule 8a: only the data-loss rules, as policy notes, compile fleet-wide)`);
   if (guardedEmbeds.n) warnings?.push(`${guardedEmbeds.n} embed(s) of a note in a guarded territory refused (01.61 rule 8a); a marker stands in place of each, naming no path`);
   for (const p of fields.fleetWideRules ?? []) {
-    if (!(fields.guardedRoots ?? []).some((r) => matchesTerritoryPrefix(p, r))) {
+    if (!/\.md$/i.test(p)) {
+      warnings?.push(`${p}: on the fleet-wide rules list but not a note path (no .md) — the list names notes exactly, so this line matches nothing`);
+      continue;
+    }
+    if (guardedReach(p, { guardedRoots: fields.guardedRoots, fleetWideRules: [p] }) === "outside") {
       warnings?.push(`${p}: on the fleet-wide rules list but under no guarded root — the list is only for guarded territories, so it is ignored as an exception`);
     }
   }

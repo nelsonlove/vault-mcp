@@ -16,7 +16,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { collectNotes, guardedReach, compiles, agentCandidates, DEFAULT_FIELDS, runExport } from "../src/kernel/exporter.ts";
-import { skillsConfigOf, fieldsOf, DEFAULT_SKILLS_CONFIG } from "../src/kernel/skills-config.ts";
+import { skillsConfigOf, fieldsOf, DEFAULT_SKILLS_CONFIG, validateSkillsConfig } from "../src/kernel/skills-config.ts";
+import { analyzeVault } from "../src/kernel/exporter.ts";
 import { handleNoteChanged } from "../src/export-trigger.ts";
 import { TRANSCLUSION_GUARDED } from "../src/kernel/transclude.ts";
 import { SKILLS_FIELDS } from "../src/settings.ts";
@@ -86,7 +87,7 @@ describe("collectNotes", () => {
     const paths = got.map((n) => n.path).sort();
     assert.deepEqual(paths, [AGENT, RULE].sort());
     const all = warnings.join("\n");
-    assert.match(all, /2 typed note\(s\) under a guarded territory kept out/);
+    assert.match(all, /2 note\(s\) with frontmatter under a guarded territory kept out/);
     assert.ok(!all.includes("CASEFACT"), "no warning names a territory note: " + all);
   });
   test("a listed path that is not a policy is refused", async () => {
@@ -113,7 +114,7 @@ describe("collectNotes", () => {
     ];
     const embeds = {
       [CASE_NOTE]: { content: "CASEFACT secret body", frontmatter: { verified: [HUMAN] } },
-      [RULE]: { content: "Only by adding.", frontmatter: { verified: [HUMAN] } },
+      [RULE]: { content: "Only by adding.", frontmatter: fm("policy") },
     };
     const warnings = [];
     const got = await collectNotes(sourceOf(ns, embeds), F(), warnings);
@@ -124,6 +125,28 @@ describe("collectNotes", () => {
     assert.ok(!agent.sources.some((p) => p.includes("CASEFACT")));
     const all = warnings.join("\n");
     assert.match(all, /1 embed\(s\) of a note in a guarded territory refused/);
+    assert.ok(!all.includes("CASEFACT"), all);
+  });
+  test("a listed note that is not a policy is refused as an EMBED too; so is a listed rule under an exclude root", async () => {
+    const ns = [{ path: AGENT, frontmatter: fm("agent", { description: "root" }), body: "Root.\n\n![[CASEFACT skill]]\n" }];
+    const embeds = { [CASE_SKILL]: { content: "CASEFACT skill body", frontmatter: fm("skill") } };
+    const warnings = [];
+    const got = await collectNotes(sourceOf(ns, embeds), F({ fleetWideRules: [RULE, CASE_SKILL] }), warnings);
+    const agent = got.find((n) => n.path === AGENT);
+    assert.ok(agent.body.includes(TRANSCLUSION_GUARDED) && !agent.body.includes("CASEFACT"), agent.body);
+    const ns2 = [{ path: AGENT, frontmatter: fm("agent", { description: "root" }), body: "Root.\n\n![[Evidence integrity]]\n" }];
+    const got2 = await collectNotes(sourceOf(ns2, { [RULE]: { content: "Only by adding.", frontmatter: fm("policy") } }), F({ excludeRoots: ["80-89 Divorce/80.05 Agents"] }), []);
+    assert.ok(!got2[0].body.includes("Only by adding."), got2[0].body);
+  });
+  test("a parent inside a guarded territory is a broken edge whose error names no path", async () => {
+    const ns = [
+      { path: AGENT, frontmatter: fm("agent", { description: "root" }), body: "Root." },
+      { path: "03 Agents/s.md", frontmatter: fm("skill", { parent: "[[CASEFACT lead]]", description: "x" }), body: "s" },
+      { path: "80-89 Divorce/80.05 Agents/CASEFACT lead.md", frontmatter: fm("agent"), body: "CASEFACT" },
+    ];
+    const a = await analyzeVault(sourceOf(ns), F());
+    const all = [...a.errors, ...a.warnings].join("\n");
+    assert.ok(a.errors.some((e) => /unresolved parent/.test(e)), all);
     assert.ok(!all.includes("CASEFACT"), all);
   });
   test("the export writes the rule into the agent and no case text anywhere in the plugin", async () => {
@@ -143,12 +166,18 @@ describe("collectNotes", () => {
 });
 
 describe("settings and the other readers", () => {
-  test("both keys ship EMPTY and fieldsOf carries them; a non-.md list line is dropped", () => {
+  test("both keys ship EMPTY and fieldsOf carries them; a non-.md list line is KEPT and reported, never dropped in silence", async () => {
     assert.deepEqual(DEFAULT_SKILLS_CONFIG.guardedRoots, []);
     assert.deepEqual(DEFAULT_SKILLS_CONFIG.fleetWideRules, []);
-    const f = fieldsOf(skillsConfigOf({ guardedRoots: [" 80-89 Divorce ", ""], fleetWideRules: ["/" + RULE, "80-89 Divorce/80.05 Agents/policies"] }));
+    const raw = { guardedRoots: [" 80-89 Divorce ", ""], fleetWideRules: ["/" + RULE, "80-89 Divorce/80.05 Agents/policies"] };
+    const f = fieldsOf(skillsConfigOf(raw));
     assert.deepEqual(f.guardedRoots, ["80-89 Divorce"]);
-    assert.deepEqual(f.fleetWideRules, [RULE]);
+    assert.deepEqual(f.fleetWideRules, [RULE, "80-89 Divorce/80.05 Agents/policies"]);
+    assert.ok(validateSkillsConfig(raw).some((p) => /fleetWideRules: '80-89 Divorce\/80.05 Agents\/policies' is not a note path/.test(p)));
+    assert.ok(validateSkillsConfig({ fleetWideRules: [RULE] }).some((p) => /guardedRoots is EMPTY/.test(p)));
+    const warnings = [];
+    await collectNotes(sourceOf(notes()), F({ fleetWideRules: [RULE, "80-89 Divorce/80.05 Agents/policies"] }), warnings);
+    assert.ok(warnings.some((w) => /not a note path \(no \.md\)/.test(w)), warnings.join("\n"));
     for (const k of ["guardedRoots", "fleetWideRules"]) assert.ok(SKILLS_FIELDS.some((x) => x.key === k && x.type === "lines"), k);
   });
   test("the agent picker never offers a territory agent", () => {

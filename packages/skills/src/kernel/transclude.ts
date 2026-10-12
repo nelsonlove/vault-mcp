@@ -42,12 +42,12 @@ const safeLabel = (s: string): string => s.replace(/--(!?)>/g, "--$1›");
  *  are left raw and warned). */
 export const transclusionOpen = (label: string): string => `<!-- transcluded from: ${safeLabel(label)} -->`;
 export const transclusionClose = (label: string): string => `<!-- end transclusion: ${safeLabel(label)} -->`;
-/** The marker that stands where a refused embed would have been inlined (the
- *  acceptance gate): names the path, carries none of its text. */
 /** The marker that stands where an embed of a guarded-territory note would
  *  have been (01.61 rule 8a): it names no path, because the name is case
  *  material too. */
 export const TRANSCLUSION_GUARDED = "<!-- transclusion refused: a note in a guarded territory (01.61 rule 8a) -->";
+/** The marker that stands where a refused embed would have been inlined (the
+ *  acceptance gate): names the path, carries none of its text. */
 export const transclusionRefused = (path: string): string => `<!-- transclusion refused: ${safeLabel(path)} is not accepted -->`;
 
 /** Strip a single leading YAML frontmatter block. (Shared with exporter.ts.)
@@ -159,7 +159,7 @@ interface ResolveContext {
    *  the embed is refused before the acceptance gate, a marker that names NO
    *  path stands in its place, nothing is added to `sources` or `refused`, and
    *  the count goes up; the caller reports the count only. */
-  guarded?: (path: string) => boolean;
+  guarded?: (src: EmbedSource) => boolean;
   guardedCount?: { n: number };
 }
 
@@ -195,7 +195,7 @@ async function resolveBody(body: string, fromPath: string, ctx: ResolveContext):
       ctx.warnings.push(`${fromPath}: transclusion cycle through ${src.path} — left unresolved`);
       keep(); continue;
     }
-    if (ctx.guarded?.(src.path)) {
+    if (ctx.guarded?.(src)) {
       if (ctx.guardedCount) ctx.guardedCount.n += 1;
       out.push(TRANSCLUSION_GUARDED);
       continue;
@@ -256,7 +256,7 @@ export async function resolveTransclusions(
   lookup: EmbedLookup,
   warnings: string[],
   sources?: Set<string>,
-  gate?: { accept: (src: EmbedSource) => boolean; refused: Set<string>; guarded?: (path: string) => boolean; guardedCount?: { n: number } },
+  gate?: { accept: (src: EmbedSource) => boolean; refused: Set<string>; guarded?: (src: EmbedSource) => boolean; guardedCount?: { n: number } },
 ): Promise<string> {
   if (!body.includes("![[")) return body;
   return resolveBody(body, sourcePath, { lookup, warnings, chain: [sourcePath], sources, accept: gate?.accept, refused: gate?.refused, guarded: gate?.guarded, guardedCount: gate?.guardedCount });
