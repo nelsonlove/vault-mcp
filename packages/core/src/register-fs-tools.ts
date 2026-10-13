@@ -15,6 +15,19 @@ import { ok, fail } from "./responses.js";
 import { CHARACTER_LIMIT, decodeHtmlEntities } from "./fs-backend/vault.js";
 import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
+import { z } from "zod";
+
+/**
+ * The kernel arguments, named on every strict write tool here (#546 review). The plugin adds its own,
+ * fuller copies with `withKernelArgs`; the file-system server has no kernel and nothing else names
+ * them, so without these a strict write tool there would refuse an `idempotency_key` a client sends
+ * because the plugin requires it. On that server they are accepted and not checked, as before.
+ */
+const KERNEL_ARGS_FS = {
+  if_rev: z.number().optional().describe("The note's rev from a read. Checked by the Obsidian plugin's kernel; the file-system server does not check it."),
+  idempotency_key: z.string().min(1).max(200).optional().describe("A retry-safety key. Honoured by the Obsidian plugin's kernel; the file-system server does not deduplicate."),
+  intent: z.string().min(1).max(2000).optional().describe("Advisory text for the journal. Recorded by the Obsidian plugin; the file-system server does not record it."),
+};
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -112,7 +125,12 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
         // Every WRITE tool refuses an argument it does not name (#510, Nelson's pick A of 2026-10-12): a dropped
         // argument on a write is how two notes lost their frontmatter on 2026-10-09. Reads keep the SDK's
         // lenient object until someone asks for them; `strictArgs` still makes a read strict by hand.
-        inputSchema: tool.strictArgs || tool.annotations?.readOnlyHint === false ? strictInput(tool.inputSchema) : tool.inputSchema,
+        inputSchema:
+          tool.annotations?.readOnlyHint === false
+            ? strictInput({ ...KERNEL_ARGS_FS, ...tool.inputSchema })
+            : tool.strictArgs
+              ? strictInput(tool.inputSchema)
+              : tool.inputSchema,
         annotations: tool.annotations,
       },
       handler,
