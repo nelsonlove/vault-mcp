@@ -248,7 +248,7 @@ describe("the schema tells the agent before the guard does", () => {
   });
   test("server.ts passes the tool's name to withKernelArgs (source pin)", () => {
     const src = fs.readFileSync(new URL("../src/mcp/server.ts", import.meta.url), "utf8");
-    assert.match(src, /register\(name, withKernelArgs\(def, name\), handler\)/);
+    assert.match(src, /register\(name, withKernelArgs\(strictIfWrite\(def\), name\), handler\)/);
   });
 });
 

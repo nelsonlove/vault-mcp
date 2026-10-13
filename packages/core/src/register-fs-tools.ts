@@ -109,7 +109,10 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
       {
         title: tool.title,
         description: tool.description,
-        inputSchema: tool.strictArgs ? strictInput(tool.inputSchema) : tool.inputSchema,
+        // Every WRITE tool refuses an argument it does not name (#510, Nelson's pick A of 2026-10-12): a dropped
+        // argument on a write is how two notes lost their frontmatter on 2026-10-09. Reads keep the SDK's
+        // lenient object until someone asks for them; `strictArgs` still makes a read strict by hand.
+        inputSchema: tool.strictArgs || tool.annotations?.readOnlyHint === false ? strictInput(tool.inputSchema) : tool.inputSchema,
         annotations: tool.annotations,
       },
       handler,
