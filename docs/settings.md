@@ -401,6 +401,54 @@ A rename, move, delete or create (the structure kinds: `syncKind` on each row of
 | Risk | A wrong path: each call is refused with `unavailable` and nothing is written |
 | Recovery | Correct or clear the field |
 
+## Running headless
+
+For a host with no Obsidian window, such as vaultd's headless plugin host. The four keys sit under one setting, `host`, so one entry in `data.json` sets them all, for example `{"host": {"headless": "on", "stateDir": "/srv/vault-mcp/state", "autoRegisterClaude": false}}`.
+
+### Headless
+
+| Field | Value |
+|---|---|
+| Key | `host.headless` |
+| Default | Auto |
+| Effect | On: the tools that need the Obsidian app (`obsidian_open_in_editor`, `obsidian_jump_to`, `obsidian_toggle_view_mode`, `obsidian_open_workspace`, `obsidian_save_workspace`, `obsidian_list_workspaces`, `obsidian_open_bookmark`, and the tools that run the `obsidian` CLI: `obsidian_note_history`, `obsidian_note_diff`, `obsidian_base_create`, `obsidian_plugin_install`, `obsidian_plugin_uninstall`, `obsidian_cli`) are not offered; the commands that open a view or a dialog (the scheme panes, Connect to Claude Code, Run tool, Show diagnostics) are not added; and the load-time registration with Claude Code does not run. Auto: the environment variable `VAULT_MCP_HEADLESS` (`1` or `0`) decides; without it those tools refuse with `headless_unsupported` when the workspace has no leaf once its layout is ready, which Obsidian itself does not have. Off: as in Obsidian |
+| Takes effect | When the plugin next loads; the call-time refusal in Auto is live |
+| Risk | On in a real Obsidian: the editor and CLI tools disappear from every connection |
+| Recovery | Set it to Auto or Off and reload the plugin |
+
+### State folder
+
+| Field | Value |
+|---|---|
+| Key | `host.stateDir` |
+| Default | Empty: `~/.claude/vault-mcp/` (or the environment variable `VAULT_MCP_STATE_DIR`; the setting wins) |
+| Effect | Where the socket, `bridge.mjs`, the discovery file and the observation store go. Set: the plugin also writes no grace-period legacy copy into `~/.claude/governor/` |
+| Takes effect | When the plugin next loads |
+| Risk | A Claude Code registration that points at `~/.claude/vault-mcp/bridge.mjs` no longer finds this vault |
+| Recovery | Clear the field and reload the plugin |
+
+### Socket path
+
+| Field | Value |
+|---|---|
+| Key | `host.socketPath` |
+| Default | Empty: `<state folder>/<vault>.sock` |
+| Effect | The socket the plugin listens on. Point the HTTP front's `VAULT_MCP_SOCKET` at the same path |
+| Takes effect | When the plugin next loads |
+| Risk | Two vaults set to one path: the second one to load does not get the socket |
+| Recovery | Clear the field and reload the plugin |
+
+### Register with Claude Code at load
+
+| Field | Value |
+|---|---|
+| Key | `host.autoRegisterClaude` |
+| Default | On |
+| Effect | On: at load the plugin runs `claude mcp` to add itself to Claude Code when it finds the `claude` CLI. Off, or Headless on, or `VAULT_MCP_NO_AUTOREGISTER=1`: it starts no `claude` process at load. The Connect to Claude Code command still works where it exists |
+| Takes effect | When the plugin next loads |
+| Risk | Off on a new Mac: Claude Code is not connected until someone runs the command |
+| Recovery | Turn it on, or run Connect to Claude Code |
+
 ## Conformance
 
 ### Vault conventions
