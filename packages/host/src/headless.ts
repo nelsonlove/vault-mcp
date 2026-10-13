@@ -114,7 +114,7 @@ export const APP_ONLY_TOOLS: ReadonlyMap<string, string> = new Map([
  * nothing done (#540 review).
  */
 export const APP_ONLY_ARGS: ReadonlyMap<string, string> = new Map([
-  ["obsidian_periodic_note", "action \"open\" opens the note in an editor view (action \"create\" works headless)"],
+  ["obsidian_periodic_note", "action \"open\" opens the note in an editor view"],
   ["obsidian_run_command", "file_path opens a note in an editor view before the command runs (leave it out to run the command alone)"],
 ]);
 

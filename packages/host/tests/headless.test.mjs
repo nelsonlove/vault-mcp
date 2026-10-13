@@ -220,6 +220,12 @@ describe("the real server wiring", () => {
 });
 
 describe("the bridge finds a state folder outside ~/.claude", () => {
+  test("a folder read twice (a symlinked ~/.claude) gives one entry per socket, not 'multiple vaults open'", async () => {
+    const { uniqueBySocket } = await import("../bridge/bridge.ts");
+    const d = { socket_path: "/s/v.sock", vault_name: "v" };
+    assert.deepEqual(uniqueBySocket([d, { ...d }, { socket_path: "/s/w.sock", vault_name: "w" }]).map((x) => x.vault_name), ["v", "w"]);
+  });
+
   test("it reads its own folder first, then the default folders, each once; VAULT_MCP_STATE_DIR alone when set", async () => {
     const { discoveryDirs } = await import("../bridge/bridge.ts");
     assert.deepEqual(discoveryDirs("/srv/state", {}, "/home/u"), ["/srv/state", "/home/u/.claude/vault-mcp", "/home/u/.claude/governor"]);

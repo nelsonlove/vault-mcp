@@ -124,7 +124,23 @@ export function loadDiscoveries(): Discovery[] {
   // A host that keeps its state outside ~/.claude/ (the plugin's `host.stateDir`
   // setting, a headless vaultd-host) names it in VAULT_MCP_STATE_DIR, the variable
   // the plugin and the HTTP front read too; then only that folder is read.
-  return discoveryDirs().flatMap((d) => loadDiscoveryDir(d));
+  return uniqueBySocket(discoveryDirs().flatMap((d) => loadDiscoveryDir(d)));
+}
+
+/**
+ * One entry per socket. The bridge's own folder is its real path (node resolves a
+ * symlinked main module), and a default folder may be spelled through a symlink, so
+ * one folder can be read twice; two copies of one vault would then fail as "multiple
+ * vaults open" (#540 review 2). The socket path is what a discovery points at.
+ */
+export function uniqueBySocket(ds: Discovery[]): Discovery[] {
+  const seen = new Set<string>();
+  return ds.filter((d) => {
+    const key = typeof d?.socket_path === "string" ? d.socket_path : JSON.stringify(d);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** The folders the bridge reads discovery files from, in order. Pure, for tests. */
