@@ -110,7 +110,12 @@ export function loadDiscoveryDir(dir: string): Discovery[] {
   return out;
 }
 
-function loadDiscoveries(): Discovery[] {
+export function loadDiscoveries(): Discovery[] {
+  // A host that keeps its state outside ~/.claude/ (the plugin's `host.stateDir`
+  // setting, a headless vaultd-host) names it in VAULT_MCP_STATE_DIR, the variable
+  // the plugin and the HTTP front read too; then only that folder is read.
+  const custom = process.env.VAULT_MCP_STATE_DIR?.trim();
+  if (custom) return loadDiscoveryDir(path.resolve(custom));
   const home = os.homedir();
   return [
     ...loadDiscoveryDir(path.join(home, ".claude", "vault-mcp")),

@@ -183,3 +183,15 @@ describe("the real server wiring", () => {
     assert.doesNotMatch(r.content[0].text, /headless_unsupported/);
   });
 });
+
+describe("the bridge finds a state folder outside ~/.claude", () => {
+  test("VAULT_MCP_STATE_DIR set: the bridge reads discovery files there and only there", async () => {
+    const { loadDiscoveries } = await import("../bridge/bridge.ts");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vmcp-bridge-"));
+    fs.writeFileSync(path.join(dir, "headless.json"), JSON.stringify({ socket_path: path.join(dir, "headless.sock"), vault_name: "headless", vault_path: "/v" }));
+    process.env.VAULT_MCP_STATE_DIR = dir;
+    const found = loadDiscoveries();
+    assert.deepEqual(found.map((d) => d.vault_name), ["headless"]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
