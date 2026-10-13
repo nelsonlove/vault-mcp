@@ -13,7 +13,7 @@ import { findObsidianBinary } from "./tools-cli.js";
 import type { SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import type { CliCommandPolicy } from "./cli-policy.js";
 import type { SeamConsult } from "./seam.js";
-import { judgeSync, normalizeSyncGuard, readSyncSnapshot, type SyncGuardSettings, type SyncVerdict } from "../kernel/sync-guard.js";
+import { judgeSync, normalizeSyncGuard, readSyncSnapshot, type SyncGuardSettings, type SyncSnapshot, type SyncVerdict } from "../kernel/sync-guard.js";
 
 export interface ServerCtx {
   pluginVersion: string;
@@ -162,7 +162,9 @@ export interface ServerCtx {
    */
 }
 
-function syncGuardReport(settings: SyncGuardSettings, v: SyncVerdict): Record<string, unknown> {
+function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: SyncVerdict): Record<string, unknown> {
+  // Shown, not judged (#528): the status text and how many server changes wait, vault-wide.
+  const f = snap.state === "fields" ? snap.fields : null;
   return {
     enabled: settings.enabled,
     mode: settings.mode,
@@ -171,6 +173,8 @@ function syncGuardReport(settings: SyncGuardSettings, v: SyncVerdict): Record<st
     sync: v.kind,
     ...(v.kind === "behind" ? { status: v.status } : {}),
     ...(v.kind === "unknown" ? { why: v.why } : {}),
+    ...(f && typeof f.syncStatus === "string" ? { status_text: f.syncStatus } : {}),
+    ...(f && Array.isArray(f.pendingPaths) ? { pending_downloads: f.pendingPaths.length } : {}),
   };
 }
 
@@ -202,7 +206,10 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
           // Sync now — off, synced, behind (with the status) or unknown (with
           // why: an Obsidian update can change the internal fields). Only the
           // verdict travels, never the Sync plugin's object.
-          sync_guard: syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), judgeSync(readSyncSnapshot(app), Date.now())),
+          sync_guard: (() => {
+            const snap = readSyncSnapshot(app);
+            return syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), snap, judgeSync(snap, Date.now()));
+          })(),
         });
       } catch (e) { return fail(e); }
     }

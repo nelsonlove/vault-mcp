@@ -846,7 +846,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Check Obsidian Sync before a write")
       .setDesc(
-        "On: before an agent's write, vault-mcp waits for this Mac's Obsidian Sync to say Fully synced. A rename, move, delete " +
+        "On: before an agent's write, vault-mcp waits while this Mac's Obsidian Sync is disconnected or has a server change waiting at the note being written. A rename, move, delete " +
           "or create that is still behind after the wait is handled as the mode below says; an edit or append goes on with a " +
           "warning. It checks only this Mac: it cannot know what another device has pulled. Off: no check. Applies immediately."
       )
@@ -869,7 +869,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           })
       );
     new Setting(containerEl)
-      .setName("Wait for Fully synced (seconds)")
+      .setName("Wait for Sync to catch up (seconds)")
       .setDesc(`How long a write waits for Sync before the rule above applies. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`)
       .addText((t) => {
         t.setValue(String(sg.waitSeconds));
