@@ -366,6 +366,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     actor,
     wholeReads,
     noteStat,
+    noteExists: (p: string) => app.vault.getAbstractFileByPath(p) !== null,
     executor,
     sessionRefusal,
     // `jd:<address>` addressing at the interception point: same per-call

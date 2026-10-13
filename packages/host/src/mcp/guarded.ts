@@ -44,7 +44,7 @@ import {
   type SchemeRegistry,
 } from "../kernel/scheme/registry.js";
 import { OperationRefusedError, type OperationExecutor } from "../kernel/operations/executor.js";
-import { extendInput, inputShapeOf, CHARACTER_LIMIT, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, type WholeReads } from "@vault-mcp/core";
+import { extendInput, inputShapeOf, CHARACTER_LIMIT, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, type WholeReads } from "@vault-mcp/core";
 
 /** Guard/queue-level failure envelope: matches the `Error [code]: message` shape guardCall already emits. */
 function codedError(code: string, message: string) {
@@ -264,6 +264,8 @@ export interface GuardedOpts {
   /** The note's mtime (its rev) and size from ONE lookup, composed into the
    *  token a whole read is remembered under (see server.ts). */
   noteStat?: (path: string) => { mtime: number; size: number } | undefined;
+  /** Whether anything (a note or a folder) is at a vault path: the write scope's "is this a create?" (write-scope.ts). Falls back to noteStat. */
+  noteExists?: (path: string) => boolean;
   /**
    * The scope-provider registry backing `jd:<address>` (and other configured
    * scheme ids) addressing. Resolved PER CALL, like `getSettings`, so a
@@ -563,6 +565,17 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   //     destructive one: the operation still does what the caller asked, a
   //     retry just isn't deduplicated.
   const { toolArgs, ifRev, idempotencyKey, intent } = splitKernelArgs(callArgs);
+  // The write scope (core's write-scope.ts): what this session may WRITE, separate from what it may
+  // read. In create-only mode a mutating call must create a new note at a path the scope names;
+  // anything else that writes is refused here, before the queue, on the RESOLVED arguments.
+  if (isMutating) {
+    const scope = normalizeWriteScope(opts.getSettings().writeScope);
+    if (scope.mode !== "all") {
+      const exists = opts.noteExists ?? ((p: string) => opts.noteStat?.(p) !== undefined);
+      const out = writeScopeRefusal(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, collectPaths(toolArgs as Record<string, unknown>), scope, exists);
+      if (out) return codedError(out.code, out.message);
+    }
+  }
   if (isMutating && !opts.kernel && ifRev !== undefined) {
     return codedError(
       "precondition_unsupported",

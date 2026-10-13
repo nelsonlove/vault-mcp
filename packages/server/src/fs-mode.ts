@@ -48,7 +48,10 @@ import {
   readNoteWhole,
   CHARACTER_LIMIT,
   resolveInVault,
+  normalizeWriteScope,
+  writeScopeRefusal,
 } from "@vault-mcp/core";
+import { existsSync } from "node:fs";
 import type { VaultBackend, VaultWatcherHandle } from "@vault-mcp/core";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
@@ -150,6 +153,34 @@ export function getFsWriteKernel(): FsWriteKernel {
     });
   }
   return processKernel;
+}
+
+/**
+ * The write scope on this transport (core's write-scope.ts): the same value as the
+ * plugin's `writeScope` setting, as JSON in one environment variable, e.g.
+ * `{"mode":"create-only","paths":["**\/[0-9][0-9].01 Inbox/*.md"]}`. Unset or
+ * unreadable ⇒ no write rule (mode "all"), as the plugin's default. Read per call.
+ */
+export const WRITE_SCOPE_ENV_VAR = "VAULT_MCP_WRITE_SCOPE";
+
+export function fsWriteScope(env: NodeJS.ProcessEnv = process.env) {
+  const raw = env[WRITE_SCOPE_ENV_VAR]?.trim();
+  if (!raw) return normalizeWriteScope(undefined);
+  try {
+    return normalizeWriteScope(JSON.parse(raw));
+  } catch {
+    // A value that does not parse must not OPEN writes it was meant to close: refuse every write.
+    return { mode: "create-only" as const, paths: [] };
+  }
+}
+
+/** A write-scope refusal, rendered `Error [write_scope]: …` by core's fail(). */
+export class WriteScopeError extends Error {
+  readonly code = "write_scope";
+  constructor(message: string) {
+    super(message);
+    this.name = "WriteScopeError";
+  }
 }
 
 /** Env var that opts a deployment into FS-mode writes. Unset/falsy ⇒ refused. */
@@ -259,7 +290,15 @@ export function makeBackend(
     // argument refusal (#444): the kernel never queues or records an attempt
     // the vault would refuse. The paths are the op's own `target`, the same
     // set the journal records, so no key list has to be kept by hand.
-    for (const p of target.paths ?? (target.path ? [target.path] : [])) resolveInVault(p);
+    const targets = target.paths ?? (target.path ? [target.path] : []);
+    for (const p of targets) resolveInVault(p);
+    // The write scope, before the queue, as on the plugin: in create-only mode only a new note at
+    // a path the scope names; every other write is refused, unjournaled.
+    const scope = fsWriteScope();
+    if (scope.mode !== "all") {
+      const out = writeScopeRefusal(op, args, targets, scope, (p) => existsSync(resolveInVault(p)));
+      if (out) throw new WriteScopeError(out.message);
+    }
     // A cut read handed back as `content` is refused before the queue, as the
     // host's guard does (#441): unjournaled, like every argument refusal.
     const cut = cutReadError(args);

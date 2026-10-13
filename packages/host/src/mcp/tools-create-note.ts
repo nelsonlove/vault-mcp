@@ -35,7 +35,7 @@ import { z } from "zod";
 import * as nodePath from "path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { moment, normalizePath, parseYaml, stringifyYaml, type App } from "obsidian";
-import { acceptForbiddenReason, acceptTransitionReason, isVerifiedKey, strictInput, uuidv7 } from "@vault-mcp/core";
+import { acceptForbiddenReason, acceptTransitionReason, isVerifiedKey, strictInput, uuidv7, normalizeWriteScope, writeScopeRefusalForPath } from "@vault-mcp/core";
 import { ok, codedError } from "./helpers.js";
 import { isVisible, type GuardSettings } from "../guard.js";
 import { assertCreateName } from "./name-checks.js";
@@ -333,6 +333,9 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const path = notePath(folder, title);
       // The guard checks the paths a call NAMES; this one is computed, so the handler applies the same rule.
       if (!isVisible(path, ctx.getSettings())) return refuse("out_of_allowlist", `'${path}' is outside this session's path allowlist.`);
+      // The write scope (core's write-scope.ts): this tool computes its path, so it checks that path itself.
+      const scoped = writeScopeRefusalForPath(CREATE_NOTE_TOOL, path, normalizeWriteScope(ctx.getSettings().writeScope), (p) => app.vault.getAbstractFileByPath(p) !== null);
+      if (scoped) return codedError(scoped.code, scoped.message);
       if (app.vault.getAbstractFileByPath(path)) return refuse("already_exists", `'${path}' already exists. To change it, edit it in place.`);
       try {
         assertCreateName(app, path);
