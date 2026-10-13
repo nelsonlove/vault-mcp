@@ -388,6 +388,34 @@ A rename, move, delete or create (the structure kinds: `syncKind` on each row of
 | Risk | Refuse can stop every classified write after an Obsidian update until vault-mcp is fixed |
 | Recovery | Set it to Warn, or turn the guard off |
 
+## What agents may write
+
+Separate from what agents may read: the path allowlist limits reads and writes together, and this setting limits writes alone. One key, `writeScope`, in the settings tab or in `data.json`, for example `{"writeScope": {"mode": "create-only", "paths": ["**/[0-9][0-9].01 Inbox/*.md"]}}`. No folder name is built into the plugin: the patterns are the operator's.
+
+### What agents may write
+
+| Field | Value |
+|---|---|
+| Key | `writeScope.mode` |
+| Default | All |
+| Effect | All: any write that read-only mode and the allowlist allow. Create new notes only: a write is allowed only when it creates a new note at a path matching one of `writeScope.paths`, through `obsidian_write_note` (without `overwrite`), an `obsidian_write_notes` item without `if_rev`, or `obsidian_create_note`. Other writes are refused with `write_scope` before the queue: an overwrite, an edit, an append, a frontmatter change, a rename, a move, a delete, a trash, a command, a snippet or plugin change, and any tool not on that list, a satellite's included. Reads do not change |
+| Takes effect | Live, per call |
+| Risk | Create new notes only with no patterns: no writes at all |
+| Recovery | Set it to All, or add the patterns |
+
+### Where new notes may be created
+
+| Field | Value |
+|---|---|
+| Key | `writeScope.paths` |
+| Default | Empty |
+| Effect | Glob patterns over the vault-relative note path, one per line in the tab: `**` is any folders (or none), `*` and `?` stay within one name, `[0-9]` is a character class. A path is judged after `.` and `..` are resolved. Used only with Create new notes only |
+| Takes effect | Live, per call |
+| Risk | A pattern wider than meant, such as `**`, allows a new note anywhere |
+| Recovery | Narrow or remove the pattern |
+
+The filesystem server (the FS fallback of the HTTP front) reads the same value as JSON from the environment variable `VAULT_MCP_WRITE_SCOPE`. Unset: no write rule. A value that does not parse refuses all writes, so a typo does not open what it was meant to close.
+
 ## Creating notes
 
 ### Construction module for obsidian_create_note
