@@ -12,6 +12,7 @@ import {
   decideSync,
   readSyncSnapshot,
   createSyncGuard,
+  STATUS_STRICT,
   SYNC_BEHIND,
   SYNC_UNKNOWN,
 } from "../src/kernel/sync-guard.ts";
@@ -426,5 +427,35 @@ describe("#533 (Nelson's pick A): a rename, move or delete waits for Fully synce
       pollMs: 1000,
     });
     assert.equal(d, null);
+  });
+});
+
+describe("#533 review 1", () => {
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  test("the refusal for the status cause says to wait for Fully synced", async () => {
+    const d = await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, deps(synced({ syncStatus: "Indexing..." })));
+    assert.match(d.refuse.message, /Retry when Sync says Fully synced/);
+  });
+  test("a path cause at a rename's own path comes before the status cause, and keeps its wait under a status hold", async () => {
+    const v = judgeSync(synced({ syncStatus: "Indexing...", pendingPaths: ["A.md"] }), NOW, ["A.md"], false, true);
+    assert.equal(v.scope, "path");
+  });
+  test("a status hold skips the wait only for a rename, move or delete; a create is not held by it", async () => {
+    let t = NOW;
+    const sleeps = [];
+    const state = synced({ syncStatus: "Indexing..." });
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    const n = sleeps.length;
+    assert.ok(n > 0);
+    assert.equal((await guard("obsidian_trash", { path: "C.md" })).refuse.code, SYNC_BEHIND);
+    assert.equal(sleeps.length, n, "the next rename-kind call is held: no second wait");
+    assert.equal(await guard("obsidian_write_note", { path: "N.md", overwrite: false }), null, "a create is not refused by the status cause");
+  });
+  test("STATUS_STRICT is every structure row that is not a create", () => {
+    const CREATES = new Set(["obsidian_write_note", "obsidian_write_notes", "obsidian_create_note_from_template", "obsidian_base_create", "obsidian_periodic_note", "obsidian_create_note"]);
+    const structure = MCP_SURFACE_INVENTORY.filter((r) => r.syncKind === "structure").map((r) => r.tool);
+    for (const t of structure) if (!CREATES.has(t)) assert.ok(STATUS_STRICT.has(t), `${t} renames, moves or deletes but is not in STATUS_STRICT`);
+    for (const t of STATUS_STRICT) assert.ok(structure.includes(t), `${t} is in STATUS_STRICT but its row is not syncKind structure`);
   });
 });

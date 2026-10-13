@@ -144,7 +144,7 @@ export const STALE_SERVER_MS = 2 * 60 * 1000;
 export type SyncVerdict =
   | { kind: "off" }
   | { kind: "synced" }
-  | { kind: "behind"; status: string; scope: "connection" | "path" }
+  | { kind: "behind"; status: string; scope: "connection" | "path" | "status" }
   | { kind: "unknown"; why: string };
 
 /**
@@ -160,7 +160,7 @@ export type SyncVerdict =
  * the status text is judged again, so they wait for "Fully synced". Creates are not in this set:
  * judging the text for them refused nearly every create on a busy day (#528).
  */
-const STATUS_STRICT = new Set([
+export const STATUS_STRICT: ReadonlySet<string> = new Set([
   "obsidian_move_note",
   "obsidian_move_notes",
   "obsidian_assign_address",
@@ -218,13 +218,6 @@ export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string
   if (f.socketOpen === false) return { kind: "behind", status: "disconnected from the Sync server", scope: "connection" };
   const age = now - (f.lastMessageTs as number);
   if (age > STALE_SERVER_MS) return { kind: "behind", status: `no message from the Sync server for ${Math.round(age / 1000)} s`, scope: "connection" };
-  // A rename, move or delete also waits for this Mac's own changes to go up (#533, Nelson's pick A):
-  // the 2026-10-10 twin was a rename made while this Mac still said "Indexing...", and Sync gives no
-  // per-file upload signal, so only "Fully synced" proves this Mac's side is up. Creates do not judge it.
-  if (strictStatus) {
-    if (typeof f.syncStatus !== "string") return { kind: "unknown", why: "Sync fields missing or changed: syncStatus" };
-    if (f.syncStatus !== "Fully synced") return { kind: "behind", status: `this Mac's own changes are still going up (${f.syncStatus})`, scope: "connection" };
-  }
   const pending = f.pendingPaths as string[];
   if (anyPending && pending.length > 0) {
     return { kind: "behind", status: `${pending.length} server change(s) not yet pulled, and this tool does not name where it writes`, scope: "path" };
@@ -235,6 +228,13 @@ export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string
     if (pending.some((p) => pendingTouches(p, t))) {
       return { kind: "behind", status: `a server change at or under '${t}' is not yet pulled`, scope: "path" };
     }
+  }
+  // A rename, move or delete also waits for this Mac's own changes to go up (#533, Nelson's pick A):
+  // the 2026-10-10 twin was a rename made while this Mac still said "Indexing...", and Sync gives no
+  // per-file upload signal, so only "Fully synced" proves this Mac's side is up. Creates do not judge it.
+  if (strictStatus) {
+    if (typeof f.syncStatus !== "string") return { kind: "unknown", why: "Sync fields missing or changed: syncStatus" };
+    if (f.syncStatus !== "Fully synced") return { kind: "behind", status: `this Mac's own changes are still going up (${f.syncStatus})`, scope: "status" };
   }
   return { kind: "synced" };
 }
@@ -301,7 +301,8 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
   // The hold skips the wait only for a cause every write meets; a path cause still waits (#529 review 2).
-  const held = deps.skipWait === true && v.kind === "behind" && v.scope === "connection";
+  // A "status" cause (this Mac still uploading) is held only for the rename, move and delete tools that judge it.
+  const held = deps.skipWait === true && v.kind === "behind" && (v.scope === "connection" || (v.scope === "status" && strictStatus));
   const shouldWait = !held && (kind === "content" || settings.mode !== "warn");
   if (shouldWait) {
     const deadline = deps.now() + settings.waitSeconds * 1000;
@@ -322,7 +323,9 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
         message:
           `'${tool}' is a structure write (it can rename, move, delete or create a note), and this Mac's Obsidian Sync is behind${waited}: ${v.status}. ` +
           "Nothing was written. Such a write holds only once the other devices pull it, and made while Sync is behind it can come back as a twin. " +
-          "Retry when Sync has pulled that change, or is connected again. (vault-mcp setting: Sync guard.)",
+          (v.scope === "status"
+            ? "Retry when Sync says Fully synced. (vault-mcp setting: Sync guard.)"
+            : "Retry when Sync has pulled that change, or is connected again. (vault-mcp setting: Sync guard.)"),
       },
     };
   }
@@ -358,7 +361,7 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
       onWaitExpired: (v) => {
         // Only a cause every write meets (the link to the server) is held for the
         // next calls; a pending change at one write's paths says nothing of others' (#529 review).
-        if (v.kind === "behind" && v.scope === "connection") holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
+        if (v.kind === "behind" && (v.scope === "connection" || v.scope === "status")) holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
       },
     });
     // Clear the hold only after a call that was really judged and found clean:
