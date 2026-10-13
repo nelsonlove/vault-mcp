@@ -219,8 +219,8 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         "through the vault's construction module — the way to make a note with a real `type`, never a hand-typed one. " +
         "`values` fills the template's `{{VALUE:name}}` blanks (one line each; no line breaks and no `{{`); every required blank with no value is named in one refusal. " +
         "A value is written as YAML needs: a string stays a string (quoted when it must be, so `99` or `a: b #c` come through as text); pass a number or a boolean to get one. " +
-        "A value no blank uses goes into the frontmatter when the class declares that field, and is otherwise listed in the result's `unused_values`; nothing is dropped silently. " +
-        "Every note gets a `uid` and `created`/`modified` with the local offset. " +
+        "A value for a field the class declares goes into the frontmatter when the note does not already set it, even when the body used it; a value used nowhere and placed nowhere is listed in the result's `unused_values`; nothing is dropped silently. " +
+        "Every note gets a `uid` and `created`/`modified` with the local offset, and a `{{DATE:…}}` whose format ends in a time (`HH:mm` or `HH:mm:ss`) gets the offset too. " +
         "The note lands in the folder the class declares, or in `folder` when you pass it; a class that declares none needs `folder`. " +
         "`destination` picks one of several destinations a class declares. The title is `title`, else `values.title` (no `/`, `\\` or `.md`). " +
         "`frontmatter` adds keys the template does not write (e.g. `session`, `session-id`, `reports-to`); it may not set a key the rendered note already has, nor the class key (`type`). " +
@@ -301,6 +301,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const variables: Record<string, unknown> = {};
       let n = 0;
       for (const [k, v] of Object.entries(values)) {
+        if (k === "destination") continue; // the module reads it as a placement choice, never a blank
         if (String(v).trim() === "") {
           variables[k] = v; // empty is "not given", as the module reads it
           continue;
@@ -310,7 +311,8 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         variables[k] = s;
       }
       const titleStandIn = `vmcpt${mark}z`;
-      if (args.destination) variables.destination = args.destination;
+      const destination = args.destination ?? (typeof values.destination === "string" && values.destination.trim() ? values.destination : undefined);
+      if (destination) variables.destination = destination;
       variables["_invoked-by"] = "agent";
       const paramsFor = (vars: Record<string, unknown>) => ({ variables: { ...vars }, quickAddApi: { format: async (t: string) => fillDates(t) } });
 
@@ -321,7 +323,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         folder = args.folder.trim().replace(/^\/+|\/+$/g, "");
       } else {
         try {
-          folder = (await mods.resolvePlacement(renderView(app, {}, {}), args.class, paramsFor(variables), args.destination ? { destination: args.destination } : {})).trim();
+          folder = (await mods.resolvePlacement(renderView(app, {}, {}), args.class, paramsFor(variables), destination ? { destination } : {})).trim();
         } catch (e) {
           return refuse("invalid_argument", `${(e as Error).message}`);
         }
@@ -380,7 +382,8 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const fmLines = block[1].split(/\r?\n/).map((line) => {
         if (!anyStandIn.test(line)) return line;
         anyStandIn.lastIndex = 0;
-        const m = /^(\s*(?:-\s+|[^\s#:][^:]*:\s+))(.*)$/.exec(line);
+        const m = /^(\s*(?:-\s+)?(?:[^\s#:"'][^:]*:\s+)?)(.*)$/.exec(line);
+        if (m && m[1].trim() === "") return line.replace(anyStandIn, (s) => valueOf(s));
         if (!m) return line.replace(anyStandIn, (s) => valueOf(s));
         const rest = m[2].trim().replace(/^(["'])(.*)\1$/, "$2");
         const one = standIns.get(rest);
@@ -392,7 +395,6 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       if (left) return refuse("create_failed", `The class template left a token this tool cannot fill: ${left[0]}.`);
 
       let blocks = frontmatterBlocks(fmLines.join("\n"));
-      const has = (k: string) => blocks.some((b) => b.key === k);
       let rendered: Record<string, unknown>;
       try {
         const parsed = parseYaml(fmLines.join("\n"));
@@ -416,7 +418,14 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const unused: string[] = [];
       for (const [s, { name, value }] of standIns) {
         if (name === "title") continue;
-        if (declared.has(name) && !has(name) && !bindingKeys.includes(name)) blocks.push({ key: name, lines: [`${name}: ${yamlScalar(value)}`] });
+        if (!declared.has(name) || bindingKeys.includes(name)) {
+          if (!used.has(s)) unused.push(name);
+          continue;
+        }
+        const b = blocks.find((x) => x.key === name);
+        const empty = b && b.lines.length === 1 && b.lines[0].slice(b.lines[0].indexOf(":") + 1).trim().replace(/^(["'])\1$/, "") === "";
+        if (!b) blocks.push({ key: name, lines: [`${name}: ${yamlScalar(value)}`] });
+        else if (empty) b.lines = [`${name}: ${yamlScalar(value)}`];
         else if (!used.has(s)) unused.push(name);
       }
 
@@ -426,7 +435,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const stamp = String(now.format("YYYY-MM-DDTHH:mm:ssZ"));
       for (const k of ["created", "modified"]) {
         const b = blocks.find((x) => x.key === k);
-        const v = b ? b.lines[0].slice(b.lines[0].indexOf(":") + 1).trim() : "";
+        const v = b ? b.lines[0].slice(b.lines[0].indexOf(":") + 1).trim().replace(/^(["'])(.*)\1$/, "$2") : "";
         if (!b) blocks.push({ key: k, lines: [`${k}: ${stamp}`] });
         else if (b.lines.length === 1 && (v === "" || NO_OFFSET.test(v))) b.lines = [`${k}: ${stamp}`];
       }
@@ -473,7 +482,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         created: true,
         ...(rev !== undefined ? { rev } : {}),
         ...(unused.length
-          ? { unused_values: unused, warning: `No blank of class ${cls} used ${unused.map((x) => `"${x}"`).join(", ")}, and the class declares no free field for ${unused.length === 1 ? "it" : "them"}, so ${unused.length === 1 ? "it was" : "they were"} not written.` }
+          ? { unused_values: unused, warning: `No blank of class ${cls} used ${unused.map((x) => `"${x}"`).join(", ")}, and the class declares no such field, or the note already sets it, so ${unused.length === 1 ? "it was" : "they were"} not written.` }
           : {}),
         filesChanged: 1,
         files: [written.path],

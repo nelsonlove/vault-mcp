@@ -108,7 +108,7 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
   const UUID7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
   /** Create, then check: it parses, carries the class, a uid, created and modified with an offset, and drops no value. */
-  async function make(cls, title, values = {}, frontmatter) {
+  async function make(cls, title, values = {}, frontmatter, where = {}) {
     const r = await call({ class: cls, title, values, ...(frontmatter ? { frontmatter } : {}) });
     assert.ok(!r.isError, `${cls}: ${errText(r)}`);
     const res = resultOf(r);
@@ -128,7 +128,11 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
     const body = text.slice(text.indexOf("\n---\n", 4) + 5);
     const unused = res.unused_values ?? [];
     for (const [k, v] of Object.entries(values)) {
-      const kept = fm[k] === v || text.includes(String(v)) || text.includes(JSON.stringify(String(v))) || unused.includes(k);
+      // Where the value must be: its own key, unless the class puts it in the body or under another key on purpose.
+      const at = where[k];
+      const kept =
+        unused.includes(k) ||
+        (at === "body" ? body.includes(String(v)) : Array.isArray(at) ? at.reduce((o, x) => o?.[x], fm) === v : fm[k] === v);
       assert.ok(kept, `${cls}: values.${k} was dropped without a word\n${text}`);
     }
     for (const [k, v] of Object.entries(frontmatter ?? {})) assert.deepEqual(fm[k], v, `${cls}: frontmatter.${k}`);
@@ -137,7 +141,7 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
   }
 
   test("Task", async () => {
-    const { fm, body } = await make("Task", "Case Task", { description: "a task", status: "stable/open", priority: "normal", outcome: "it is done" });
+    const { fm, body } = await make("Task", "Case Task", { description: "a task", status: "stable/open", priority: "normal", outcome: "it is done" }, undefined, { outcome: "body" });
     assert.equal(fm.status, "stable/open");
     assert.match(body, /it is done/);
   });
@@ -165,14 +169,15 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
       "Task/AgentTask",
       "Case AgentTask",
       { description: "an agent task", priority: "normal", "generated-by": "[worker-OB-pro] test", outcome: "done when tested" },
-      { projects: ["[[Some project]]"], blockedBy: ["[[Another task]]"] }
+      { projects: ["[[Some project]]"], blockedBy: ["[[Another task]]"] },
+      { "generated-by": ["generated", "by"] }
     );
     assert.deepEqual(res.unused_values, ["outcome"]);
     assert.match(res.warning, /"outcome"/);
   });
 
   test("Task/Decision", async () => {
-    const { res } = await make("Task/Decision", "Case Decision", { description: "a decision", priority: "normal", "generated-by": "[worker-OB-pro] test", context: "why we ask", outcome: "ruled" });
+    const { res } = await make("Task/Decision", "Case Decision", { description: "a decision", priority: "normal", "generated-by": "[worker-OB-pro] test", context: "why we ask", outcome: "ruled" }, undefined, { "generated-by": ["generated", "by"], context: "body" });
     assert.deepEqual(res.unused_values, ["outcome"]);
   });
 

@@ -36,12 +36,13 @@ function fakeApp() {
 }
 
 // The faked modules: render "type: <cls>" plus the values (as flow does), into the note through app.vault.modify.
-function fakeModules({ required = [], body = "", fmLines = [], type } = {}) {
+function fakeModules({ required = [], body = "", fmLines = [], type, echo = true, fields } = {}) {
   const seen = { applyApps: [], placementActive: [] };
   return {
     seen,
     mods: {
       className: (cls) => String(cls).replace(/^\[\[|\]\]$/g, "").trim(),
+      ...(fields ? { fields: () => fields } : {}),
       hasClass: (a, cls) => ["Declared", "Loose", "Two"].includes(String(cls).replace(/^\[\[|\]\]$/g, "").trim()),
       resolvePlacement: async (view, cls, params, opts) => {
         // The module's human fallback is the active note's folder; the view must hide it.
@@ -56,8 +57,9 @@ function fakeModules({ required = [], body = "", fmLines = [], type } = {}) {
       applyFileclass: async (view, params, note, opts) => {
         seen.applyApps.push(view);
         for (const r of required) if (params.variables[r] === undefined) throw new Error(`Class ${opts.cls} needs "${r}" and no variable supplied it`);
-        const v = Object.entries(params.variables).filter(([k]) => k !== "_invoked-by" && k !== "destination");
-        const text = ["---", `type: ${type ?? opts.cls}`, ...v.map(([k, x]) => `${k}: ${x}`), ...fmLines, "---", body].join("\n");
+        const v = echo ? Object.entries(params.variables).filter(([k]) => k !== "_invoked-by" && k !== "destination") : [];
+        const fill = (l) => l.replace(/\{\{VALUE:([^}]+)\}\}/g, (_w, n) => String(params.variables[n] ?? ""));
+        const text = ["---", `type: ${type ?? opts.cls}`, ...v.map(([k, x]) => `${k}: ${x}`), ...fmLines.map(fill), "---", body].join("\n");
         await view.vault.modify(note, await params.quickAddApi.format(text));
       },
     },
@@ -238,5 +240,36 @@ describe("the Sync guard targets the note obsidian_create_note names", () => {
   test("without a folder (class placement): every pending change counts", async () => {
     const d = await decideSync("obsidian_create_note", { class: "Declared", title: "N" }, deps(state(["Other/x.md"])));
     assert.equal(d.refuse.code, "sync_behind");
+  });
+});
+
+describe("obsidian_create_note: #538 review fixes", () => {
+  const out = (app, p) => app.files.get(p).text;
+  test("values.destination is a placement choice, not a blank", async () => {
+    const { app, call } = setup();
+    const r = await call({ class: "Two", title: "T", values: { destination: "A" } });
+    assert.ok(!r.isError, errText(r));
+    assert.ok(app.files.has("Two/A/T.md"));
+    assert.ok(!out(app, "Two/A/T.md").includes("vmcp"));
+    assert.equal(JSON.parse(errText(r)).unused_values, undefined);
+  });
+  test("a value in a list item that is a mapping keeps the mapping", async () => {
+    const { app, call } = setup({ echo: false, fmLines: ["items:", '  - name: "{{VALUE:x}}"'] });
+    const r = await call({ class: "Loose", title: "L", folder: "F", values: { x: "a: b" } });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/L.md"), /\n {2}- name: "a: b"\n/);
+  });
+  test('created: "" gets the stamp', async () => {
+    const { app, call } = setup({ echo: false, fmLines: ['created: ""'] });
+    const r = await call({ class: "Loose", title: "C", folder: "F" });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/C.md"), /\ncreated: 2026-10-12T14:05:09-04:00\n/);
+  });
+  test("a declared field the template left empty takes the value", async () => {
+    const { app, call } = setup({ echo: false, fmLines: ["severity:"], fields: ["severity"] });
+    const r = await call({ class: "Loose", title: "S", folder: "F", values: { severity: "hard" } });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/S.md"), /\nseverity: hard\n/);
+    assert.equal(JSON.parse(errText(r)).unused_values, undefined);
   });
 });
