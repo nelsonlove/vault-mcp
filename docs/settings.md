@@ -403,7 +403,7 @@ A rename, move, delete or create (the structure kinds: `syncKind` on each row of
 
 ## Running headless
 
-For a host with no Obsidian window, such as vaultd's headless plugin host. The four keys sit under one setting, `host`, so one entry in `data.json` sets them all, for example `{"host": {"headless": "on", "stateDir": "/srv/vault-mcp/state", "autoRegisterClaude": false}}`.
+For a host with no Obsidian window, such as vaultd's headless plugin host. The bridge (`bridge.mjs`) and the HTTP front read the environment variable `VAULT_MCP_STATE_DIR` as the plugin does, so a front started with it reaches a plugin whose state folder is outside `~/.claude/`; the front passes it on to each bridge it starts. The four keys sit under one setting, `host`, so one entry in `data.json` sets them all, for example `{"host": {"headless": "on", "stateDir": "/srv/vault-mcp/state", "autoRegisterClaude": false}}`.
 
 ### Headless
 
