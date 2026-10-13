@@ -31,7 +31,34 @@ import { vaultSlug } from "@vault-mcp/core";
  * writing disjoint names (the host: `bridge.mjs` + `<slug>.json`; the provider:
  * `history/`). */
 export function stateDir(): string {
-  return path.join(os.homedir(), ".claude", "vault-mcp");
+  return customStateDir() ?? path.join(os.homedir(), ".claude", "vault-mcp");
+}
+
+/**
+ * Overrides for a host that must not write under `~/.claude/` (a headless
+ * vaultd-host, or a second instance beside a live Obsidian): the `host.stateDir`
+ * and `host.socketPath` settings, set by main.ts at load before anything is
+ * bound or written, and the VAULT_MCP_STATE_DIR environment variable. The
+ * setting wins over the variable. With a state dir set, the plugin writes
+ * nothing into the 0.12.0-era `~/.claude/governor/` either (`legacyWrites`).
+ */
+let overrides: { stateDir?: string; socketPath?: string } = {};
+
+export function configurePaths(o: { stateDir?: string; socketPath?: string }): void {
+  const clean = (v?: string) => (typeof v === "string" && v.trim() ? path.resolve(v.trim()) : undefined);
+  overrides = { stateDir: clean(o.stateDir), socketPath: clean(o.socketPath) };
+}
+
+/** The state dir a setting or VAULT_MCP_STATE_DIR names, else undefined. */
+export function customStateDir(): string | undefined {
+  if (overrides.stateDir) return overrides.stateDir;
+  const env = typeof process !== "undefined" ? process.env?.VAULT_MCP_STATE_DIR?.trim() : undefined;
+  return env ? path.resolve(env) : undefined;
+}
+
+/** Whether the grace-period copies under `~/.claude/governor/` are written: not when a state dir is set. */
+export function legacyWrites(): boolean {
+  return customStateDir() === undefined;
 }
 
 /** The 0.12.0-era state namespace (`~/.claude/governor/`). Existing Claude Code
@@ -46,7 +73,7 @@ export function legacyStateDir(): string {
 }
 
 export function socketPath(slug: string): string {
-  return path.join(stateDir(), `${slug}.sock`);
+  return overrides.socketPath ?? path.join(stateDir(), `${slug}.sock`);
 }
 
 export function discoveryPath(slug: string): string {

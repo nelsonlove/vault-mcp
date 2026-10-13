@@ -35,6 +35,7 @@ import {
 import { hasGuardedTerritory } from "./territory-policy.js";
 import { CONVENTION_FIELDS, commitConvention } from "./conventions-policy.js";
 import { resolveConventions } from "./conformance/vault-conventions.js";
+import { normalizeHostSettings, type HostSettings } from "./headless.js";
 
 // ── tabbed settings UI: the pure, DOM-free half ─────────────────────────────
 //
@@ -918,6 +919,47 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
+
+    // ── headless host (headless.ts) ───────────────────────────────────────────
+    const host = normalizeHostSettings(this.plugin.settings.host);
+    const saveHost = async (patch: Partial<HostSettings>) => {
+      this.plugin.settings.host = { ...normalizeHostSettings(this.plugin.settings.host), ...patch };
+      await this.plugin.saveSettings();
+    };
+    new Setting(containerEl)
+      .setName("Headless")
+      .setDesc(
+        "For a host with no Obsidian window (vaultd-host). On (or Auto with VAULT_MCP_HEADLESS=1): tools that need the app (the editor, workspaces, bookmarks to open, the obsidian CLI) are not offered, " +
+          "the commands that open a view or a dialog are not added, and nothing registers with Claude Code at load. Auto: the VAULT_MCP_HEADLESS variable decides when set, " +
+          "and otherwise those tools refuse with headless_unsupported when no workspace exists. Takes effect when the plugin next loads."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({ auto: "Auto", on: "On", off: "Off" })
+          .setValue(host.headless)
+          .onChange(async (v) => saveHost({ headless: v === "on" || v === "off" ? v : "auto" }))
+      );
+    new Setting(containerEl)
+      .setName("State folder")
+      .setDesc(
+        "An absolute path: where the socket, bridge.mjs and the discovery file go. Empty: ~/.claude/vault-mcp/ (or the VAULT_MCP_STATE_DIR variable). Set: nothing is written under ~/.claude/governor/, and an HTTP front must be started with VAULT_MCP_STATE_DIR set to the same folder. " +
+          "Takes effect when the plugin next loads. Saved when you leave the field."
+      )
+      .addText((t) => {
+        t.setValue(host.stateDir);
+        t.inputEl.addEventListener("change", async () => saveHost({ stateDir: t.getValue().trim() }));
+      });
+    new Setting(containerEl)
+      .setName("Socket path")
+      .setDesc("An absolute path: the socket to listen on. Empty: <state folder>/<vault>.sock. Takes effect when the plugin next loads. Saved when you leave the field.")
+      .addText((t) => {
+        t.setValue(host.socketPath);
+        t.inputEl.addEventListener("change", async () => saveHost({ socketPath: t.getValue().trim() }));
+      });
+    new Setting(containerEl)
+      .setName("Register with Claude Code at load")
+      .setDesc("On: at load the plugin runs `claude mcp` to add itself to Claude Code when the claude CLI is found. Off (or headless declared, or VAULT_MCP_NO_AUTOREGISTER=1): it runs nothing. The Connect command still works.")
+      .addToggle((t) => t.setValue(host.autoRegisterClaude).onChange(async (v) => saveHost({ autoRegisterClaude: v })));
 
     // ── observation capture ─────────────────────────────────────────────────
     //
