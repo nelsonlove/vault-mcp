@@ -14,6 +14,7 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { bridgeEnv } from "./bridge-env.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
@@ -35,6 +36,7 @@ export async function connectLiveBackend(opts: {
     new StdioClientTransport({
       command: process.execPath, // node
       args: [opts.bridgePath],
+      env: bridgeEnv(),
       // "ignore", NOT "inherit": inheriting a redirected stderr under launchd
       // EBADFs the spawn (see the Phase 2a lazy-FS fix + deploy notes).
       stderr: "ignore",

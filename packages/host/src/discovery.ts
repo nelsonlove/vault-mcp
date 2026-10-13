@@ -6,6 +6,7 @@ import {
   legacyStateDir,
   legacyDiscoveryPath,
   legacyBridgeDestPath,
+  legacyWrites,
 } from "./paths.js";
 import { BRIDGE_SOURCE } from "./bridge-asset.js";
 
@@ -55,6 +56,7 @@ export function writeDiscovery(slug: string, d: Discovery): void {
   // `claude mcp` entry named `governor` survives. NOTE the provider's
   // `history/` repository lives in the same directory and is NOT part of this
   // cleanup — the dir stays, only the host's files in it go.
+  if (!legacyWrites()) return; // a set state dir keeps the plugin out of ~/.claude/governor/ too
   try {
     fs.mkdirSync(legacyStateDir(), { recursive: true });
     fs.writeFileSync(
@@ -69,7 +71,9 @@ export function writeDiscovery(slug: string, d: Discovery): void {
 
 export function removeDiscovery(slug: string): void {
   try { fs.unlinkSync(discoveryPath(slug)); } catch { /* gone */ }
-  try { fs.unlinkSync(legacyDiscoveryPath(slug)); } catch { /* gone */ }
+  if (legacyWrites()) {
+    try { fs.unlinkSync(legacyDiscoveryPath(slug)); } catch { /* gone */ }
+  }
 }
 
 // Writes the build-time-embedded bridge text to ~/.claude/vault-mcp/bridge.mjs
@@ -82,6 +86,7 @@ export function removeDiscovery(slug: string): void {
 export function writeBridge(): void {
   fs.mkdirSync(stateDir(), { recursive: true });
   fs.writeFileSync(bridgeDestPath(), BRIDGE_SOURCE, { mode: 0o755 });
+  if (!legacyWrites()) return;
   try {
     fs.mkdirSync(legacyStateDir(), { recursive: true });
     fs.writeFileSync(legacyBridgeDestPath(), BRIDGE_SOURCE, { mode: 0o755 });

@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { Request, Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { bridgeEnv } from "./bridge-env.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 // ── Internal transport interfaces ─────────────────────────────────────────────
@@ -146,6 +147,7 @@ export function createLiveProxy(opts: {
     return new StdioClientTransport({
       command: process.execPath, // node
       args: [opts.bridgePath],
+      env: bridgeEnv(),
       stderr: "inherit",
     });
   }
