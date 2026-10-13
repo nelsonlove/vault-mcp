@@ -36,14 +36,36 @@ export interface WriteScope {
 
 export const DEFAULT_WRITE_SCOPE: WriteScope = { mode: "all", paths: [] };
 
-/** Coerce a partial or hand-edited value; anything unclear reads as the default. */
+/** No write is allowed: what an unclear value reads as, so a typo closes rather than opens (#542 review). */
+const CLOSED: WriteScope = { mode: "create-only", paths: [] };
+
+/**
+ * Coerce a hand-edited value. ABSENT (undefined or null) is the default, "all".
+ * Anything else that is not exactly `{mode: "all"}` or `{mode: "create-only",
+ * paths: [string, …]}` FAILS CLOSED: every write refused. A misspelt mode
+ * ("create_only", "createOnly") must not read as "all", which would open every
+ * write the operator meant to close. A pattern that does not compile is dropped,
+ * which narrows the scope, never widens it.
+ */
 export function normalizeWriteScope(raw: unknown): WriteScope {
-  const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const mode: WriteScopeMode = r.mode === "create-only" ? "create-only" : "all";
-  const paths = Array.isArray(r.paths)
-    ? r.paths.filter((p): p is string => typeof p === "string" && p.trim() !== "").map((p) => p.trim().replace(/^\/+/, ""))
-    : [];
-  return { mode, paths };
+  if (raw === undefined || raw === null) return { ...DEFAULT_WRITE_SCOPE, paths: [] };
+  if (typeof raw !== "object" || Array.isArray(raw)) return { ...CLOSED, paths: [] };
+  const r = raw as Record<string, unknown>;
+  if (r.mode === "all") return { mode: "all", paths: [] };
+  if (r.mode !== "create-only") return { ...CLOSED, paths: [] };
+  if (r.paths !== undefined && !Array.isArray(r.paths)) return { ...CLOSED, paths: [] };
+  const paths = ((r.paths as unknown[] | undefined) ?? [])
+    .filter((p): p is string => typeof p === "string" && p.trim() !== "")
+    .map((p) => p.trim().replace(/^\/+/, ""))
+    .filter((p) => {
+      try {
+        globToRegExp(p);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  return { mode: "create-only", paths };
 }
 
 /** A glob as a RegExp over a vault-relative path. */
@@ -71,8 +93,10 @@ export function globToRegExp(glob: string): RegExp {
       if (end < 0) {
         re += "\\[";
       } else {
+        // A class never matches `/`: a negated one (`!` or `^`) excludes it, a plain one is
+        // preceded by a lookahead, so a range such as `[+-0]` cannot cross a folder (#542 review).
         const body = glob.slice(i + 1, end).replace(/\\/g, "\\\\");
-        re += body.startsWith("!") ? `[^/${body.slice(1)}]` : `[${body}]`;
+        re += body.startsWith("!") || body.startsWith("^") ? `[^/${body.slice(1)}]` : `(?!/)[${body}]`;
         i = end;
       }
     } else {
@@ -119,6 +143,13 @@ export function writeScopeRefusalForPath(
     return refusal(`'${tool}' may only create a new note in the folders this vault-mcp's write scope allows, and '${path}' is not one of them.`);
   }
   if (exists(path)) return refusal(`'${path}' already exists, and this vault-mcp's write scope allows only creating new notes.`);
+  // In a folder that is already there: a create would otherwise make every missing parent
+  // folder, and a pattern that starts with ** would then let a new tree appear anywhere (#542 review).
+  const p = normalizePosix(path.replace(/^\/+/, ""));
+  const parent = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+  if (parent && !exists(parent)) {
+    return refusal(`'${tool}' may only create a new note in a folder that already exists, and '${parent}' does not; this vault-mcp's write scope makes no new folders.`);
+  }
   return null;
 }
 

@@ -277,6 +277,7 @@ describe("obsidian_create_note: #538 review fixes", () => {
 describe("obsidian_create_note under the write scope", () => {
   test("create-only: a computed path in scope is written; one outside is refused, typed, and nothing is written", async () => {
     const { app, call } = setup({ writeScope: { mode: "create-only", paths: ["**/[0-9][0-9].01 Inbox/*.md"] } });
+    for (const f of ["A", "A/10.01 Inbox", "A/10.02 Tasks"]) app.files.set(f, { file: new TFolder(f), text: "" });
     const ok = await call({ class: "Loose", title: "In", folder: "A/10.01 Inbox" });
     assert.ok(!ok.isError, errText(ok));
     const no = await call({ class: "Loose", title: "Out", folder: "A/10.02 Tasks" });

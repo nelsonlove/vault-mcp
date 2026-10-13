@@ -12,7 +12,12 @@ const RO = { annotations: { readOnlyHint: true } };
 const SCOPE = { mode: "create-only", paths: ["**/[0-9][0-9].01 Inbox/*.md"] };
 
 function harness(writeScope, existing = []) {
+  // The notes given, and every folder above them or above the paths the tests create in.
   const have = new Set(existing);
+  for (const p of [...existing, "10-19 Personal/10 Management/10.01 Inbox/x", "A/10.01 Inbox/x", "A/10.02 Tasks/x", "X/x"]) {
+    const parts = p.split("/");
+    for (let i = 1; i < parts.length; i++) have.add(parts.slice(0, i).join("/"));
+  }
   const calls = [];
   const settings = { readOnly: false, allowlist: [], writeScope };
   const guarded = makeGuarded({ getSettings: () => settings, noteExists: (p) => have.has(p) });
