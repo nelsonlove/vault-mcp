@@ -51,9 +51,10 @@ export function normalizeWriteScope(raw: unknown): WriteScope {
   if (raw === undefined || raw === null) return { ...DEFAULT_WRITE_SCOPE, paths: [] };
   if (typeof raw !== "object" || Array.isArray(raw)) return { ...CLOSED, paths: [] };
   const r = raw as Record<string, unknown>;
-  if (r.mode === "all") return { mode: "all", paths: [] };
-  if (r.mode !== "create-only") return { ...CLOSED, paths: [] };
+  if (r.mode !== "all" && r.mode !== "create-only") return { ...CLOSED, paths: [] };
   if (r.paths !== undefined && !Array.isArray(r.paths)) return { ...CLOSED, paths: [] };
+  // The patterns are kept in mode "all" too, though only create-only reads them, so an operator who
+  // types them first and switches the mode second does not lose them (#542 review 2).
   const paths = ((r.paths as unknown[] | undefined) ?? [])
     .filter((p): p is string => typeof p === "string" && p.trim() !== "")
     .map((p) => p.trim().replace(/^\/+/, ""))
@@ -65,7 +66,7 @@ export function normalizeWriteScope(raw: unknown): WriteScope {
         return false;
       }
     });
-  return { mode: "create-only", paths };
+  return { mode: r.mode, paths };
 }
 
 /** A glob as a RegExp over a vault-relative path. */

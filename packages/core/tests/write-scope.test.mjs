@@ -43,7 +43,7 @@ describe("the setting", () => {
   test("absent reads as no rule; paths are trimmed strings", () => {
     assert.deepEqual(normalizeWriteScope(undefined), { mode: "all", paths: [] });
     assert.deepEqual(normalizeWriteScope(null), { mode: "all", paths: [] });
-    assert.deepEqual(normalizeWriteScope({ mode: "all", paths: ["x"] }), { mode: "all", paths: [] });
+    assert.deepEqual(normalizeWriteScope({ mode: "all", paths: [" x/*.md "] }), { mode: "all", paths: ["x/*.md"] }, "kept for a later switch to create-only");
     assert.deepEqual(normalizeWriteScope({ mode: "create-only", paths: [" /a/*.md ", "", 3] }), { mode: "create-only", paths: ["a/*.md"] });
   });
 

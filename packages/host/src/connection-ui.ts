@@ -947,6 +947,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         t.inputEl.addEventListener("change", async () => {
           const paths = t.getValue().split("\n").map((l) => l.trim()).filter(Boolean);
           this.plugin.settings.writeScope = normalizeWriteScope({ ...normalizeWriteScope(this.plugin.settings.writeScope), paths });
+          const kept = new Set(this.plugin.settings.writeScope.paths);
+          const dropped = paths.filter((p) => !kept.has(p.replace(/^\/+/, "")));
+          if (dropped.length) new Notice(`Vault MCP: not saved, not a valid pattern: ${dropped.join(", ")}`);
           await this.plugin.saveSettings();
         });
       });
