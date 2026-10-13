@@ -31,6 +31,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
+import { APP_ONLY_TOOLS, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
 import { visiblePaths } from "../guard.js";
@@ -392,8 +393,19 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // tools too — without any registrar knowing they exist. Undeclared arguments
   // are stripped by the SDK's own validation, so declaring here is what makes
   // them reachable by a client at all.
-  (server as any).registerTool = (name: string, def: any, handler: any) =>
-    register(name, withKernelArgs(def, name), handler);
+  // HEADLESS (headless.ts): a tool that needs the Obsidian app is not offered when headless
+  // is declared (the `host.headless` setting or VAULT_MCP_HEADLESS), and otherwise refuses
+  // with `headless_unsupported` when the call-time look finds no workspace leaf, rather than
+  // reporting success with nothing done or running the obsidian CLI against no app.
+  const headlessMode = () => normalizeHostSettings(ctx.host?.()).headless;
+  (server as any).registerTool = (name: string, def: any, handler: any) => {
+    if (APP_ONLY_TOOLS.has(name)) {
+      if (declaredHeadless(headlessMode())) return undefined;
+      const inner = handler;
+      handler = (...a: unknown[]) => (isHeadless(app, headlessMode()) ? headlessRefusal(name) : inner(...a));
+    }
+    return register(name, withKernelArgs(def, name), handler);
+  };
 
   // Patching registerTool alone left FIVE other registration entry points on
   // the SDK server unguarded (#83). Sealing them is what makes module.ts's

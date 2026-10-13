@@ -4,7 +4,7 @@ import { UnixSocketListener } from "./socket-transport.js";
 import { buildMcpServer } from "./mcp/server.js";
 import type { CapturedRegistry } from "./mcp/tools-code-mode.js";
 import { openToolRunner } from "./tool-runner.js";
-import { vaultSlug, socketPath, stateDir, bridgeDestPath } from "./paths.js";
+import { vaultSlug, socketPath, stateDir, bridgeDestPath, configurePaths } from "./paths.js";
 import { writeDiscovery, removeDiscovery, writeBridge, type Discovery } from "./discovery.js";
 import { ConnectionSetupModal, VaultMcpSettingTab } from "./connection-ui.js";
 import { findClaudeBinary, claudeIsRegistered, claudeRegister, claudeRemove, claudeEnsureConnectPlugin } from "./claude-cli.js";
@@ -26,6 +26,7 @@ import { territoriesOnLoad } from "./territory-policy.js";
 import { conventionsOnLoad } from "./conventions-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
+import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
 import { EMPTY_VAULT_CONVENTIONS, resolveConventions, type VaultConventions } from "./conformance/vault-conventions.js";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
@@ -224,6 +225,14 @@ interface VaultMcpSettings {
    */
   createNoteFlow: string;
   /**
+   * Running with no Obsidian window (vaultd-host, headless.ts): `headless`
+   * ("auto" | "on" | "off"), `stateDir` and `socketPath` (where the socket,
+   * bridge.mjs and the discovery file go; empty = `~/.claude/vault-mcp/`), and
+   * `autoRegisterClaude` (the load-time `claude mcp` registration). Coerced
+   * through `normalizeHostSettings` on load.
+   */
+  host: HostSettings;
+  /**
    * The in-Obsidian dev tool-runner ("Vault MCP: Run tool…" — src/tool-runner.ts).
    * Default ON: it grants nothing the MCP surface doesn't already grant — it
    * invokes the same guarded captured tools a code-mode connection gets, so
@@ -290,6 +299,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
   syncGuard: { ...DEFAULT_SYNC_GUARD },
   createNoteFlow: "",
+  host: { ...DEFAULT_HOST_SETTINGS },
 };
 
 class DiagnosticsModal extends Modal {
@@ -378,6 +388,7 @@ export default class VaultMcpPlugin extends Plugin {
     // The Sync guard: a partial or hand-edited value is coerced, never a crash; absent ⇒ off.
     this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
     if (typeof this.settings.createNoteFlow !== "string") this.settings.createNoteFlow = "";
+    this.settings.host = normalizeHostSettings(this.settings.host);
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any
     // value that isn't an explicit `false` reads as enforced (same
     // fail-toward-the-safe-default discipline as the cliPolicy/protected-
@@ -445,6 +456,9 @@ export default class VaultMcpPlugin extends Plugin {
   }
 
   async autoRegister(force = false): Promise<void> {
+    // The load-time run asks the `host` setting first: off, or headless declared, or
+    // VAULT_MCP_NO_AUTOREGISTER=1, and no `claude` process is started (headless.ts).
+    if (!force && !autoRegisterAllowed(normalizeHostSettings(this.settings.host))) return;
     const bin = findClaudeBinary();
     if (!bin) {
       if (force) new Notice("Vault MCP: `claude` CLI not found. Use the manual command in settings.");
@@ -607,6 +621,10 @@ export default class VaultMcpPlugin extends Plugin {
     // "the guard config silently reset to OPEN" is the failure this whole
     // block exists to prevent.
     if (this.adoptedSettings) await this.saveSettings();
+
+    // Before anything is bound or written: a headless host names its own state dir and socket (headless.ts).
+    configurePaths({ stateDir: this.settings.host.stateDir, socketPath: this.settings.host.socketPath });
+    const headlessAtLoad = declaredHeadless(this.settings.host.headless);
 
     const vaultName = this.app.vault.getName();
     this.slug = vaultSlug(vaultName);
@@ -780,6 +798,7 @@ export default class VaultMcpPlugin extends Plugin {
       recordFolders: () => this.settings.recordFolders,
       syncGuard: () => this.settings.syncGuard,
       createNoteFlow: () => this.settings.createNoteFlow,
+      host: () => this.settings.host,
       serverIdentity,
       sessions: {
         // LIFECYCLE ONLY (condition 7 — the host mints). `get` is deliberately
@@ -846,15 +865,16 @@ export default class VaultMcpPlugin extends Plugin {
     // the toggle in settings mounts or unmounts both panes immediately, no
     // plugin reload, via `setSchemePanesMounted` below. Neither pane forces a
     // leaf open on its own — the ribbon icon / command opens it on demand.
-    if (this.settings.modules?.scheme?.enabled !== false) {
+    // Headless (declared): no panes, and none of the commands below that open a view or a modal.
+    if (!headlessAtLoad && this.settings.modules?.scheme?.enabled !== false) {
       void this.setSchemePanesMounted(true);
     }
     // Commands register unconditionally, once, regardless of live mount
     // state — see scheme/wiring.ts's registerSchemeCommands doc comment for
     // why (no public Obsidian API to live-unregister a command).
-    registerSchemeCommands(this, () => this.settings.modules?.scheme?.enabled !== false);
+    if (!headlessAtLoad) registerSchemeCommands(this, () => this.settings.modules?.scheme?.enabled !== false);
 
-    this.addCommand({
+    if (!headlessAtLoad) this.addCommand({
       id: "connect-claude-code",
       name: "Connect to Claude Code",
       callback: () => this.autoRegister(true),
@@ -879,7 +899,7 @@ export default class VaultMcpPlugin extends Plugin {
     // `settings.enabled` (the socket) — dev use with the transport off is the
     // point — but gated live on the devToolRunner setting via checkCallback,
     // which also gates executeCommandById.
-    this.addCommand({
+    if (!headlessAtLoad) this.addCommand({
       id: "run-tool",
       name: "Run tool…",
       checkCallback: (checking) => {
@@ -906,7 +926,7 @@ export default class VaultMcpPlugin extends Plugin {
 
     void this.autoRegister();
 
-    this.addCommand({
+    if (!headlessAtLoad) this.addCommand({
       id: "show-diagnostics",
       name: "Show diagnostics",
       callback: () => {
