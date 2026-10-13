@@ -56,6 +56,12 @@ export interface FlowModules {
   className: (cls: string) => string;
   /** The top-level fields the class declares up its `extends` chain (#537): where a value no blank used may go. */
   fields?: (app: App, cls: string) => string[];
+  /** The template's own frontmatter key order, parent class first, then child (#543): fileclass-render's `collect`. */
+  keyOrder?: (app: App, cls: string) => Promise<string[]>;
+  /** The nearest class's Template body WITH its `%% … %%` comments, which the module strips (#543); null when it has none. */
+  templateWithComments?: (app: App, cls: string) => Promise<string | null>;
+  /** fileclass-render's templateBlock: the body inside a class's `## Template` fence. */
+  templateBlock?: (body: string) => string | null;
 }
 
 export interface CreateNoteCtx {
@@ -86,7 +92,82 @@ export function loadFlowModules(app: App, flowRel: string): FlowModules {
     hasClass: (a: App, cls: string) => !!render.definitions(a).find(render.className(cls)),
     className: (cls: string) => String(render.className(cls)),
     fields: (a: App, cls: string) => declaredFields(a, render, cls),
+    keyOrder: async (a: App, cls: string) => [...(await render.collect(a, String(render.className(cls)), render.definitions(a))).keys.keys()],
+    templateWithComments: (a: App, cls: string) => nearestTemplateWithComments(a, render, cls),
+    templateBlock: (b: string) => render.templateBlock(b),
   };
+}
+
+const SCHEMA_BLOCK = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+const COMMENT = /%%[\s\S]*?%%/g;
+
+/**
+ * The Template body of the nearest class that gives one, comments kept (#543). The module
+ * picks the body the same way (fileclass-render's collect and nearestBody: the nearest
+ * class, an `index: true` class gives none) but reads it with every `%% … %%` comment
+ * stripped, so a template's author notes never reached a new note.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function nearestTemplateWithComments(app: App, render: any, cls: string): Promise<string | null> {
+  const corpus = render.definitions(app);
+  const seen = new Set<string>();
+  for (let step: string | null = String(render.className(cls)); step && !seen.has(step); ) {
+    seen.add(step);
+    const file = corpus.find(step);
+    if (!file) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fm = (app.metadataCache.getFileCache(file)?.frontmatter ?? {}) as any;
+    if (fm.index !== true) {
+      const raw = (await app.vault.read(file)).replace(SCHEMA_BLOCK, "");
+      // The module's own test for "this class gives a body": its template block, comments stripped.
+      if (render.templateBlock(raw.replace(COMMENT, "").trim())) return raw;
+    }
+    step = typeof fm.extends === "string" ? String(render.className(fm.extends)) : null;
+  }
+  return null;
+}
+
+/**
+ * Put the template's comments back into a rendered body (#543). The module renders the
+ * comment-stripped template line for line: a value is one line, a token never adds or
+ * removes a line. So each comment in the template is put back at its line in the body.
+ * A comment that shares its line with other text, or a template that no longer lines up,
+ * leaves the body as it was: a missing comment is better than a misplaced one.
+ */
+export function restoreTemplateComments(body: string, classBody: string, templateBlock: (body: string) => string | null): string {
+  const comments: string[] = [];
+  const marked = classBody.replace(COMMENT, (c) => {
+    comments.push(c);
+    return `\u0000${comments.length - 1}\u0000`;
+  });
+  if (!comments.length) return body;
+  const withMarks = templateBlock(marked);
+  if (!withMarks) return body;
+  const bare = withMarks.replace(/\u0000\d+\u0000/g, "");
+  // The module trims the stripped body, so lines a comment stood alone on at the start are not in it.
+  const markLines = withMarks.split("\n");
+  const bareLines = bare.split("\n");
+  let lead = 0;
+  while (lead < bareLines.length && bareLines[lead].trim() === "") lead++;
+  const renderedLines = body.split("\n");
+  // The body as written: "\n" + the rendered template + "\n".
+  const first = renderedLines.findIndex((l) => l.trim() !== "");
+  if (first < 0) return body;
+  const expected = bare.trim().split("\n");
+  if (renderedLines.length - first < expected.length) return body;
+  const out = [...renderedLines];
+  const inserts: { at: number; text: string }[] = [];
+  for (let i = 0; i < markLines.length; i++) {
+    const only = /^\s*(?:\u0000\d+\u0000\s*)+$/.exec(markLines[i]);
+    if (!only) continue;
+    const text = markLines[i].replace(/\u0000(\d+)\u0000/g, (_w, n) => comments[Number(n)]).trim();
+    const j = i - lead;
+    if (j < 0) inserts.push({ at: first, text }); // before the first rendered line
+    else if (j < expected.length && expected[j].trim() === "" && out[first + j].trim() === "") out[first + j] = text;
+    else return body; // out of line: leave the body as it was
+  }
+  for (const ins of inserts.reverse()) out.splice(ins.at, 0, ins.text, "");
+  return out.join("\n");
 }
 
 /** The top-level field names a class declares, up its `extends` chain (a nested field has a `path`). */
@@ -446,10 +527,22 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       if (!uidBlock) blocks.push({ key: "uid", lines: [`uid: ${uuidv7(Date.now())}`] });
       else if (uidBlock.lines.length === 1 && uidBlock.lines[0].slice(4).trim().replace(/^["']|["']$/g, "") === "") uidBlock.lines = [`uid: ${uuidv7(Date.now())}`];
 
-      // Global's keys first, in Global's order; the class's own after, as rendered.
+      // Global's keys first, in Global's order; then the class's own in the TEMPLATE's order,
+      // parent class first, then child (#543). The module orders keys by the class's own
+      // fieldsOrder and, when the class declares none (Task/AgentTask, Project), by Global's
+      // field list, which put `generated` before `status`. Keys the template does not write
+      // (placed values, `frontmatter`) follow, as added.
+      let templateOrder: string[] = [];
+      try {
+        templateOrder = (await mods.keyOrder?.(app, args.class)) ?? [];
+      } catch {
+        templateOrder = [];
+      }
       const rank = (k: string | null) => {
-        const i = k === null ? -1 : CORE_ORDER.indexOf(k);
-        return i < 0 ? CORE_ORDER.length : i;
+        const core = k === null ? -1 : CORE_ORDER.indexOf(k);
+        if (core >= 0) return core;
+        const t = k === null ? -1 : templateOrder.indexOf(k);
+        return t >= 0 ? CORE_ORDER.length + t : CORE_ORDER.length + templateOrder.length;
       };
       blocks = blocks.map((b, i) => ({ b, i })).sort((x, y) => rank(x.b.key) - rank(y.b.key) || x.i - y.i).map((x) => x.b);
       const yaml = blocks.flatMap((b) => b.lines).join("\n");
@@ -469,7 +562,15 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const verifiedRendered = Object.keys(fm).find((k) => isVerifiedKey(k));
       if (verifiedRendered) return refuse("accept_forbidden", `The rendered note sets '${verifiedRendered}', which only Nelson writes.`);
 
-      const out = `---\n${yaml}\n---\n${body}`;
+      // The template's `%% … %%` comments, which the module strips, put back at their lines (#543).
+      let finalBody = body;
+      try {
+        const classBody = await mods.templateWithComments?.(app, args.class);
+        if (classBody && mods.templateBlock) finalBody = restoreTemplateComments(body, classBody, mods.templateBlock);
+      } catch {
+        finalBody = body;
+      }
+      const out = `---\n${yaml}\n---\n${finalBody}`;
 
       // Write once, through the host's guarded create.
       let written: { path: string; created: boolean };

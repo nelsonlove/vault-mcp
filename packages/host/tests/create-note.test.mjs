@@ -285,3 +285,28 @@ describe("obsidian_create_note under the write scope", () => {
     assert.deepEqual(app.writes, ["A/10.01 Inbox/In.md"]);
   });
 });
+
+describe("restoreTemplateComments (#543)", async () => {
+  const { restoreTemplateComments } = await import("../src/mcp/tools-create-note.ts");
+  // A stand-in for fileclass-render's templateBlock: the fence under "## Template", trimmed.
+  const tb = (b) => {
+    const m = /## Template\n\n```\n([\s\S]*?)\n```/.exec(b);
+    return m ? m[1].trim() || null : null;
+  };
+  const cls = (t) => `Prose.\n\n## Template\n\n\`\`\`\n${t}\n\`\`\`\n\n%% not in the template %%\n`;
+  test("a comment on its own line comes back at that line", () => {
+    const out = restoreTemplateComments("\n# T\n\n\n\n## Ask\n", cls("# {{TITLE}}\n\n%% note %%\n\n## Ask"), tb);
+    assert.equal(out, "\n# T\n\n%% note %%\n\n## Ask\n");
+  });
+  test("a comment before the first line goes first", () => {
+    const out = restoreTemplateComments("\n# T\n", cls("%% top %%\n# {{TITLE}}"), tb);
+    assert.equal(out, "\n%% top %%\n\n# T\n");
+  });
+  test("a comment sharing its line with text, or a body that no longer lines up, leaves the body as it was", () => {
+    assert.equal(restoreTemplateComments("\n# T\n", cls("# {{TITLE}} %% inline %%"), tb), "\n# T\n");
+    assert.equal(restoreTemplateComments("\n# T\nextra\n\n", cls("# {{TITLE}}\n\n%% note %%\n\n## Ask"), tb), "\n# T\nextra\n\n");
+  });
+  test("no comment, nothing changes", () => {
+    assert.equal(restoreTemplateComments("\n# T\n", cls("# {{TITLE}}"), tb), "\n# T\n");
+  });
+});

@@ -137,8 +137,11 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
     }
     for (const [k, v] of Object.entries(frontmatter ?? {})) assert.deepEqual(fm[k], v, `${cls}: frontmatter.${k}`);
     assert.ok(!/\{\{|vmcp[vt]/.test(text), `${cls}: a token or a stand-in was left\n${text}`);
-    return { text, fm, body, res };
+    return { text, fm, body, res, keys: fmText.split("\n").filter((l) => /^[^\s#-][^:]*:/.test(l)).map((l) => l.slice(0, l.indexOf(":"))) };
   }
+
+  /** The keys after Global's six, in order (#543). */
+  const classKeys = (keys) => keys.filter((k) => !["title", "description", "type", "created", "modified", "uid"].includes(k));
 
   test("Task", async () => {
     const { fm, body } = await make("Task", "Case Task", { description: "a task", status: "stable/open", priority: "normal", outcome: "it is done" }, undefined, { outcome: "body" });
@@ -174,6 +177,36 @@ describe("obsidian_create_note on the vault's real classes (#537)", { skip }, ()
     );
     assert.deepEqual(res.unused_values, ["outcome"]);
     assert.match(res.warning, /"outcome"/);
+  });
+
+  test("#543: Task/AgentTask keeps the template's key order (parent, then child) and its comment under the H1", async () => {
+    const { keys, body } = await make(
+      "Task/AgentTask",
+      "Case AgentTask order",
+      { description: "an agent task", priority: "normal", "generated-by": "[worker-OB-pro] test" },
+      { projects: ["[[Some project]]"] },
+      { "generated-by": ["generated", "by"] }
+    );
+    assert.deepEqual(keys.slice(0, 6), ["title", "description", "type", "created", "modified", "uid"]);
+    assert.deepEqual(classKeys(keys), ["status", "priority", "needs", "generated", "projects"]);
+    assert.match(body, /^# Case AgentTask order\n\n%% Rule links: [^\n]*%%\n\n## Ask/m, body);
+  });
+
+  test("#543: Task/Decision keeps the key order and the comment", async () => {
+    const { keys, body } = await make(
+      "Task/Decision",
+      "Case Decision order",
+      { description: "a decision", priority: "normal", "generated-by": "[worker-OB-pro] test", context: "why" },
+      undefined,
+      { "generated-by": ["generated", "by"], context: "body" }
+    );
+    assert.deepEqual(classKeys(keys), ["status", "priority", "needs", "generated"]);
+    assert.match(body, /^# Case Decision order\n\n%% Rule links: [^\n]*%%\n/m, body);
+  });
+
+  test("#543: Project writes needs before outcome (Task's keys, then Project's), and a placed gain last", async () => {
+    const { keys } = await make("Project", "Case Project order", { description: "p", status: "stable/open", priority: "normal", outcome: "shipped", gain: "less" });
+    assert.deepEqual(classKeys(keys), ["status", "priority", "needs", "outcome", "gain"]);
   });
 
   test("Task/Decision", async () => {
