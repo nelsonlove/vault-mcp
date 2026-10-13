@@ -164,8 +164,9 @@ export interface ServerCtx {
    */
 }
 
-function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: SyncVerdict): Record<string, unknown> {
-  // Shown, not judged (#528): the status text and how many server changes wait, vault-wide.
+function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: SyncVerdict, rename?: SyncVerdict): Record<string, unknown> {
+  // Shown, not judged for a create (#528): the status text and how many server changes wait, vault-wide.
+  // `sync_rename` is the verdict a rename, move or delete meets, which also needs "Fully synced" (#533).
   const f = snap.state === "fields" ? snap.fields : null;
   return {
     enabled: settings.enabled,
@@ -177,6 +178,7 @@ function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: Syn
     ...(v.kind === "unknown" ? { why: v.why } : {}),
     ...(f && typeof f.syncStatus === "string" ? { status_text: f.syncStatus } : {}),
     ...(f && Array.isArray(f.pendingPaths) ? { pending_downloads: f.pendingPaths.length } : {}),
+    ...(rename ? { sync_rename: rename.kind } : {}),
   };
 }
 
@@ -210,7 +212,8 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
           // verdict travels, never the Sync plugin's object.
           sync_guard: (() => {
             const snap = readSyncSnapshot(app);
-            return syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), snap, judgeSync(snap, Date.now()));
+            const now = Date.now();
+            return syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), snap, judgeSync(snap, now), judgeSync(snap, now, [], false, true));
           })(),
         });
       } catch (e) { return fail(e); }
