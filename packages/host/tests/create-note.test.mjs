@@ -93,7 +93,7 @@ describe("obsidian_create_note: render, check, write once", () => {
     assert.equal(r.structuredContent.path, "Notes/Here/My note.md");
     assert.equal(r.structuredContent.rev, 1700000000000);
     assert.deepEqual(app.writes, ["Notes/Here/My note.md"]);
-    assert.equal(app.files.get("Notes/Here/My note.md").text, "---\ntype: Loose\ndescription: a note\n---\nmade 2026-10-12");
+    assert.match(app.files.get("Notes/Here/My note.md").text, /^---\ndescription: a note\ntype: Loose\ncreated: 2026-10-12T14:05:09-04:00\nmodified: 2026-10-12T14:05:09-04:00\nuid: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n---\nmade 2026-10-12$/);
   });
   test("without a folder: the class's declared folder", async () => {
     const { call } = setup();
@@ -114,7 +114,7 @@ describe("obsidian_create_note: render, check, write once", () => {
   test("a missing required value: refused by name, nothing written", async () => {
     const { app, call } = setup({ required: ["session"] });
     const r = await call({ class: "Loose", title: "N", folder: "F" });
-    assert.match(errText(r), /Error \[create_failed\].*needs "session".*Nothing was written/);
+    assert.match(errText(r), /Error \[invalid_argument\].*needs a value for "session".*Nothing was written/);
     assert.equal(app.writes.length, 0);
   });
   test("a token the tool cannot fill: refused, nothing written", async () => {
@@ -184,7 +184,7 @@ describe("obsidian_create_note: render, check, write once", () => {
     const { app, call } = setup({ body: "body" });
     const r = await call({ class: "Loose", title: "N", folder: "F", frontmatter: { session: "s1", "session-id": "abc" } });
     assert.notEqual(r.isError, true, errText(r));
-    assert.equal(app.files.get("F/N.md").text, "---\ntype: Loose\nsession: s1\nsession-id: abc\n---\nbody");
+    assert.match(app.files.get("F/N.md").text, /^---\ntype: Loose\ncreated: 2026-10-12T14:05:09-04:00\nmodified: 2026-10-12T14:05:09-04:00\nuid: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\nsession: s1\nsession-id: abc\n---\nbody$/);
   });
   test("`frontmatter` may not set a key the template wrote, nor the class key; nothing is written", async () => {
     const { app, call } = setup();
@@ -218,7 +218,7 @@ describe("renderView", () => {
 describe("helpers", () => {
   test("fillDates fills bare and formatted {{DATE}}", () => {
     const now = () => ({ format: (f) => `<${f}>` });
-    assert.equal(fillDates("a {{DATE}} b {{DATE:YYYY-MM-DDTHH:mm}}", now), "a <YYYY-MM-DD> b <YYYY-MM-DDTHH:mm>");
+    assert.equal(fillDates("a {{DATE}} b {{DATE:YYYY-MM-DDTHH:mm}}", now), "a <YYYY-MM-DD> b <YYYY-MM-DDTHH:mmZ>");
   });
   test("notePath joins folder and title, root when the folder is empty", () => {
     assert.equal(notePath("A/B/", "N"), "A/B/N.md");

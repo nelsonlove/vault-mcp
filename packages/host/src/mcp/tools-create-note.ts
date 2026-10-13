@@ -35,7 +35,7 @@ import { z } from "zod";
 import * as nodePath from "path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { moment, normalizePath, parseYaml, stringifyYaml, type App } from "obsidian";
-import { acceptForbiddenReason, acceptTransitionReason, isVerifiedKey, strictInput } from "@vault-mcp/core";
+import { acceptForbiddenReason, acceptTransitionReason, isVerifiedKey, strictInput, uuidv7 } from "@vault-mcp/core";
 import { ok, codedError } from "./helpers.js";
 import { isVisible, type GuardSettings } from "../guard.js";
 import { assertCreateName } from "./name-checks.js";
@@ -54,6 +54,8 @@ export interface FlowModules {
   hasClass: (app: App, cls: string) => boolean;
   /** The class name as the module writes it (fileclass-render.className: no [[ ]], no .md/.fileclass). */
   className: (cls: string) => string;
+  /** The top-level fields the class declares up its `extends` chain (#537): where a value no blank used may go. */
+  fields?: (app: App, cls: string) => string[];
 }
 
 export interface CreateNoteCtx {
@@ -83,17 +85,45 @@ export function loadFlowModules(app: App, flowRel: string): FlowModules {
     resolvePlacement: render.resolvePlacement,
     hasClass: (a: App, cls: string) => !!render.definitions(a).find(render.className(cls)),
     className: (cls: string) => String(render.className(cls)),
+    fields: (a: App, cls: string) => declaredFields(a, render, cls),
   };
+}
+
+/** The top-level field names a class declares, up its `extends` chain (a nested field has a `path`). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function declaredFields(app: App, render: any, cls: string): string[] {
+  const corpus = render.definitions(app);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (let step: string | null = String(render.className(cls)); step && !seen.has(step); ) {
+    seen.add(step);
+    const file = corpus.find(step);
+    if (!file) break;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fm = (app.metadataCache.getFileCache(file)?.frontmatter ?? {}) as any;
+    for (const f of ([] as unknown[]).concat(fm.fields ?? [])) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const x = f as any;
+      if (x && typeof x.name === "string" && !(typeof x.path === "string" && x.path.trim() !== "")) out.push(x.name);
+    }
+    step = typeof fm.extends === "string" ? String(render.className(fm.extends)) : null;
+  }
+  return [...new Set(out)];
 }
 
 const DATE_TOKEN = /\{\{\s*DATE(?::([^}]*))?\s*\}\}/g;
 const ANY_TOKEN = /\{\{[^}]*\}\}/;
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/;
 
-/** The QuickAdd `{{DATE[:fmt]}}` token, filled the way QuickAdd fills it (moment; bare = YYYY-MM-DD). */
+/** The QuickAdd `{{DATE[:fmt]}}` token, filled the way QuickAdd fills it (moment; bare = YYYY-MM-DD), except that a date-time gets the local offset (#537). */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function fillDates(text: string, now: () => { format(f: string): string } = () => (moment as any)()): string {
-  return text.replace(DATE_TOKEN, (_w, fmt?: string) => now().format((fmt ?? "").trim() || "YYYY-MM-DD"));
+  return text.replace(DATE_TOKEN, (_w, fmt?: string) => {
+    let f = (fmt ?? "").trim() || "YYYY-MM-DD";
+    // A full date-time is written with the local offset (#537): without one a YAML reader takes it as UTC.
+    if (/HH:mm(:ss)?$/.test(f)) f += "Z";
+    return now().format(f);
+  });
 }
 
 /** The note's path for a title in a folder ("" = vault root). */
@@ -134,6 +164,50 @@ export function renderView(app: App, stand: object, sink: { text?: string }): Ap
 
 type ValueMap = Record<string, string | number | boolean>;
 
+/**
+ * A value as a YAML scalar (#537): plain when plain YAML reads it back as the same
+ * string, else double-quoted. A conservative test rather than a parse: plain only
+ * for text that starts with a letter and holds no character YAML gives a meaning
+ * (`:`, `#`, quotes, brackets, …), and is not a word YAML reads as a boolean or null.
+ * So `stable/open` stays plain, and `99`, `a: b #c` and `[[Note]]` are quoted.
+ * A number or a boolean the caller passed as one is written plain.
+ */
+export function yamlScalar(v: string | number | boolean): string {
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  const plain = /^[A-Za-z_][\w ./+()-]*$/.test(v) && !/\s$/.test(v) && !/^(true|false|yes|no|on|off|null|y|n)$/i.test(v);
+  return plain ? v : JSON.stringify(v);
+}
+
+/** One frontmatter key as lines (#537): scalars and flat lists through yamlScalar, so a `[[link]]` or a `: ` is quoted; anything deeper through stringifyYaml. */
+export function yamlEntry(k: string, v: unknown): string[] {
+  const flat = (x: unknown): x is string | number | boolean => typeof x === "string" || typeof x === "number" || typeof x === "boolean";
+  if (flat(v)) return [`${k}: ${yamlScalar(v)}`];
+  if (v === null || v === undefined) return [`${k}:`];
+  if (Array.isArray(v) && v.every(flat)) return v.length ? [`${k}:`, ...v.map((x) => `  - ${yamlScalar(x)}`)] : [`${k}: []`];
+  return stringifyYaml({ [k]: v }).replace(/\n+$/, "").split("\n");
+}
+
+/** Frontmatter text as blocks: one per top-level key (with its indented lines), in order. */
+export function frontmatterBlocks(yaml: string): { key: string | null; lines: string[] }[] {
+  const out: { key: string | null; lines: string[] }[] = [];
+  for (const line of yaml.split(/\r?\n/)) {
+    const m = /^([^\s#:][^:]*):(\s|$)/.exec(line);
+    if (m) out.push({ key: m[1].trim(), lines: [line] });
+    else if (out.length && (line.trim() === "" || /^\s/.test(line))) out[out.length - 1].lines.push(line);
+    else out.push({ key: null, lines: [line] });
+  }
+  return out;
+}
+
+/** A date-time with no UTC offset, which a YAML reader takes as UTC (#537). */
+const NO_OFFSET = /^["']?\d{4}-\d\d-\d\dT\d\d:\d\d(:\d\d(\.\d+)?)?["']?$/;
+
+/** Keys every note carries, in Global's order, ahead of the class's own (#537). */
+const CORE_ORDER = ["title", "description", "type", "fileClass", "fileclass", "created", "modified", "uid"];
+
+/** What the vault module says when a required blank has no value. */
+const MISSING_BLANK = /needs "([^"]+)" and no variable supplied it|Missing required variable "([^"]+)"/;
+
 export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateNoteCtx): void {
   const load = ctx.load ?? loadFlowModules;
   server.registerTool(
@@ -143,7 +217,10 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       description:
         "Create a new note of a fileclass (e.g. `Event/AgentNotebookEntry`, `Task/AgentTask`) from that class's own `## Template`, " +
         "through the vault's construction module — the way to make a note with a real `type`, never a hand-typed one. " +
-        "`values` fills the template's `{{VALUE:name}}` blanks (one line each; no line breaks and no `{{`); a required blank with no value is refused by name. " +
+        "`values` fills the template's `{{VALUE:name}}` blanks (one line each; no line breaks and no `{{`); every required blank with no value is named in one refusal. " +
+        "A value is written as YAML needs: a string stays a string (quoted when it must be, so `99` or `a: b #c` come through as text); pass a number or a boolean to get one. " +
+        "A value no blank uses goes into the frontmatter when the class declares that field, and is otherwise listed in the result's `unused_values`; nothing is dropped silently. " +
+        "Every note gets a `uid` and `created`/`modified` with the local offset. " +
         "The note lands in the folder the class declares, or in `folder` when you pass it; a class that declares none needs `folder`. " +
         "`destination` picks one of several destinations a class declares. The title is `title`, else `values.title` (no `/`, `\\` or `.md`). " +
         "`frontmatter` adds keys the template does not write (e.g. `session`, `session-id`, `reports-to`); it may not set a key the rendered note already has, nor the class key (`type`). " +
@@ -212,9 +289,30 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       if (!mods.hasClass(app, args.class)) return refuse("invalid_argument", `No fileclass '${args.class}'.`);
       const cls = mods.className(args.class);
 
-      // Agent mode: nothing prompts; a missing required blank throws by name.
-      const variables: Record<string, unknown> = { ...values, ...(args.destination ? { destination: args.destination } : {}), "_invoked-by": "agent" };
-      const params = { variables, quickAddApi: { format: async (s: string) => fillDates(s) } };
+      // A STAND-IN FOR EACH VALUE (#537). The module strips the template's quotes off a
+      // frontmatter line that holds a token before it fills the token in, so a value
+      // went in raw: `a: b #c` broke the YAML and "99" became a number. The module is
+      // handed a stand-in word instead, and the tool puts each value back itself,
+      // quoted as YAML needs (yamlScalar). A stand-in is letters and digits only, so
+      // no escaping in the module changes it, and one left out of the render shows
+      // which values no blank used.
+      const mark = Math.random().toString(36).slice(2, 10);
+      const standIns = new Map<string, { name: string; value: string | number | boolean }>();
+      const variables: Record<string, unknown> = {};
+      let n = 0;
+      for (const [k, v] of Object.entries(values)) {
+        if (String(v).trim() === "") {
+          variables[k] = v; // empty is "not given", as the module reads it
+          continue;
+        }
+        const s = `vmcpv${mark}x${n++}z`;
+        standIns.set(s, { name: k, value: v });
+        variables[k] = s;
+      }
+      const titleStandIn = `vmcpt${mark}z`;
+      if (args.destination) variables.destination = args.destination;
+      variables["_invoked-by"] = "agent";
+      const paramsFor = (vars: Record<string, unknown>) => ({ variables: { ...vars }, quickAddApi: { format: async (t: string) => fillDates(t) } });
 
       // Placement, once: the caller's folder, else the class's declared one. The view has no active
       // note, so the module's human fallback resolves to the vault root, which the tool refuses.
@@ -223,7 +321,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         folder = args.folder.trim().replace(/^\/+|\/+$/g, "");
       } else {
         try {
-          folder = (await mods.resolvePlacement(renderView(app, {}, {}), args.class, params, args.destination ? { destination: args.destination } : {})).trim();
+          folder = (await mods.resolvePlacement(renderView(app, {}, {}), args.class, paramsFor(variables), args.destination ? { destination: args.destination } : {})).trim();
         } catch (e) {
           return refuse("invalid_argument", `${(e as Error).message}`);
         }
@@ -240,24 +338,113 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         return refuse("unsafe_name", `${(e as Error).message}`);
       }
 
-      // Render into a stand-in: nothing reaches the disk here.
+      // Render into a stand-in: nothing reaches the disk here. The module names one missing
+      // blank per render, so a missing one gets a filler and the render runs again, until
+      // every missing blank is known; they are then refused together (#537).
       const stand = { path, name: `${title}.md`, basename: title, extension: "md", parent: null, stat: { ctime: 0, mtime: 0, size: 0 } };
-      const sink: { text?: string } = {};
-      try {
-        await mods.applyFileclass(renderView(app, stand, sink), params, stand, { cls, title });
-      } catch (e) {
-        return refuse("create_failed", `${(e as Error).message}`);
+      const missing: string[] = [];
+      const tries: Record<string, unknown> = { ...variables };
+      let text = "";
+      for (;;) {
+        const sink: { text?: string } = {};
+        try {
+          await mods.applyFileclass(renderView(app, stand, sink), paramsFor(tries), stand, { cls, title: titleStandIn });
+        } catch (e) {
+          const msg = (e as Error).message;
+          const m = MISSING_BLANK.exec(msg);
+          const name = m ? (m[1] ?? m[2]) : undefined;
+          if (!name || missing.includes(name) || missing.length >= 50) return refuse("create_failed", msg);
+          missing.push(name);
+          tries[name] = `vmcpfill${mark}z`;
+          continue;
+        }
+        text = sink.text ?? "";
+        break;
       }
-      let text = sink.text ?? "";
+      if (missing.length) {
+        return refuse("invalid_argument", `Class ${cls} needs ${missing.length === 1 ? "a value" : "values"} for ${missing.map((x) => `"${x}"`).join(", ")}. Pass ${missing.length === 1 ? "it" : "them"} in \`values\`.`);
+      }
       if (!text) return refuse("create_failed", "The construction module rendered nothing.");
+      const used = new Set([...standIns.keys()].filter((s) => text.includes(s)));
 
       // Check what WOULD be written.
-      const left = ANY_TOKEN.exec(text);
-      if (left) return refuse("create_failed", `The class template left a token this tool cannot fill: ${left[0]}.`);
       const block = FRONTMATTER.exec(text);
-      let fm: Record<string, unknown> = {};
+      if (!block) return refuse("create_failed", "The rendered note has no frontmatter.");
+      const valueOf = (s: string) => (s === titleStandIn ? title : String(standIns.get(s)?.value ?? s));
+      const anyStandIn = new RegExp(`vmcp[vt]${mark}(?:x\\d+)?z`, "g");
+      // The body: each value as it is, escaped for a double-quoted scalar when it sits in one (as the module does).
+      const body = text.slice(block[0].length).replace(anyStandIn, (s, off: number, src: string) =>
+        src[off - 1] === '"' && src[off + s.length] === '"' ? JSON.stringify(valueOf(s)).slice(1, -1) : valueOf(s)
+      );
+      // The frontmatter: a line that holds a stand-in gets its value back as a YAML scalar.
+      const fmLines = block[1].split(/\r?\n/).map((line) => {
+        if (!anyStandIn.test(line)) return line;
+        anyStandIn.lastIndex = 0;
+        const m = /^(\s*(?:-\s+|[^\s#:][^:]*:\s+))(.*)$/.exec(line);
+        if (!m) return line.replace(anyStandIn, (s) => valueOf(s));
+        const rest = m[2].trim().replace(/^(["'])(.*)\1$/, "$2");
+        const one = standIns.get(rest);
+        if (one && typeof one.value !== "string") return m[1] + yamlScalar(one.value);
+        return m[1] + yamlScalar(rest.replace(anyStandIn, (s) => valueOf(s)));
+      });
+      anyStandIn.lastIndex = 0;
+      const left = ANY_TOKEN.exec(body) ?? ANY_TOKEN.exec(fmLines.join("\n"));
+      if (left) return refuse("create_failed", `The class template left a token this tool cannot fill: ${left[0]}.`);
+
+      let blocks = frontmatterBlocks(fmLines.join("\n"));
+      const has = (k: string) => blocks.some((b) => b.key === k);
+      let rendered: Record<string, unknown>;
       try {
-        const parsed = block ? parseYaml(block[1]) : {};
+        const parsed = parseYaml(fmLines.join("\n"));
+        rendered = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+      } catch (e) {
+        return refuse("create_failed", `The rendered frontmatter is not valid YAML (${(e as Error).message}).`);
+      }
+
+      // `frontmatter`: new keys only.
+      const clash = Object.keys(extra).find((k) => k in rendered);
+      if (clash) {
+        return refuse("invalid_argument", `\`frontmatter\` sets '${clash}', which the class template already writes: pass it in \`values\` if the template has a blank for it.`);
+      }
+      for (const [k, v] of Object.entries(extra)) blocks.push({ key: k, lines: yamlEntry(k, v) });
+
+      // A value for a field the class declares and the note does not set goes into the frontmatter
+      // (#537), even when the body used it: Meta/Panel shows `description` in its body but had no
+      // `description` key. A value used nowhere and placed nowhere is named in the result. Never
+      // dropped silently.
+      const declared = new Set(mods.fields?.(app, args.class) ?? []);
+      const unused: string[] = [];
+      for (const [s, { name, value }] of standIns) {
+        if (name === "title") continue;
+        if (declared.has(name) && !has(name) && !bindingKeys.includes(name)) blocks.push({ key: name, lines: [`${name}: ${yamlScalar(value)}`] });
+        else if (!used.has(s)) unused.push(name);
+      }
+
+      // What every note carries (#537): created and modified with the local offset, and a uid.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const now = (moment as any)();
+      const stamp = String(now.format("YYYY-MM-DDTHH:mm:ssZ"));
+      for (const k of ["created", "modified"]) {
+        const b = blocks.find((x) => x.key === k);
+        const v = b ? b.lines[0].slice(b.lines[0].indexOf(":") + 1).trim() : "";
+        if (!b) blocks.push({ key: k, lines: [`${k}: ${stamp}`] });
+        else if (b.lines.length === 1 && (v === "" || NO_OFFSET.test(v))) b.lines = [`${k}: ${stamp}`];
+      }
+      const uidBlock = blocks.find((x) => x.key === "uid");
+      if (!uidBlock) blocks.push({ key: "uid", lines: [`uid: ${uuidv7(Date.now())}`] });
+      else if (uidBlock.lines.length === 1 && uidBlock.lines[0].slice(4).trim().replace(/^["']|["']$/g, "") === "") uidBlock.lines = [`uid: ${uuidv7(Date.now())}`];
+
+      // Global's keys first, in Global's order; the class's own after, as rendered.
+      const rank = (k: string | null) => {
+        const i = k === null ? -1 : CORE_ORDER.indexOf(k);
+        return i < 0 ? CORE_ORDER.length : i;
+      };
+      blocks = blocks.map((b, i) => ({ b, i })).sort((x, y) => rank(x.b.key) - rank(y.b.key) || x.i - y.i).map((x) => x.b);
+      const yaml = blocks.flatMap((b) => b.lines).join("\n");
+
+      let fm: Record<string, unknown>;
+      try {
+        const parsed = parseYaml(yaml);
         fm = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
       } catch (e) {
         return refuse("create_failed", `The rendered frontmatter is not valid YAML (${(e as Error).message}).`);
@@ -270,28 +457,27 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const verifiedRendered = Object.keys(fm).find((k) => isVerifiedKey(k));
       if (verifiedRendered) return refuse("accept_forbidden", `The rendered note sets '${verifiedRendered}', which only Nelson writes.`);
 
-      // `frontmatter`: new keys only, added as text so the class's own YAML is kept as rendered.
-      if (Object.keys(extra).length > 0) {
-        const clash = Object.keys(extra).find((k) => k in fm);
-        if (clash) {
-          return refuse("invalid_argument", `\`frontmatter\` sets '${clash}', which the class template already writes: pass it in \`values\` if the template has a blank for it.`);
-        }
-        if (!block) return refuse("create_failed", "The rendered note has no frontmatter to add keys to.");
-        let added = stringifyYaml(extra);
-        if (!added.endsWith("\n")) added += "\n";
-        const end = block.index + block[0].length - block[2].length - 3; // where the closing fence starts
-        text = text.slice(0, end) + added + text.slice(end);
-      }
+      const out = `---\n${yaml}\n---\n${body}`;
 
       // Write once, through the host's guarded create.
       let written: { path: string; created: boolean };
       try {
-        written = await ctx.writeNote(path, text);
+        written = await ctx.writeNote(path, out);
       } catch (e) {
         return refuse("create_failed", `${(e as Error).message}`);
       }
       const rev = ctx.revOf?.(written.path);
-      return ok({ path: written.path, class: cls, created: true, ...(rev !== undefined ? { rev } : {}), filesChanged: 1, files: [written.path] });
+      return ok({
+        path: written.path,
+        class: cls,
+        created: true,
+        ...(rev !== undefined ? { rev } : {}),
+        ...(unused.length
+          ? { unused_values: unused, warning: `No blank of class ${cls} used ${unused.map((x) => `"${x}"`).join(", ")}, and the class declares no free field for ${unused.length === 1 ? "it" : "them"}, so ${unused.length === 1 ? "it was" : "they were"} not written.` }
+          : {}),
+        filesChanged: 1,
+        files: [written.path],
+      });
     }
   );
 }
