@@ -314,7 +314,7 @@ describe("makeGuarded with the Sync guard", () => {
 describe("#528: decideSync judges pending changes at the call's own paths", () => {
   const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
   test("a move whose source has a server change waiting is refused; one elsewhere goes on", async () => {
-    const s = synced({ syncStatus: "Indexing...", pendingPaths: ["Inbox/A.md"] });
+    const s = synced({ pendingPaths: ["Inbox/A.md"] });
     assert.equal((await decideSync("obsidian_move_note", { from: "Inbox/A.md", to: "Done/A.md" }, deps(s))).refuse.code, SYNC_BEHIND);
     assert.equal(await decideSync("obsidian_move_note", { from: "Inbox/B.md", to: "Done/B.md" }, deps(s)), null);
   });
@@ -384,5 +384,47 @@ describe("#529 review 2: the hold skips only a connection wait, and only a check
   });
   test("a target with a trailing slash still matches", () => {
     assert.equal(judgeSync(synced({ pendingPaths: ["Dir/x.md"] }), NOW, ["Dir/"]).kind, "behind");
+  });
+});
+
+describe("#533 (Nelson's pick A): a rename, move or delete waits for Fully synced again; a create does not", () => {
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const busy = synced({ syncStatus: "Indexing...", pendingPaths: [] });
+  test("move, move_notes, the scheme moves, delete and trash are refused while this Mac's own changes go up", async () => {
+    for (const [tool, args] of [
+      ["obsidian_move_note", { from: "A.md", to: "B.md" }],
+      ["obsidian_move_notes", { moves: [{ from: "A.md", to: "B.md" }] }],
+      ["obsidian_delete_note", { path: "A.md" }],
+      ["obsidian_trash", { path: "A.md" }],
+      ["obsidian_refile_address", { path: "A.md" }],
+    ]) {
+      const d = await decideSync(tool, args, deps(busy));
+      assert.equal(d.refuse.code, SYNC_BEHIND, tool);
+      assert.match(d.refuse.message, /own changes are still going up \(Indexing\.\.\.\)/, tool);
+    }
+  });
+  test("a create while Indexing goes on (the #528 relief stays)", async () => {
+    assert.equal(await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, deps(busy)), null);
+    assert.equal(await decideSync("obsidian_write_notes", { path: "N.md", create_only: true }, deps(busy)), null);
+  });
+  test("a rename when Fully synced goes on", async () => {
+    assert.equal(await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, deps(synced())), null);
+  });
+  test("a rename when the status text is missing is unknown (warn by default)", async () => {
+    const d = await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, deps(synced({ syncStatus: undefined })));
+    assert.equal(d.code, SYNC_UNKNOWN);
+  });
+  test("a rename that catches Fully synced during the wait goes on", async () => {
+    let t = NOW;
+    const states = [busy, busy, synced()];
+    let i = 0;
+    const d = await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, {
+      settings: normalizeSyncGuard({ enabled: true, waitSeconds: 10 }),
+      read: () => states[Math.min(i++, states.length - 1)],
+      now: () => t,
+      sleep: async (ms) => { t += ms; },
+      pollMs: 1000,
+    });
+    assert.equal(d, null);
   });
 });

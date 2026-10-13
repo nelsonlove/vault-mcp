@@ -11,7 +11,8 @@
 // the write names; then it refuses a STRUCTURE write (rename, move, delete,
 // create) that is still behind, and lets a CONTENT write (edit, append) go on
 // with a warning. Since #528 it does not judge Sync's status text, which says
-// "Indexing..." for most of a busy day.
+// "Indexing..." for most of a busy day, except for a rename, move or delete,
+// which waits for "Fully synced" again (#533): that is the 2026-10-10 case.
 //
 // Obsidian-free and pure: the Sync state arrives as a plain snapshot
 // (server.ts reads it from Obsidian's internal Sync plugin, one named field at
@@ -84,8 +85,8 @@ export interface SyncFields {
   ready: unknown;
   error: unknown;
   pause: unknown;
-  /** The status text ("Fully synced", "Indexing...", "Uploading …"). Reported, never judged: measured
-   *  2026-10-12, it says "Indexing..." for most of the day while the fleet writes (#528). */
+  /** The status text ("Fully synced", "Indexing...", "Uploading …"). Judged only for a rename, move or
+   *  delete (#533); measured 2026-10-12, it says "Indexing..." for most of the day while the fleet writes (#528). */
   syncStatus: unknown;
   /** The paths of `newServerFiles` (server changes not yet pulled), or undefined when it is not an array. */
   pendingPaths: unknown;
@@ -154,6 +155,21 @@ export type SyncVerdict =
  * device just made or renamed (#529 review 1). They are rarely used, so the
  * wider check costs little.
  */
+/**
+ * Structure writes that rename, move or delete an existing note (#533, Nelson's pick A): for them
+ * the status text is judged again, so they wait for "Fully synced". Creates are not in this set:
+ * judging the text for them refused nearly every create on a busy day (#528).
+ */
+const STATUS_STRICT = new Set([
+  "obsidian_move_note",
+  "obsidian_move_notes",
+  "obsidian_assign_address",
+  "obsidian_refile_address",
+  "obsidian_renumber_address",
+  "obsidian_delete_note",
+  "obsidian_trash",
+]);
+
 const DESTINATION_UNNAMED = new Set([
   "obsidian_assign_address",
   "obsidian_refile_address",
@@ -175,14 +191,15 @@ function pendingTouches(pending: string, target: string): boolean {
  * has an error, is paused, has no open socket to its server, has had no
  * server message for STALE_SERVER_MS, or has a server change waiting to be
  * pulled at one of the targets (or a folder holding one, or a note under a
- * target folder). The status text is NOT judged (#528): measured on the Pro
- * on 2026-10-12, it said "Indexing..." through 45 minutes of fleet writes
- * while the socket was open and changes flowed, so judging it refused nearly
- * every create. Local indexing and uploads are not behind: this Mac's own
- * change goes up after it is written. Unknown when a field the test needs is
- * missing or of another type.
+ * target folder). The status text is not judged for a create (#528): measured
+ * on the Pro on 2026-10-12, it said "Indexing..." through 45 minutes of fleet
+ * writes while the socket was open and changes flowed, so judging it refused
+ * nearly every create. With `strictStatus` (a rename, move or delete, #533)
+ * anything but "Fully synced" is behind, because a rename made while this
+ * Mac's own changes are still going up is how the 2026-10-10 twin came back.
+ * Unknown when a field the test needs is missing or of another type.
  */
-export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string[] = [], anyPending = false): SyncVerdict {
+export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string[] = [], anyPending = false, strictStatus = false): SyncVerdict {
   if (s.state === "off") return { kind: "off" };
   if (s.state === "unknown") return { kind: "unknown", why: s.why };
   const f = s.fields;
@@ -201,6 +218,13 @@ export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string
   if (f.socketOpen === false) return { kind: "behind", status: "disconnected from the Sync server", scope: "connection" };
   const age = now - (f.lastMessageTs as number);
   if (age > STALE_SERVER_MS) return { kind: "behind", status: `no message from the Sync server for ${Math.round(age / 1000)} s`, scope: "connection" };
+  // A rename, move or delete also waits for this Mac's own changes to go up (#533, Nelson's pick A):
+  // the 2026-10-10 twin was a rename made while this Mac still said "Indexing...", and Sync gives no
+  // per-file upload signal, so only "Fully synced" proves this Mac's side is up. Creates do not judge it.
+  if (strictStatus) {
+    if (typeof f.syncStatus !== "string") return { kind: "unknown", why: "Sync fields missing or changed: syncStatus" };
+    if (f.syncStatus !== "Fully synced") return { kind: "behind", status: `this Mac's own changes are still going up (${f.syncStatus})`, scope: "connection" };
+  }
   const pending = f.pendingPaths as string[];
   if (anyPending && pending.length > 0) {
     return { kind: "behind", status: `${pending.length} server change(s) not yet pulled, and this tool does not name where it writes`, scope: "path" };
@@ -272,7 +296,8 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   const targets = collectPaths(args);
   // A structure write that does not name where it writes checks every pending change.
   const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool));
-  let v = judgeSync(deps.read(), deps.now(), targets, anyPending);
+  const strictStatus = kind === "structure" && STATUS_STRICT.has(tool);
+  let v = judgeSync(deps.read(), deps.now(), targets, anyPending, strictStatus);
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
   // The hold skips the wait only for a cause every write meets; a path cause still waits (#529 review 2).
@@ -283,7 +308,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     const poll = Math.max(50, deps.pollMs ?? 500);
     while (v.kind === "behind" && deps.now() < deadline) {
       await deps.sleep(Math.min(poll, Math.max(0, deadline - deps.now())));
-      v = judgeSync(deps.read(), deps.now(), targets, anyPending);
+      v = judgeSync(deps.read(), deps.now(), targets, anyPending, strictStatus);
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
