@@ -212,6 +212,18 @@ export type { GuardSettings } from "./visibility.js";
 export { resolveScope } from "./scope.js";
 export type { ScopeRefusal } from "./scope.js";
 export { normalizePosix } from "./visibility.js";
+// Write scope — what a session may write, separate from the read allowlist (write-scope.ts).
+export {
+  DEFAULT_WRITE_SCOPE,
+  normalizeWriteScope,
+  globToRegExp,
+  inWriteScope,
+  writeScopeRefusal,
+  writeScopeRefusalForPath,
+  CREATE_TOOLS,
+  COMPUTED_CREATE_TOOLS,
+} from "./write-scope.js";
+export type { WriteScope, WriteScopeMode } from "./write-scope.js";
 
 // ── The controlled-vocabulary kernel (suite split, S7) ──────────────────────
 //

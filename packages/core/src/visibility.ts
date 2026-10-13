@@ -26,6 +26,8 @@
 export interface GuardSettings {
   readOnly: boolean;
   allowlist: string[];
+  /** What a session may write, separate from what it may read (write-scope.ts). Absent ⇒ no write rule. */
+  writeScope?: unknown;
 }
 
 /** POSIX `path.normalize`, inlined so this module has no node dependency at
