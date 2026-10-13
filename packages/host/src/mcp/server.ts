@@ -512,6 +512,12 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     registerCreateNoteTool(server, app, {
       getSettings: () => ctx.getSettings(),
       flowPath: () => ctx.createNoteFlow?.() ?? "",
+      // The host's own guarded create (accept guard, protected properties, name rules, parent folders).
+      writeNote: (p: string, content: string) => backend.writeNote(p, content, false),
+      revOf: (p: string) => {
+        const r = probe.rev(p);
+        return typeof r === "number" ? r : undefined;
+      },
     });
   }
   // "QuickAdd choices as notes" EXTRACTED (suite-split, first satellite):
