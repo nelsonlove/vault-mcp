@@ -41,7 +41,8 @@ function fakeModules({ required = [], body = "", fmLines = [], type } = {}) {
   return {
     seen,
     mods: {
-      hasClass: (a, cls) => cls === "Declared" || cls === "Loose" || cls === "Two",
+      className: (cls) => String(cls).replace(/^\[\[|\]\]$/g, "").trim(),
+      hasClass: (a, cls) => ["Declared", "Loose", "Two"].includes(String(cls).replace(/^\[\[|\]\]$/g, "").trim()),
       resolvePlacement: async (view, cls, params, opts) => {
         // The module's human fallback is the active note's folder; the view must hide it.
         seen.placementActive.push(view.workspace.getActiveFile());
@@ -148,6 +149,19 @@ describe("obsidian_create_note: render, check, write once", () => {
     const { call } = setup();
     assert.match(errText(await call({ class: "Loose", title: "N", folder: "F", values: { "accepted-by": "me" } })), /Error \[accept_forbidden\]/);
     assert.match(errText(await call({ class: "Loose", title: "N", folder: "F", frontmatter: { verified: "x" } })), /Error \[accept_forbidden\]/);
+  });
+  test("a title with '$' or '{{' is refused (the module fills {{TITLE}} with String.replace)", async () => {
+    const { app, call } = setup();
+    assert.match(errText(await call({ class: "Loose", title: "Fees $' due", folder: "F" })), /holds '\$' or '\{\{'/);
+    assert.match(errText(await call({ class: "Loose", title: "x {{DATE}}", folder: "F" })), /holds '\$' or '\{\{'/);
+    assert.equal(app.writes.length, 0);
+  });
+  test("the class is compared as the module writes it: a wikilink class is accepted", async () => {
+    const { app, call } = setup();
+    const r = await call({ class: "[[Loose]]", title: "N", folder: "F" });
+    assert.notEqual(r.isError, true, errText(r));
+    assert.equal(r.structuredContent.class, "Loose");
+    assert.match(app.files.get("F/N.md").text, /^---\ntype: Loose\n/);
   });
   test("titles and folders that would escape the computed path are refused", async () => {
     const { call } = setup();

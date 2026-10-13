@@ -506,7 +506,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     getSettings: () => ctx.getSettings(),
   });
   // obsidian_create_note (#531): a note of a class, through the vault's own
-  // flow.createFromFileclass. Registered only when the createNoteFlow setting
+  // flow.applyFileclass (rendered in memory, written once). Registered only when the createNoteFlow setting
   // names the module, read once per connection like the module toggles.
   if ((ctx.createNoteFlow?.() ?? "").trim()) {
     registerCreateNoteTool(server, app, {

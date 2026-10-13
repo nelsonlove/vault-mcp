@@ -52,6 +52,8 @@ export interface FlowModules {
   resolvePlacement: (app: App, cls: string, params: unknown, opts?: Record<string, unknown>) => Promise<string>;
   /** Whether the class exists. */
   hasClass: (app: App, cls: string) => boolean;
+  /** The class name as the module writes it (fileclass-render.className: no [[ ]], no .md/.fileclass). */
+  className: (cls: string) => string;
 }
 
 export interface CreateNoteCtx {
@@ -80,6 +82,7 @@ export function loadFlowModules(app: App, flowRel: string): FlowModules {
     applyFileclass: flow.applyFileclass,
     resolvePlacement: render.resolvePlacement,
     hasClass: (a: App, cls: string) => !!render.definitions(a).find(render.className(cls)),
+    className: (cls: string) => String(render.className(cls)),
   };
 }
 
@@ -146,6 +149,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         "`frontmatter` adds keys the template does not write (e.g. `session`, `session-id`, `reports-to`); it may not set a key the rendered note already has, nor the class key (`type`). " +
         "The note is rendered, checked, and written once; nothing is written when any check fails. Refused: a note that already exists at the path, " +
         "a name Obsidian Sync refuses or that breaks links, acceptance or a `verified` record anywhere in the result, a path outside your allowlist. " +
+        "A class whose template uses a token other than `{{VALUE:…}}`, `{{TITLE}}` and `{{DATE…}}` (e.g. a Templater `{{date}}`) is refused. " +
         "Returns the new note's path and rev. To change an existing note, use obsidian_patch_note or obsidian_manage_frontmatter.",
       inputSchema: strictInput({
         class: z.string().min(1).describe("The fileclass, e.g. 'Event/AgentNotebookEntry' (as in 00.10 Fileclasses)."),
@@ -175,6 +179,10 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       if (/[/\\]/.test(title) || /\.md$/i.test(title)) {
         return refuse("invalid_argument", `The title '${title}' names a folder or ends in .md: pass the folder as \`folder\` and the name without .md.`);
       }
+      // The module puts the title in with String.replace, where `$` is a pattern (`$'` pastes the rest of the note), and a `{{` would be a token.
+      if (title.includes("$") || title.includes("{{")) {
+        return refuse("invalid_argument", `The title '${title}' holds '$' or '{{', which the template would read as a pattern or a token.`);
+      }
       // A value is one line of text: a line break could add frontmatter keys, a `{{` a token.
       for (const [k, v] of Object.entries(values)) {
         if (typeof v === "string" && (/[\r\n]/.test(v) || v.includes("{{"))) {
@@ -187,7 +195,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const verifiedKey = [...Object.keys(values), ...Object.keys(extra)].find((k) => isVerifiedKey(k));
       if (verifiedKey) return refuse("accept_forbidden", `'${verifiedKey}' is a verified record, which only Nelson writes.`);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const alias = ((app as any).plugins?.plugins?.fileclass?.settings?.fileClassAlias as string | undefined) || "type";
+      const alias = ((app as any).plugins?.plugins?.fileclass?.settings?.fileClassAlias as string | undefined) || "fileClass";
       const bindingKeys = [...new Set([alias, "type", "fileClass", "fileclass"])];
       const extraBinding = bindingKeys.find((k) => k in extra);
       if (extraBinding) return refuse("invalid_argument", `\`frontmatter\` may not set '${extraBinding}': the class sets it. Pass the class as \`class\`.`);
@@ -202,6 +210,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         return refuse("unavailable", `The vault's construction module could not be loaded (${(e as Error).message}).`);
       }
       if (!mods.hasClass(app, args.class)) return refuse("invalid_argument", `No fileclass '${args.class}'.`);
+      const cls = mods.className(args.class);
 
       // Agent mode: nothing prompts; a missing required blank throws by name.
       const variables: Record<string, unknown> = { ...values, ...(args.destination ? { destination: args.destination } : {}), "_invoked-by": "agent" };
@@ -235,7 +244,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const stand = { path, name: `${title}.md`, basename: title, extension: "md", parent: null, stat: { ctime: 0, mtime: 0, size: 0 } };
       const sink: { text?: string } = {};
       try {
-        await mods.applyFileclass(renderView(app, stand, sink), params, stand, { cls: args.class, title });
+        await mods.applyFileclass(renderView(app, stand, sink), params, stand, { cls, title });
       } catch (e) {
         return refuse("create_failed", `${(e as Error).message}`);
       }
@@ -253,10 +262,9 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       } catch (e) {
         return refuse("create_failed", `The rendered frontmatter is not valid YAML (${(e as Error).message}).`);
       }
-      const bound = bindingKeys.map((k) => fm[k]).find((v) => v !== undefined);
-      if (!([] as unknown[]).concat(bound ?? []).some((v) => String(v) === args.class)) {
-        return refuse("create_failed", `The rendered note does not carry the class '${args.class}'.`);
-      }
+      // The class under whichever binding key the module wrote (its alias, or fileClass when the plugin is not loaded).
+      const carries = bindingKeys.some((k) => ([] as unknown[]).concat(fm[k] ?? []).some((v) => String(v) === cls));
+      if (!carries) return refuse("create_failed", `The rendered note does not carry the class '${cls}'.`);
       const accept = acceptTransitionReason(null, fm) ?? acceptForbiddenReason(fm);
       if (accept) return refuse("accept_forbidden", `${accept}.`);
       const verifiedRendered = Object.keys(fm).find((k) => isVerifiedKey(k));
@@ -283,7 +291,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         return refuse("create_failed", `${(e as Error).message}`);
       }
       const rev = ctx.revOf?.(written.path);
-      return ok({ path: written.path, class: args.class, created: true, ...(rev !== undefined ? { rev } : {}), filesChanged: 1, files: [written.path] });
+      return ok({ path: written.path, class: cls, created: true, ...(rev !== undefined ? { rev } : {}), filesChanged: 1, files: [written.path] });
     }
   );
 }
