@@ -55,7 +55,7 @@ const TABLE = [
   { op: "save workspace", class: NOT, calls: [["obsidian_save_workspace", {}]] },
   { op: "snippet write", class: "exempt (temporary)", calls: [["obsidian_snippet_write", {}]], code: "exempt", why: "it names no path and its file is under .obsidian/snippets, which has no revision the kernel can read; a required if_rev would refuse every overwrite" },
   { op: "periodic note", class: "exempt", calls: [["obsidian_periodic_note", {}]] },
-  { op: "create note from template", class: "key", calls: [["obsidian_create_note_from_template", {}]] },
+  { op: "create note from template", class: "key", calls: [["obsidian_create_note_from_template", {}], ["obsidian_create_note", {}]] },
   { op: "base create", class: "key", calls: [["obsidian_base_create", {}]] },
   { op: "import Apple Notes", class: "key", calls: [["obsidian_import_apple_notes", {}]] },
   { op: "Obsidian CLI (run code in the application)", class: "key", calls: [["obsidian_cli", {}]] },

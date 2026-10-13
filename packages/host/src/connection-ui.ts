@@ -901,6 +901,24 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           })
       );
 
+    // ── obsidian_create_note (#531) ───────────────────────────────────────────
+    new Setting(containerEl)
+      .setName("Construction module for obsidian_create_note")
+      .setDesc(
+        "Vault-relative path of the vault's flow.js (the module with createFromFileclass). Set: agents get obsidian_create_note, " +
+          "which makes a note of a class from that class's own template. Empty: the tool is not offered. Takes effect on the next connection. " +
+          "Saved when you leave the field."
+      )
+      .addText((t) => {
+        t.setValue(this.plugin.settings.createNoteFlow);
+        t.inputEl.addEventListener("change", async () => {
+          const v = t.getValue().trim().replace(/^\/+/, "");
+          if (v === this.plugin.settings.createNoteFlow) return;
+          this.plugin.settings.createNoteFlow = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
     // ── observation capture ─────────────────────────────────────────────────
     //
     // DEFAULT OFF, and the copy says plainly what turning it on does. Capturing

@@ -388,6 +388,19 @@ A rename, move, delete or create (the structure kinds: `syncKind` on each row of
 | Risk | Refuse can stop every classified write after an Obsidian update until vault-mcp is fixed |
 | Recovery | Set it to Warn, or turn the guard off |
 
+## Creating notes
+
+### Construction module for obsidian_create_note
+
+| Field | Value |
+|---|---|
+| Key | `createNoteFlow` |
+| Default | Empty (the plugin ships no vault folder name) |
+| Effect | The vault-relative path of the vault's `flow.js`, the module with `createFromFileclass`. Set: agents get `obsidian_create_note`, which makes a note of a fileclass from that class's own `## Template` (#531): the values fill its `{{VALUE:…}}` blanks, a missing required one is refused by name, `{{DATE}}` is filled, `frontmatter` adds keys the template does not write (not the class key, acceptance or `verified`), the note lands in the class's declared folder or the caller's `folder`, and an existing note, an unsafe name, an acceptance value or a path outside the allowlist is refused. Empty: the tool is not offered |
+| Takes effect | On the next MCP connection |
+| Risk | A wrong path: each call is refused with `unavailable` and nothing is written |
+| Recovery | Correct or clear the field |
+
 ## Conformance
 
 ### Vault conventions

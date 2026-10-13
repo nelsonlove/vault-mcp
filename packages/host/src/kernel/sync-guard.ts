@@ -237,6 +237,18 @@ export function syncKindOf(tool: string, args: Record<string, unknown>): SyncKin
 
 // ── the decision ─────────────────────────────────────────────────────────────
 
+/** The paths a call writes: its path arguments, and for obsidian_create_note (#531) the note its `folder` and `title` name. */
+function targetsOf(tool: string, args: Record<string, unknown>): string[] {
+  const paths = collectPaths(args);
+  if (tool === "obsidian_create_note" && typeof args.folder === "string") {
+    const values = (args.values ?? {}) as Record<string, unknown>;
+    const title = typeof args.title === "string" ? args.title : typeof values.title === "string" ? values.title : "";
+    const folder = args.folder.replace(/^\/+|\/+$/g, "");
+    paths.push(title ? (folder ? `${folder}/${title}.md` : `${title}.md`) : folder);
+  }
+  return paths.filter(Boolean);
+}
+
 /** The code a refusal carries. */
 export const SYNC_BEHIND = "sync_behind";
 /** The code a refusal carries when the Sync state cannot be read and `onUnknown` is `refuse`. */
@@ -269,7 +281,7 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   if (!settings.enabled) return null;
   const kind = syncKindOf(tool, args);
   if (kind === null) return null;
-  const targets = collectPaths(args);
+  const targets = targetsOf(tool, args);
   // A structure write that does not name where it writes checks every pending change.
   const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool));
   let v = judgeSync(deps.read(), deps.now(), targets, anyPending);
