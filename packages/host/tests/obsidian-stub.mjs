@@ -201,6 +201,20 @@ export function parseYaml(text) {
 let installed = false;
 
 /** Point the "obsidian" specifier at this module for every subsequent import. */
+/** Obsidian's normalizePath, as far as the tests need it: collapse slashes, trim them at the ends. */
+export function normalizePath(p) {
+  return String(p).replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+}
+
+/** A fixed-clock moment: format() renders the few tokens the tests use from 2026-10-12T14:05:09. */
+export function moment() {
+  return {
+    format(f) {
+      return String(f).replace("YYYY", "2026").replace("MM", "10").replace("DD", "12").replace("HH", "14").replace("mm", "05").replace("ss", "09");
+    },
+  };
+}
+
 export function installObsidianStub() {
   if (installed) return;
   installed = true;

@@ -91,6 +91,8 @@ export interface ServerCtx {
   recordFolders?: () => unknown;
   /** The Sync guard's settings (kernel/sync-guard.ts), live per call; coerced through `normalizeSyncGuard`; absent ⇒ off. */
   syncGuard?: () => unknown;
+  /** The vault-relative path of flow.js for obsidian_create_note (#531); empty or absent ⇒ the tool is not registered. */
+  createNoteFlow?: () => string;
   // `getVocabularies` was here until the read-tier satellite extraction (suite
   // split, S7). It carried `settings.vocabularies` to the vocab module's tool
   // layer; that module is now the `vaultmcp-vocab` plugin, which owns its own
