@@ -27,6 +27,7 @@ import { conventionsOnLoad } from "./conventions-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
 import { EMPTY_VAULT_CONVENTIONS, resolveConventions, type VaultConventions } from "./conformance/vault-conventions.js";
+import { DEFAULT_WRITE_SCOPE, normalizeWriteScope, type WriteScope } from "@vault-mcp/core";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
   DEFAULT_RECORD_FOLDERS,
@@ -224,6 +225,14 @@ interface VaultMcpSettings {
    */
   createNoteFlow: string;
   /**
+   * What agents may WRITE, separate from what they may read (core's
+   * write-scope.ts): `mode` "all" (no rule) or "create-only" (a new note at a
+   * path matching one of `paths`, glob patterns; every other write refused).
+   * Default "all". No folder name is written into code: the values are the
+   * operator's. Coerced through `normalizeWriteScope` on load.
+   */
+  writeScope: WriteScope;
+  /**
    * The in-Obsidian dev tool-runner ("Vault MCP: Run tool…" — src/tool-runner.ts).
    * Default ON: it grants nothing the MCP surface doesn't already grant — it
    * invokes the same guarded captured tools a code-mode connection gets, so
@@ -290,6 +299,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
   syncGuard: { ...DEFAULT_SYNC_GUARD },
   createNoteFlow: "",
+  writeScope: { ...DEFAULT_WRITE_SCOPE, paths: [] },
 };
 
 class DiagnosticsModal extends Modal {
@@ -378,6 +388,7 @@ export default class VaultMcpPlugin extends Plugin {
     // The Sync guard: a partial or hand-edited value is coerced, never a crash; absent ⇒ off.
     this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
     if (typeof this.settings.createNoteFlow !== "string") this.settings.createNoteFlow = "";
+    this.settings.writeScope = normalizeWriteScope(this.settings.writeScope);
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any
     // value that isn't an explicit `false` reads as enforced (same
     // fail-toward-the-safe-default discipline as the cliPolicy/protected-
@@ -770,6 +781,8 @@ export default class VaultMcpPlugin extends Plugin {
         // reach capture until the next reconnect — the inert-toggle shape again.
         guardedTerritories: this.settings.guardedTerritories,
         vaultConventions: this.settings.vaultConventions,
+        // Live per call: an operator who narrows or widens the write scope does not wait for a reconnect.
+        writeScope: this.settings.writeScope,
       }),
       // The record settings, live per call through their own thunks — the same
       // two getters the kernel's guard probe above takes — and deliberately not

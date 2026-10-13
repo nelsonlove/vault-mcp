@@ -35,6 +35,7 @@ import {
 import { hasGuardedTerritory } from "./territory-policy.js";
 import { CONVENTION_FIELDS, commitConvention } from "./conventions-policy.js";
 import { resolveConventions } from "./conformance/vault-conventions.js";
+import { normalizeWriteScope } from "@vault-mcp/core";
 
 // ── tabbed settings UI: the pure, DOM-free half ─────────────────────────────
 //
@@ -915,6 +916,37 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           const v = t.getValue().trim().replace(/^\/+/, "");
           if (v === this.plugin.settings.createNoteFlow) return;
           this.plugin.settings.createNoteFlow = v;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    // ── write scope (core's write-scope.ts) ─────────────────────────────────────
+    new Setting(containerEl)
+      .setName("What agents may write")
+      .setDesc(
+        "All: any write the read-only mode and the path allowlist allow. Create new notes only: agents may only create a new note at a path that matches one of the patterns below; " +
+          "every edit, overwrite, append, rename, move, delete, command and plugin change is refused (write_scope). Reads are not changed. Live, per call."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({ all: "All", "create-only": "Create new notes only" })
+          .setValue(normalizeWriteScope(this.plugin.settings.writeScope).mode)
+          .onChange(async (v) => {
+            this.plugin.settings.writeScope = { ...normalizeWriteScope(this.plugin.settings.writeScope), mode: v === "create-only" ? "create-only" : "all" };
+            await this.plugin.saveSettings();
+          })
+      );
+    new Setting(containerEl)
+      .setName("Where new notes may be created")
+      .setDesc(
+        "One glob pattern per line, over the vault-relative note path: ** is any folders (or none), * and ? stay within one name, [0-9] is a character class. " +
+          "For example **/[0-9][0-9].01 Inbox/*.md. Used only when the setting above is Create new notes only. Saved when you leave the field."
+      )
+      .addTextArea((t) => {
+        t.setValue(normalizeWriteScope(this.plugin.settings.writeScope).paths.join("\n"));
+        t.inputEl.addEventListener("change", async () => {
+          const paths = t.getValue().split("\n").map((l) => l.trim()).filter(Boolean);
+          this.plugin.settings.writeScope = normalizeWriteScope({ ...normalizeWriteScope(this.plugin.settings.writeScope), paths });
           await this.plugin.saveSettings();
         });
       });

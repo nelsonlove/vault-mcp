@@ -66,12 +66,12 @@ function fakeModules({ required = [], body = "", fmLines = [], type, echo = true
   };
 }
 
-function setup({ allowlist = [], ...mod } = {}) {
+function setup({ allowlist = [], writeScope, ...mod } = {}) {
   const app = fakeApp();
   const { mods, seen } = fakeModules(mod);
   const server = fakeServer();
   registerCreateNoteTool(server, app, {
-    getSettings: () => ({ readOnly: false, allowlist }),
+    getSettings: () => ({ readOnly: false, allowlist, ...(writeScope ? { writeScope } : {}) }),
     flowPath: () => "Scripts/flow.js",
     load: () => mods,
     writeNote: async (p, content) => {
@@ -271,5 +271,16 @@ describe("obsidian_create_note: #538 review fixes", () => {
     assert.ok(!r.isError, errText(r));
     assert.match(out(app, "F/S.md"), /\nseverity: hard\n/);
     assert.equal(JSON.parse(errText(r)).unused_values, undefined);
+  });
+});
+
+describe("obsidian_create_note under the write scope", () => {
+  test("create-only: a computed path in scope is written; one outside is refused, typed, and nothing is written", async () => {
+    const { app, call } = setup({ writeScope: { mode: "create-only", paths: ["**/[0-9][0-9].01 Inbox/*.md"] } });
+    const ok = await call({ class: "Loose", title: "In", folder: "A/10.01 Inbox" });
+    assert.ok(!ok.isError, errText(ok));
+    const no = await call({ class: "Loose", title: "Out", folder: "A/10.02 Tasks" });
+    assert.match(errText(no), /^Error \[write_scope\]: .*'A\/10\.02 Tasks\/Out\.md' is not one of them/);
+    assert.deepEqual(app.writes, ["A/10.01 Inbox/In.md"]);
   });
 });
