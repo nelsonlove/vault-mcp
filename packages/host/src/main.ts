@@ -218,6 +218,12 @@ interface VaultMcpSettings {
    */
   syncGuard: SyncGuardSettings;
   /**
+   * The vault-relative path of the vault's construction module `flow.js`, for
+   * obsidian_create_note (#531). Empty when the plugin ships (no vault folder
+   * name in live code); the tool is registered only when it is set.
+   */
+  createNoteFlow: string;
+  /**
    * The in-Obsidian dev tool-runner ("Vault MCP: Run tool…" — src/tool-runner.ts).
    * Default ON: it grants nothing the MCP surface doesn't already grant — it
    * invokes the same guarded captured tools a code-mode connection gets, so
@@ -283,6 +289,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   recordIdentification: { ...DEFAULT_RECORD_IDENTIFICATION },
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
   syncGuard: { ...DEFAULT_SYNC_GUARD },
+  createNoteFlow: "",
 };
 
 class DiagnosticsModal extends Modal {
@@ -370,6 +377,7 @@ export default class VaultMcpPlugin extends Plugin {
     this.settings.recordIdentification = normalizeRecordIdentification(this.settings.recordIdentification);
     // The Sync guard: a partial or hand-edited value is coerced, never a crash; absent ⇒ off.
     this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
+    if (typeof this.settings.createNoteFlow !== "string") this.settings.createNoteFlow = "";
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any
     // value that isn't an explicit `false` reads as enforced (same
     // fail-toward-the-safe-default discipline as the cliPolicy/protected-
@@ -771,6 +779,7 @@ export default class VaultMcpPlugin extends Plugin {
       recordIdentification: () => this.settings.recordIdentification,
       recordFolders: () => this.settings.recordFolders,
       syncGuard: () => this.settings.syncGuard,
+      createNoteFlow: () => this.settings.createNoteFlow,
       serverIdentity,
       sessions: {
         // LIFECYCLE ONLY (condition 7 — the host mints). `get` is deliberately

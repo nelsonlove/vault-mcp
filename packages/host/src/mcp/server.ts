@@ -27,6 +27,7 @@ import { registerConformanceDebtTools, registerConformanceDebtRenderTool } from 
 import { obsidianDebtRenderSource } from "./obsidian-debt-source.js";
 import { resolveConventions } from "../conformance/vault-conventions.js";
 import { createSyncGuard, normalizeSyncGuard, readSyncSnapshot } from "../kernel/sync-guard.js";
+import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
@@ -504,6 +505,21 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   registerSurveyTools(server, app, {
     getSettings: () => ctx.getSettings(),
   });
+  // obsidian_create_note (#531): a note of a class, through the vault's own
+  // flow.applyFileclass (rendered in memory, written once). Registered only when the createNoteFlow setting
+  // names the module, read once per connection like the module toggles.
+  if ((ctx.createNoteFlow?.() ?? "").trim()) {
+    registerCreateNoteTool(server, app, {
+      getSettings: () => ctx.getSettings(),
+      flowPath: () => ctx.createNoteFlow?.() ?? "",
+      // The host's own guarded create (accept guard, protected properties, name rules, parent folders).
+      writeNote: (p: string, content: string) => backend.writeNote(p, content, false),
+      revOf: (p: string) => {
+        const r = probe.rev(p);
+        return typeof r === "number" ? r : undefined;
+      },
+    });
+  }
   // "QuickAdd choices as notes" EXTRACTED (suite-split, first satellite):
   // it now lives in packages/quickadd-choices-compile, publishing
   // `quickadd_choices_compile_run` through vault-mcp-api like any third-party
