@@ -140,21 +140,13 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
 /** A status can stay on screen after the socket drops: a server message older than this means the link is not alive. */
 export const STALE_SERVER_MS = 2 * 60 * 1000;
 
-/** `scope` says what the cause hangs on: the link to the server (every write meets it) or one write's paths. */
+/** `scope` says what the cause hangs on: the link to the server (every write meets it), one write's paths, or the status text (judged only for the `STATUS_STRICT` tools, #533). */
 export type SyncVerdict =
   | { kind: "off" }
   | { kind: "synced" }
   | { kind: "behind"; status: string; scope: "connection" | "path" | "status" }
   | { kind: "unknown"; why: string };
 
-/**
- * Structure tools that name only the note they move, not where it goes (the
- * scheme tools compute the destination folder) or no path at all
- * (`obsidian_periodic_note`). For them a server change waiting ANYWHERE in the
- * vault counts, as before #528: the destination may be a folder the other
- * device just made or renamed (#529 review 1). They are rarely used, so the
- * wider check costs little.
- */
 /**
  * Structure writes that rename, move or delete an existing note (#533, Nelson's pick A): for them
  * the status text is judged again, so they wait for "Fully synced". Creates are not in this set:
@@ -170,6 +162,14 @@ export const STATUS_STRICT: ReadonlySet<string> = new Set([
   "obsidian_trash",
 ]);
 
+/**
+ * Structure tools that name only the note they move, not where it goes (the
+ * scheme tools compute the destination folder) or no path at all
+ * (`obsidian_periodic_note`). For them a server change waiting ANYWHERE in the
+ * vault counts, as before #528: the destination may be a folder the other
+ * device just made or renamed (#529 review 1). They are rarely used, so the
+ * wider check costs little.
+ */
 const DESTINATION_UNNAMED = new Set([
   "obsidian_assign_address",
   "obsidian_refile_address",
@@ -346,7 +346,8 @@ function unknownDecision(tool: string, why: string, settings: SyncGuardSettings)
 
 /**
  * The guard as the host uses it: `decideSync` with one shared memory. Once a
- * wait has run out with Sync still behind, the calls that follow within the
+ * wait has run out with Sync still behind for a connection cause (or a status
+ * cause, which only a `STATUS_STRICT` tool can meet), the calls that follow within the
  * next `waitSeconds` are judged at once, with no second wait, so a batch (each
  * `obsidian_write_notes` item is its own guarded call) or a burst of calls pays
  * the wait once, not once per call. A call that finds Sync synced clears it.
@@ -359,8 +360,9 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
       ...deps,
       skipWait: deps.now() < holdUntil,
       onWaitExpired: (v) => {
-        // Only a cause every write meets (the link to the server) is held for the
-        // next calls; a pending change at one write's paths says nothing of others' (#529 review).
+        // A connection cause meets every write, so it is held for the next calls. A status cause is
+        // held too (#533); only a STATUS_STRICT tool can meet it, because decideSync
+        // judges the status text for those tools alone. A pending change at one write's paths says nothing of others' (#529 review).
         if (v.kind === "behind" && (v.scope === "connection" || v.scope === "status")) holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
       },
     });
