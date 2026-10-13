@@ -36,12 +36,13 @@ function fakeApp() {
 }
 
 // The faked modules: render "type: <cls>" plus the values (as flow does), into the note through app.vault.modify.
-function fakeModules({ required = [], body = "", fmLines = [], type } = {}) {
+function fakeModules({ required = [], body = "", fmLines = [], type, echo = true, fields } = {}) {
   const seen = { applyApps: [], placementActive: [] };
   return {
     seen,
     mods: {
       className: (cls) => String(cls).replace(/^\[\[|\]\]$/g, "").trim(),
+      ...(fields ? { fields: () => fields } : {}),
       hasClass: (a, cls) => ["Declared", "Loose", "Two"].includes(String(cls).replace(/^\[\[|\]\]$/g, "").trim()),
       resolvePlacement: async (view, cls, params, opts) => {
         // The module's human fallback is the active note's folder; the view must hide it.
@@ -56,8 +57,9 @@ function fakeModules({ required = [], body = "", fmLines = [], type } = {}) {
       applyFileclass: async (view, params, note, opts) => {
         seen.applyApps.push(view);
         for (const r of required) if (params.variables[r] === undefined) throw new Error(`Class ${opts.cls} needs "${r}" and no variable supplied it`);
-        const v = Object.entries(params.variables).filter(([k]) => k !== "_invoked-by" && k !== "destination");
-        const text = ["---", `type: ${type ?? opts.cls}`, ...v.map(([k, x]) => `${k}: ${x}`), ...fmLines, "---", body].join("\n");
+        const v = echo ? Object.entries(params.variables).filter(([k]) => k !== "_invoked-by" && k !== "destination") : [];
+        const fill = (l) => l.replace(/\{\{VALUE:([^}]+)\}\}/g, (_w, n) => String(params.variables[n] ?? ""));
+        const text = ["---", `type: ${type ?? opts.cls}`, ...v.map(([k, x]) => `${k}: ${x}`), ...fmLines.map(fill), "---", body].join("\n");
         await view.vault.modify(note, await params.quickAddApi.format(text));
       },
     },
@@ -93,7 +95,7 @@ describe("obsidian_create_note: render, check, write once", () => {
     assert.equal(r.structuredContent.path, "Notes/Here/My note.md");
     assert.equal(r.structuredContent.rev, 1700000000000);
     assert.deepEqual(app.writes, ["Notes/Here/My note.md"]);
-    assert.equal(app.files.get("Notes/Here/My note.md").text, "---\ntype: Loose\ndescription: a note\n---\nmade 2026-10-12");
+    assert.match(app.files.get("Notes/Here/My note.md").text, /^---\ndescription: a note\ntype: Loose\ncreated: 2026-10-12T14:05:09-04:00\nmodified: 2026-10-12T14:05:09-04:00\nuid: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n---\nmade 2026-10-12$/);
   });
   test("without a folder: the class's declared folder", async () => {
     const { call } = setup();
@@ -114,7 +116,7 @@ describe("obsidian_create_note: render, check, write once", () => {
   test("a missing required value: refused by name, nothing written", async () => {
     const { app, call } = setup({ required: ["session"] });
     const r = await call({ class: "Loose", title: "N", folder: "F" });
-    assert.match(errText(r), /Error \[create_failed\].*needs "session".*Nothing was written/);
+    assert.match(errText(r), /Error \[invalid_argument\].*needs a value for "session".*Nothing was written/);
     assert.equal(app.writes.length, 0);
   });
   test("a token the tool cannot fill: refused, nothing written", async () => {
@@ -184,7 +186,7 @@ describe("obsidian_create_note: render, check, write once", () => {
     const { app, call } = setup({ body: "body" });
     const r = await call({ class: "Loose", title: "N", folder: "F", frontmatter: { session: "s1", "session-id": "abc" } });
     assert.notEqual(r.isError, true, errText(r));
-    assert.equal(app.files.get("F/N.md").text, "---\ntype: Loose\nsession: s1\nsession-id: abc\n---\nbody");
+    assert.match(app.files.get("F/N.md").text, /^---\ntype: Loose\ncreated: 2026-10-12T14:05:09-04:00\nmodified: 2026-10-12T14:05:09-04:00\nuid: [0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\nsession: s1\nsession-id: abc\n---\nbody$/);
   });
   test("`frontmatter` may not set a key the template wrote, nor the class key; nothing is written", async () => {
     const { app, call } = setup();
@@ -218,7 +220,7 @@ describe("renderView", () => {
 describe("helpers", () => {
   test("fillDates fills bare and formatted {{DATE}}", () => {
     const now = () => ({ format: (f) => `<${f}>` });
-    assert.equal(fillDates("a {{DATE}} b {{DATE:YYYY-MM-DDTHH:mm}}", now), "a <YYYY-MM-DD> b <YYYY-MM-DDTHH:mm>");
+    assert.equal(fillDates("a {{DATE}} b {{DATE:YYYY-MM-DDTHH:mm}}", now), "a <YYYY-MM-DD> b <YYYY-MM-DDTHH:mmZ>");
   });
   test("notePath joins folder and title, root when the folder is empty", () => {
     assert.equal(notePath("A/B/", "N"), "A/B/N.md");
@@ -238,5 +240,36 @@ describe("the Sync guard targets the note obsidian_create_note names", () => {
   test("without a folder (class placement): every pending change counts", async () => {
     const d = await decideSync("obsidian_create_note", { class: "Declared", title: "N" }, deps(state(["Other/x.md"])));
     assert.equal(d.refuse.code, "sync_behind");
+  });
+});
+
+describe("obsidian_create_note: #538 review fixes", () => {
+  const out = (app, p) => app.files.get(p).text;
+  test("values.destination is a placement choice, not a blank", async () => {
+    const { app, call } = setup();
+    const r = await call({ class: "Two", title: "T", values: { destination: "A" } });
+    assert.ok(!r.isError, errText(r));
+    assert.ok(app.files.has("Two/A/T.md"));
+    assert.ok(!out(app, "Two/A/T.md").includes("vmcp"));
+    assert.equal(JSON.parse(errText(r)).unused_values, undefined);
+  });
+  test("a value in a list item that is a mapping keeps the mapping", async () => {
+    const { app, call } = setup({ echo: false, fmLines: ["items:", '  - name: "{{VALUE:x}}"'] });
+    const r = await call({ class: "Loose", title: "L", folder: "F", values: { x: "a: b" } });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/L.md"), /\n {2}- name: "a: b"\n/);
+  });
+  test('created: "" gets the stamp', async () => {
+    const { app, call } = setup({ echo: false, fmLines: ['created: ""'] });
+    const r = await call({ class: "Loose", title: "C", folder: "F" });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/C.md"), /\ncreated: 2026-10-12T14:05:09-04:00\n/);
+  });
+  test("a declared field the template left empty takes the value", async () => {
+    const { app, call } = setup({ echo: false, fmLines: ["severity:"], fields: ["severity"] });
+    const r = await call({ class: "Loose", title: "S", folder: "F", values: { severity: "hard" } });
+    assert.ok(!r.isError, errText(r));
+    assert.match(out(app, "F/S.md"), /\nseverity: hard\n/);
+    assert.equal(JSON.parse(errText(r)).unused_values, undefined);
   });
 });
