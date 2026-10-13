@@ -101,18 +101,33 @@ describe("the state folder and socket", () => {
   });
 
   test("with a state folder set, the bridge and the discovery file land there and nowhere else", () => {
+    // HOME points at an empty temp folder first, so a regression writes there, never into the real ~/.claude.
+    const savedHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "vmcp-home-"));
+    process.env.HOME = home;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vmcp-state-"));
-    P.configurePaths({ stateDir: dir });
-    const legacy = P.legacyDiscoveryPath("probe-vault");
-    const legacyBefore = fs.existsSync(legacy);
-    D.writeBridge();
-    D.writeDiscovery("probe-vault", { socket_path: path.join(dir, "probe-vault.sock"), vault_path: "/v", vault_name: "probe-vault", plugin_version: "0", obsidian_version: "0", started_at: "now" });
-    assert.ok(fs.existsSync(path.join(dir, "bridge.mjs")));
-    assert.ok(fs.existsSync(path.join(dir, "probe-vault.json")));
-    assert.equal(fs.existsSync(legacy), legacyBefore, "nothing written into ~/.claude/governor/");
-    D.removeDiscovery("probe-vault");
-    assert.ok(!fs.existsSync(path.join(dir, "probe-vault.json")));
-    fs.rmSync(dir, { recursive: true, force: true });
+    try {
+      assert.equal(os.homedir(), home, "os.homedir() follows HOME");
+      P.configurePaths({ stateDir: dir });
+      D.writeBridge();
+      D.writeDiscovery("probe-vault", { socket_path: path.join(dir, "probe-vault.sock"), vault_path: "/v", vault_name: "probe-vault", plugin_version: "0", obsidian_version: "0", started_at: "now" });
+      assert.ok(fs.existsSync(path.join(dir, "bridge.mjs")));
+      assert.ok(fs.existsSync(path.join(dir, "probe-vault.json")));
+      assert.equal(fs.existsSync(path.join(home, ".claude")), false, "nothing under ~/.claude: no governor copy, no vault-mcp copy");
+      D.removeDiscovery("probe-vault");
+      assert.ok(!fs.existsSync(path.join(dir, "probe-vault.json")));
+      assert.equal(fs.existsSync(path.join(home, ".claude")), false);
+    } finally {
+      process.env.HOME = savedHome;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a relative state folder or socket path is ignored, not resolved against the renderer's working folder", () => {
+    assert.equal(H.normalizeHostSettings({ stateDir: "state", socketPath: "./v.sock" }).stateDir, "");
+    assert.equal(H.normalizeHostSettings({ stateDir: "state", socketPath: "./v.sock" }).socketPath, "");
+    assert.equal(H.normalizeHostSettings({ stateDir: "/srv/state" }).stateDir, "/srv/state");
   });
 });
 
@@ -176,6 +191,26 @@ describe("the real server wiring", () => {
     assert.match(r.content[0].text, /headless_unsupported/);
   });
 
+  test("the refusal comes before the guard: no idempotency_key needed to be told the tool is headless", async () => {
+    delete process.env.VAULT_MCP_HEADLESS;
+    const tools = await build("auto", 0);
+    const r = await tools.obsidian_open_workspace.handler({ name: "w" }, {});
+    assert.match(r.content[0].text, /headless_unsupported/, JSON.stringify(r));
+  });
+
+  test("periodic_note open and run_command with file_path refuse headless; create and a bare command do not", async () => {
+    delete process.env.VAULT_MCP_HEADLESS;
+    const tools = await build("auto", 0);
+    const open = await tools.obsidian_periodic_note.handler({ kind: "daily", action: "open" }, {});
+    assert.match(open.content[0].text, /headless_unsupported/);
+    const create = await tools.obsidian_periodic_note.handler({ kind: "daily", action: "create", idempotency_key: "k1" }, {});
+    assert.doesNotMatch(create.content[0].text, /headless_unsupported/);
+    const withFile = await tools.obsidian_run_command.handler({ command_id: "editor:save-file", file_path: "A.md", idempotency_key: "k2" }, {});
+    assert.match(withFile.content[0].text, /headless_unsupported/);
+    const bare = await tools.obsidian_run_command.handler({ command_id: "editor:save-file", idempotency_key: "k3" }, {});
+    assert.doesNotMatch(bare.content[0].text, /headless_unsupported/);
+  });
+
   test("headless off (Obsidian): the app-only tools are offered and run", async () => {
     const tools = await build("off", 0);
     assert.ok(tools.obsidian_open_in_editor);
@@ -185,6 +220,13 @@ describe("the real server wiring", () => {
 });
 
 describe("the bridge finds a state folder outside ~/.claude", () => {
+  test("it reads its own folder first, then the default folders, each once; VAULT_MCP_STATE_DIR alone when set", async () => {
+    const { discoveryDirs } = await import("../bridge/bridge.ts");
+    assert.deepEqual(discoveryDirs("/srv/state", {}, "/home/u"), ["/srv/state", "/home/u/.claude/vault-mcp", "/home/u/.claude/governor"]);
+    assert.deepEqual(discoveryDirs("/home/u/.claude/vault-mcp", {}, "/home/u"), ["/home/u/.claude/vault-mcp", "/home/u/.claude/governor"]);
+    assert.deepEqual(discoveryDirs("/srv/state", { VAULT_MCP_STATE_DIR: "/other" }, "/home/u"), ["/other"]);
+  });
+
   test("VAULT_MCP_STATE_DIR set: the bridge reads discovery files there and only there", async () => {
     const { loadDiscoveries } = await import("../bridge/bridge.ts");
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vmcp-bridge-"));

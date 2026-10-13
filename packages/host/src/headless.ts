@@ -29,9 +29,9 @@ export type HeadlessMode = "auto" | "on" | "off";
 export interface HostSettings {
   /** "auto" (default): the VAULT_MCP_HEADLESS variable, else a call-time look at the workspace. */
   headless: HeadlessMode;
-  /** Where the socket, bridge.mjs, the discovery file and the observation store go. Empty: `~/.claude/vault-mcp/` (or VAULT_MCP_STATE_DIR). Set: nothing is written under `~/.claude/governor/`. */
+  /** An absolute path: where the socket, bridge.mjs, the discovery file and the observation store go. Empty (or relative, which is ignored): `~/.claude/vault-mcp/` (or VAULT_MCP_STATE_DIR). Set: nothing is written under `~/.claude/governor/`. */
   stateDir: string;
-  /** The socket to bind. Empty: `<stateDir>/<vault-slug>.sock`. */
+  /** An absolute path: the socket to bind. Empty (or relative, which is ignored): `<stateDir>/<vault-slug>.sock`. */
   socketPath: string;
   /** Run `claude mcp …` at load to register the server with Claude Code. Off when headless is declared, whatever this says. */
   autoRegisterClaude: boolean;
@@ -43,7 +43,8 @@ export const DEFAULT_HOST_SETTINGS: HostSettings = { headless: "auto", stateDir:
 export function normalizeHostSettings(raw: unknown): HostSettings {
   const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const headless = r.headless === "on" || r.headless === "off" ? r.headless : "auto";
-  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  // A path must be absolute: a relative one would resolve against the renderer's working folder, usually `/`.
+  const str = (v: unknown) => (typeof v === "string" && v.trim().startsWith("/") ? v.trim() : "");
   return { headless, stateDir: str(r.stateDir), socketPath: str(r.socketPath), autoRegisterClaude: r.autoRegisterClaude !== false };
 }
 
@@ -107,9 +108,28 @@ export const APP_ONLY_TOOLS: ReadonlyMap<string, string> = new Map([
   ["obsidian_cli", "it runs the obsidian CLI, which forwards into a running app"],
 ]);
 
+/**
+ * Tools that need the app for ONE form of the call only, so they stay offered
+ * headless and refuse just that form: they would otherwise report success with
+ * nothing done (#540 review).
+ */
+export const APP_ONLY_ARGS: ReadonlyMap<string, string> = new Map([
+  ["obsidian_periodic_note", "action \"open\" opens the note in an editor view (action \"create\" works headless)"],
+  ["obsidian_run_command", "file_path opens a note in an editor view before the command runs (leave it out to run the command alone)"],
+]);
+
+/** Whether this call needs the app: an app-only tool, or the app-only form of a call. */
+export function appOnlyCall(tool: string, args: unknown): boolean {
+  if (APP_ONLY_TOOLS.has(tool)) return true;
+  const a = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+  if (tool === "obsidian_periodic_note") return (a.action ?? "open") === "open";
+  if (tool === "obsidian_run_command") return typeof a.file_path === "string" && a.file_path !== "";
+  return false;
+}
+
 /** The refusal an app-only tool gives headless. */
 export function headlessRefusal(tool: string): { content: { type: "text"; text: string }[]; isError: true } {
-  const why = APP_ONLY_TOOLS.get(tool) ?? "it needs the Obsidian app";
+  const why = APP_ONLY_TOOLS.get(tool) ?? APP_ONLY_ARGS.get(tool) ?? "it needs the Obsidian app";
   return {
     content: [{ type: "text", text: `Error [headless_unsupported]: '${tool}' needs the Obsidian app, and this vault-mcp runs headless (no Obsidian window): ${why}. Nothing was done.` }],
     isError: true,

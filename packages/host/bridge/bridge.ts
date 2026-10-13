@@ -2,6 +2,7 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface Discovery {
   vault_name: string;
@@ -110,17 +111,32 @@ export function loadDiscoveryDir(dir: string): Discovery[] {
   return out;
 }
 
+/** The folder this bridge.mjs runs from, or undefined when it cannot be told. */
+function ownDir(): string | undefined {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch {
+    return undefined;
+  }
+}
+
 export function loadDiscoveries(): Discovery[] {
   // A host that keeps its state outside ~/.claude/ (the plugin's `host.stateDir`
   // setting, a headless vaultd-host) names it in VAULT_MCP_STATE_DIR, the variable
   // the plugin and the HTTP front read too; then only that folder is read.
-  const custom = process.env.VAULT_MCP_STATE_DIR?.trim();
-  if (custom) return loadDiscoveryDir(path.resolve(custom));
-  const home = os.homedir();
-  return [
-    ...loadDiscoveryDir(path.join(home, ".claude", "vault-mcp")),
-    ...loadDiscoveryDir(path.join(home, ".claude", "governor")),
-  ];
+  return discoveryDirs().flatMap((d) => loadDiscoveryDir(d));
+}
+
+/** The folders the bridge reads discovery files from, in order. Pure, for tests. */
+export function discoveryDirs(own: string | undefined = ownDir(), env: NodeJS.ProcessEnv = process.env, home: string = os.homedir()): string[] {
+  const custom = env.VAULT_MCP_STATE_DIR?.trim();
+  if (custom) return [path.resolve(custom)];
+  // The bridge's own folder too: the plugin writes bridge.mjs beside its discovery file, so a
+  // Claude Code registration that runs `<stateDir>/bridge.mjs` with no environment still finds
+  // a vault whose state folder is set in its settings (#540 review). Each folder is read once.
+  return [own, path.join(home, ".claude", "vault-mcp"), path.join(home, ".claude", "governor")].filter(
+    (d, i, all): d is string => typeof d === "string" && all.indexOf(d) === i,
+  );
 }
 
 function parseFlag(argv: string[], name: string): string | undefined {

@@ -31,7 +31,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { APP_ONLY_TOOLS, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
+import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
 import { visiblePaths } from "../guard.js";
@@ -384,26 +384,28 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   };
   const guarded = makeGuarded(guardedOpts);
   const registry: CapturedRegistry = new Map();
-  const capture = makeCaptureRegister(registry, guarded);
+  // HEADLESS (headless.ts): the call-time refusal sits OUTSIDE the guard, so a headless call is refused
+  // before protection, the Sync guard, the queue and the journal see it (#540 review).
+  const headlessMode = () => normalizeHostSettings(ctx.host?.()).headless;
+  const headlessGate = (name: string, h: any) =>
+    APP_ONLY_TOOLS.has(name) || APP_ONLY_ARGS.has(name)
+      ? (args: unknown, extra: unknown) => (appOnlyCall(name, args) && isHeadless(app, headlessMode()) ? headlessRefusal(name) : h(args, extra))
+      : h;
+  const capture = makeCaptureRegister(registry, (def: any, handler: any, name: string) => headlessGate(name, guarded(def, handler, name)));
   const register = opts.codeMode
     ? capture
-    : (name: string, def: any, handler: any) => origRegister(name, def, guarded(def, handler, name));
+    : (name: string, def: any, handler: any) => origRegister(name, def, headlessGate(name, guarded(def, handler, name)));
   // withKernelArgs runs on the way in, so `if_rev` / `idempotency_key` are
   // declared on every mutating tool's schema — in both modes, and for external
   // tools too — without any registrar knowing they exist. Undeclared arguments
   // are stripped by the SDK's own validation, so declaring here is what makes
   // them reachable by a client at all.
-  // HEADLESS (headless.ts): a tool that needs the Obsidian app is not offered when headless
-  // is declared (the `host.headless` setting or VAULT_MCP_HEADLESS), and otherwise refuses
-  // with `headless_unsupported` when the call-time look finds no workspace leaf, rather than
-  // reporting success with nothing done or running the obsidian CLI against no app.
-  const headlessMode = () => normalizeHostSettings(ctx.host?.()).headless;
+  // HEADLESS (headless.ts): a tool that needs the Obsidian app is not offered when headless is
+  // declared (the `host.headless` setting or VAULT_MCP_HEADLESS); otherwise `headlessGate` above
+  // refuses it with `headless_unsupported` when the call-time look finds no workspace leaf, rather
+  // than reporting success with nothing done or running the obsidian CLI against no app.
   (server as any).registerTool = (name: string, def: any, handler: any) => {
-    if (APP_ONLY_TOOLS.has(name)) {
-      if (declaredHeadless(headlessMode())) return undefined;
-      const inner = handler;
-      handler = (...a: unknown[]) => (isHeadless(app, headlessMode()) ? headlessRefusal(name) : inner(...a));
-    }
+    if (APP_ONLY_TOOLS.has(name) && declaredHeadless(headlessMode())) return undefined;
     return register(name, withKernelArgs(def, name), handler);
   };
 
