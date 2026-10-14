@@ -83,6 +83,14 @@ export default class VaultConformancePlugin extends Plugin {
     }
 
     await this.adoptFromHostOnce();
+    // The host may load after this plugin (community-plugins.json order): adopt when it says it is
+    // ready, too, or the adoption would only be retried on the next load (#549 review 1).
+    for (const ev of ["vault-mcp:ready", "governor:ready"]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.registerEvent((this.app.workspace as any).on(ev, () => {
+        void this.adoptFromHostOnce().then(() => this.republish());
+      }));
+    }
 
     this.addSettingTab(
       new ConformanceSettingTab(

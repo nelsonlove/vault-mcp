@@ -555,8 +555,8 @@ export function builtinModules(deps: MountDeps): VaultModule[] {
     // THE VOCAB MODULE IS GONE FROM HERE (suite split, S7). Its four read
     // tools ship as `packages/vocab` (plugin id `vaultmcp-vocab`), published
     // through vault-mcp-api as `vaultmcp_vocab_*`. Its kernel did NOT go with it
-    // — it went to `@vault-mcp/core`, because the host's conformance rail is
-    // its second consumer; the setting `settings.vocabularies` stays declared
+    // — it went to `@vault-mcp/core`, because the conformance rail (now the
+    // `vaultmcp-conformance` satellite) is its second consumer; the setting `settings.vocabularies` stays declared
     // host-side as the satellite's MIGRATION-ONLY adoption source, read by
     // nothing in the host (conformance builds from DEFAULT_VOCABULARIES and
     // always did). See the note where the manifest used to be.

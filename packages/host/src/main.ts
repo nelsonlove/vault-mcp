@@ -94,8 +94,8 @@ interface VaultMcpSettings {
    *
    * MIGRATION-ONLY SINCE S7. Nothing in this plugin reads it any more — the
    * four vocabulary tools and their settings form left for the `vaultmcp-vocab`
-   * satellite at the read-tier extraction, and the host's conformance rail
-   * builds its registry from `DEFAULT_VOCABULARIES` (it always did; it never
+   * satellite at the read-tier extraction, and the conformance rail (now the
+   * `vaultmcp-conformance` satellite) builds its registry from `DEFAULT_VOCABULARIES` (it always did; it never
    * read this field). It is deliberately still declared, still defaulted, and
    * still persisted, because it is the ADOPTION SOURCE: `vaultmcp-vocab` copies
    * it once on its first load and never writes back. Deleting it here would

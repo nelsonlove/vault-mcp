@@ -47,7 +47,10 @@ export class ConformanceSettingTab extends PluginSettingTab {
     for (const field of CONVENTION_FIELDS) {
       const current = resolveConventions(this.host.getConventions())[field.key];
       const shown = Array.isArray(current) ? current.join("\n") : current;
+      // Commit only a real edit (#549 review 1): leaving a field unchanged must not store a record,
+      // or an empty one written before the host's settings were adopted would block that adoption.
       const commit = (raw: string) => {
+        if (raw === shown) return;
         void this.host.setConventions(commitConvention(this.host.getConventions(), field, raw));
       };
       const setting = new Setting(containerEl).setName(field.label).setDesc(field.help);

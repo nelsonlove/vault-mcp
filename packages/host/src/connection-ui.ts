@@ -1130,12 +1130,12 @@ export class VaultMcpSettingTab extends PluginSettingTab {
 
     new Setting(section)
       .setName("Enabled")
-      // `scheme`'s Obsidian surface (the Inbox + Drift panes) mounts/unmounts LIVE from this
+      // `scheme`'s Obsidian surface (the Inbox pane; the Drift pane left with the conformance rail for the vaultmcp-conformance plugin) mounts/unmounts LIVE from this
       // toggle — no reload. A tool-only module's surface mounts per connection, so its toggle
       // takes effect on the next session connect.
       .setDesc(
         mod.id === "scheme"
-          ? "Mounts or unmounts the Inbox and Drift panes live — no plugin reload needed."
+          ? "Mounts or unmounts the Inbox pane live — no plugin reload needed."
           : "Takes effect on the next session connect."
       )
       .addToggle((t) =>
