@@ -31,6 +31,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
+import { inputObjectOf } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -405,9 +406,25 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // declared (the `host.headless` setting or VAULT_MCP_HEADLESS); otherwise `headlessGate` above
   // refuses it with `headless_unsupported` when the call-time look finds no workspace leaf, rather
   // than reporting success with nothing done or running the obsidian CLI against no app.
+  // STRICT WRITES (#510, Nelson's pick A of 2026-10-12): a write tool vault-mcp itself registers refuses an
+  // argument it does not name ("Unrecognized key(s)"), where the SDK's plain object would drop it and run
+  // the call without it, which is how two notes lost their frontmatter on 2026-10-09. The kernel arguments
+  // are added after, by withKernelArgs, and extendInput keeps the object strict. Satellite tools (other
+  // plugins', through registerExternalTools) keep their own schemas: `registeringExternal` is set there.
+  let registeringExternal = false;
+  const strictIfWrite = (def: any) =>
+    !registeringExternal && def?.annotations?.readOnlyHint === false ? { ...def, inputSchema: inputObjectOf(def.inputSchema).strict() } : def;
   (server as any).registerTool = (name: string, def: any, handler: any) => {
     if (APP_ONLY_TOOLS.has(name) && declaredHeadless(headlessMode())) return undefined;
-    return register(name, withKernelArgs(def, name), handler);
+    return register(name, withKernelArgs(strictIfWrite(def), name), handler);
+  };
+  const withExternal = (fn: () => void) => {
+    registeringExternal = true;
+    try {
+      fn();
+    } finally {
+      registeringExternal = false;
+    }
   };
 
   // Patching registerTool alone left FIVE other registration entry points on
@@ -669,7 +686,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // and nothing else (see tools-snippets.ts's header).
   registerSnippetTools(server, ctx, { source: obsidianSnippetSource(app as any) });
   // ── externally-published tools (other Obsidian plugins via plugin.api) ─────
-  registerExternalTools(server, app, ctx);
+  withExternal(() => registerExternalTools(server, app, ctx));
 
   // ── batch write + server-side stamping (slice B1) ───────────────────────────
   // obsidian_write_notes is a DISPATCHER, not a single mutating op: to give each

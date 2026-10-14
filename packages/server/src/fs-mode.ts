@@ -435,6 +435,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
 
   registerFsTools(server, makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel }), {
     decodeHtml: true,
+    // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
+    kernelArgs: true,
     includeIndexStatus: (opts?.indexStatus ?? true) ? indexStatus : undefined,
     // No `rev` hook and no whole-read memory: FS writes carry no if_rev, so
     // no read shows a rev and no proof of a whole read can be tied to a
