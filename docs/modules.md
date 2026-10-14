@@ -49,7 +49,7 @@ These are load-bearing even when they are not all mounted as ordinary modules.
 
 ### Conformance
 
-Compares current findings with an accepted debt baseline so new drift alarms without pretending inherited debt is absent. Rebaselining is authority work. Rule packs from schemes, vocabulary, identities, and other providers remain separately identifiable.
+Compares current findings with an accepted debt baseline so new drift alarms without pretending inherited debt is absent. Rebaselining is authority work. Rule packs from schemes, vocabulary, identities, and other providers remain separately identifiable. Since 2026-10-14 it ships as the separate `vaultmcp-conformance` plugin, which publishes `vaultmcp_conformance_debt` and `vaultmcp_conformance_debt_render` to the host and carries the Drift pane (see [conformance.md](conformance.md#the-plugin)).
 
 ### Survey
 

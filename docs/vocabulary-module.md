@@ -28,18 +28,19 @@ never this module's name, so it was stripped rather than carried into a second o
 namespace. Sessions and prompts calling the old names must be updated.
 
 **The pure engine did NOT move into the plugin — it moved into `@vault-mcp/core`.** It has two
-consumers and always did: these four tools, and the host's own conformance rail, where
-`conformance/packs/vocab.ts` wraps `noteVocabFindings`, `conformance/cli.ts` builds a
+consumers and always did: these four tools, and the conformance rail (the host's at the time,
+the `vaultmcp-conformance` plugin since 2026-10-14), where
+`kernel/packs/vocab.ts` wraps `noteVocabFindings`, `kernel/cli.ts` builds a
 `VocabRegistry` per run, and `snapshot.ts` / `rule-pack.ts` are typed over `VocabNote`. Copying
 it would have been the failure the split exists to avoid — two copies of a vocabulary rule core
 is how one vault ends up with two vocabularies — so it was published instead, on the same
-precedent as `isVisible` (S4) and `executeQuickAddChoice` (S5). Conformance is itself a planned
-satellite, so core is where both consumers were always going to meet.
+precedent as `isVisible` (S4) and `executeQuickAddChoice` (S5). Conformance became a satellite
+too, so core is where both consumers meet.
 
 **One pre-existing gap the extraction makes visible, and does not create:** the conformance rail
 builds its registry from `DEFAULT_VOCABULARIES`, not from the configured instance list. It never
 read the user's configured vocabularies, so conformance findings and these tools can disagree
-about what is registered. That is a host question, recorded here because this is where a reader
+about what is registered. That is a question for the conformance rail, recorded here because this is where a reader
 would look for it.
 
 ## What it validates

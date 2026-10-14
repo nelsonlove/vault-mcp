@@ -97,7 +97,7 @@ The repository and supplied records support these architectural mechanisms:
 - record immutability guard;
 - protected acceptance family and human-only accept surface;
 - in-app review pane and pending review index;
-- read/report modules for schemes and conformance, plus vocabulary, health, Bases evaluation, and provenance — of which vocabulary, health and Bases became the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins at the S7 read-tier extraction, and provenance the separate `vaultmcp-provenance` one when the mutating tier followed;
+- read/report modules for schemes and conformance, plus vocabulary, health, Bases evaluation, and provenance — of which vocabulary, health and Bases became the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins at the S7 read-tier extraction, and provenance the separate `vaultmcp-provenance` one when the mutating tier followed, and conformance the separate `vaultmcp-conformance` one on 2026-10-14;
 - optional mutating triage and coordination, extracted at S5 and S6 into the separate `vaultmcp-triage` and `vaultmcp-crosssession` satellite plugins, and optional mutating Fileclass writes and JD scaffolding, extracted with the mutating tier into `vaultmcp-fileclass` and `vaultmcp-jd-scaffold`; and
 - explicit residuals for timeouts, link-resolution oracles, opaque output, metadata failure, and third-party APIs.
 

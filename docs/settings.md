@@ -1,6 +1,6 @@
 # Settings
 
-Settings now live in two places: the host (`vault-mcp`) keeps its own settings tab and `data.json` at `.obsidian/plugins/vault-mcp/`, and the governance provider (`governor`) keeps its own settings tab and `data.json` at `.obsidian/plugins/governor/` — the same folder it always used, since the provider kept the plugin id. On first load, the host copies its own host-owned keys out of the provider's `data.json` into its own, alongside `journal/` and `install-id.json`. The copy never moves or deletes anything on the provider's side; the provider's own copies are left in place. This document orders both surfaces together, least to most consequential, and calls out which surface a setting belongs to only where the two could be confused. Defaults belong to the settings schema; this document explains their meaning. A release must generate or verify this reference against both schemas so prose cannot silently drift.
+Settings now live in two places: the host (`vault-mcp`) keeps its own settings tab and `data.json` at `.obsidian/plugins/vault-mcp/`, and the governance provider (`governor`) keeps its own settings tab and `data.json` at `.obsidian/plugins/governor/` — the same folder it always used, since the provider kept the plugin id. On first load, the host copies its own host-owned keys out of the provider's `data.json` into its own, alongside `journal/` and `install-id.json`. The copy never moves or deletes anything on the provider's side; the provider's own copies are left in place. Each satellite plugin keeps its own settings too; the conformance settings below are the `vaultmcp-conformance` plugin's. This document orders both surfaces together, least to most consequential, and calls out which surface a setting belongs to only where the two could be confused. Defaults belong to the settings schema; this document explains their meaning. A release must generate or verify this reference against both schemas so prose cannot silently drift.
 
 > [!note]
 > This target-state reference uses behavior-level setting names. A release may refine the UI wording, but it must preserve the stated defaults, consequences, and recovery.
@@ -479,18 +479,31 @@ For a host with no Obsidian window, such as vaultd's headless plugin host. The b
 
 ## Conformance
 
+These settings belong to the separate `vaultmcp-conformance` plugin since 2026-10-14 (its own settings tab and `data.json` at `.obsidian/plugins/vaultmcp-conformance/`). Until then they were the host's Conformance tab. On its first load with the host present, the plugin copies the host's `vaultConventions` and `modules["conformance-debt"].config` once and does not write the host's settings; the host keeps the old keys in its `data.json` and reads neither.
+
 ### Vault conventions
 
 | Field | Value |
 |---|---|
-| Default | **Empty — the plugin ships no vault layout** (ruled 2026-09-26, #403). An install upgrading from a build that had built-in paths is seeded once with those paths, then the key is persisted so the seeding never repeats |
+| Default | **Empty — the plugin ships no vault layout** (ruled 2026-09-26, #403). The plugin adopts the host's conventions once; a host record without them gives the former built-in paths only when the former baseline note exists in the vault, and is empty otherwise |
 | Effect | The three paths the conformance rail's legacy checks read: the registries root (the structure check's blueprint registry) and the system root (the drift check's category-number scan), two single paths, and the ungoverned roots (one path per line). Committed when a field loses focus. A blank single path means that convention is **dead**: the checks that read it register, are not measured, and the report says `DEAD CONVENTION: <key> = (empty)`; an empty list means none (nothing ungoverned). Until #412 there were six; the artifacts root, the plugin-stack note and the uid-exempt notes fed only drift checks that measured a vault shape the rebuilt vault no longer has, and retired with them. A path that names nothing under the walked root is dead the same way, with the path shown. **The fourth field, Conformance baseline note** (`baselineRel`, #493), is not a check path: it names the accepted-debt baseline note that the debt tools and the drift pane read when they run. Blank (with no `GOVERNOR_BASELINE_REL` in Obsidian's environment) means no baseline, and those views refuse; a name that does not exist refuses too. An install that predates the field is filled once with the path it was reading |
 | Takes effect | Live, per call (the in-app debt tools and the drift pane read the setting on every run) |
-| Dependency | None. The standalone CLI does not read the check paths; it reads only the baseline note, as a last fallback (see below) |
+| Dependency | The Vault MCP host, for its guarded territories: with no host answering, the debt tools and the Drift pane refuse to run. The standalone CLI does not read the check paths; it reads only the baseline note, as a last fallback (see below) |
 | Risk | Blank or stale paths make the legacy checks report nothing for the vault, and say so on every run rather than reading clean; a folder renamed in the vault leaves its convention dead until re-pointed |
 | Recovery | Point each field at the live folder; the report names the dead key and the checks it feeds |
 
-The standalone conformance CLI has no settings of its own; it reads `VAULT_MCP_CONVENTIONS` (a JSON object over the same keys, `baselineRel` included). For the baseline it reads, in order, `--baseline=<path>`, `GOVERNOR_BASELINE_REL`, `baselineRel` in that object, then the vault-mcp plugin's own setting in the vault's `.obsidian/plugins/vault-mcp/data.json`; with none of them it refuses to run (#493). The plugin's path is derived by the plugin's own load rule, so a data.json that predates the field gives the path the plugin will fill. `--rebaseline` refuses a target that is any live baseline it can see (the CLI's, the `VAULT_MCP_CONVENTIONS` one when `GOVERNOR_BASELINE_REL` shadows it, the plugin's), and refuses outright when none names one. `GOVERNOR_VAULT_CONVENTIONS` and `ASSENT_VAULT_CONVENTIONS` are read as legacy aliases for one release, each with a warning naming the new spelling.
+The standalone conformance CLI has no settings of its own; it reads `VAULT_MCP_CONVENTIONS` (a JSON object over the same keys, `baselineRel` included). For the baseline it reads, in order, `--baseline=<path>`, `GOVERNOR_BASELINE_REL`, `baselineRel` in that object, then the plugin's setting in the vault: `.obsidian/plugins/vaultmcp-conformance/data.json` when it holds the conventions, else the host's `.obsidian/plugins/vault-mcp/data.json` (before the plugin has adopted them); with none of them it refuses to run (#493). The path is derived by the plugin's own load rule, so a data.json that predates the field gives the path the plugin will fill. `--rebaseline` refuses a target that is any live baseline it can see (the CLI's, the `VAULT_MCP_CONVENTIONS` one when `GOVERNOR_BASELINE_REL` shadows it, the plugin's), and refuses outright when none names one. `GOVERNOR_VAULT_CONVENTIONS` and `ASSENT_VAULT_CONVENTIONS` are read as legacy aliases for one release, each with a warning naming the new spelling.
+
+### Debt register
+
+| Field | Value |
+|---|---|
+| Default | Stale after 90 days, no debt budget, budget not strict, the register beside the baseline note, at most 300 table rows |
+| Effect | `staleAfterDays` (0 turns staleness off), `debtBudget` (the carried count above which the report warns), `strictBudget` (report an overrun as a failure), `registerDir` (the folder the register note is written to), `registerMaxRows` (the table cap). Read by `vaultmcp_conformance_debt` and `vaultmcp_conformance_debt_render`. In the host these were a hand edit of `modules["conformance-debt"].config`; the plugin shows them as fields |
+| Takes effect | Live, per call |
+| Dependency | None |
+| Risk | A `registerDir` that is absolute or climbs out of the vault makes the render refuse (`invalid_register_dir`) |
+| Recovery | Clear the field to go back to the default |
 
 ## Modules
 
