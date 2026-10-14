@@ -126,7 +126,6 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_call_tool` | what the tool it calls requires |  |
 | `obsidian_claim_scope` | nothing (not a vault write) |  |
 | `obsidian_cli` | `idempotency_key` |  |
-| `obsidian_conformance_debt_render` | nothing | Temporarily exempt (Nelson's "a", 2026-09-29): ruled token, but it names no path (it computes where the register goes), so an if_rev would refuse every run; back to token with #427. |
 | `obsidian_create_note` | `idempotency_key` |  |
 | `obsidian_create_note_from_template` | `idempotency_key` |  |
 | `obsidian_delete_note` | `if_rev` and `idempotency_key` |  |

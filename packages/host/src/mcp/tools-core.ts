@@ -63,8 +63,6 @@ export interface ServerCtx {
    * `resolveTerritories` and never match on the raw array — a stray blank
    * entry would match every path. */
   guardedTerritories?: string[];
-  /** The conformance rail's vault conventions (#403); coerced through `resolveConventions` wherever read. */
-  vaultConventions?: unknown;
   // `historyEnabled` / `historyScope` were here until S3c. They were always the
   // GOVERNANCE PROVIDER's facts — the Git history store, its D10 scope, and the
   // decision to record at all belong to whoever owns the standing chain — and

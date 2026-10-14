@@ -33,8 +33,6 @@ import {
   resolveTerritories,
 } from "@vault-mcp/core";
 import { hasGuardedTerritory } from "./territory-policy.js";
-import { CONVENTION_FIELDS, commitConvention } from "./conventions-policy.js";
-import { resolveConventions } from "./conformance/vault-conventions.js";
 import { normalizeWriteScope } from "@vault-mcp/core";
 import { normalizeHostSettings, type HostSettings } from "./headless.js";
 
@@ -59,8 +57,9 @@ export interface SettingsTab {
 export const STATIC_SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "connection", name: "Connection" },
   { id: "security", name: "Security" },
-  // #403: the conformance rail's vault conventions, three fields since #412, no shipped values.
-  { id: "conformance", name: "Conformance" },
+  // A third fixed tab, "Conformance" (#403, the rail's vault conventions), was
+  // here until 2026-10-14; it moved to the vaultmcp-conformance plugin's own
+  // settings tab with the rail.
 ];
 
 /** Prefix distinguishing a per-module tab id from a static one, so a module
@@ -310,7 +309,6 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // one per module instead of a single stacked list.
     this.renderConnectionTab(panes.get("connection")!);
     this.renderSecurityTab(panes.get("security")!);
-    this.renderConformanceTab(panes.get("conformance")!);
 
     const hosted = collect(modules, this.plugin.settings.modules, this.plugin.settings);
     for (const tab of tabs) {
@@ -451,41 +449,6 @@ export class VaultMcpSettingTab extends PluginSettingTab {
    * policy (re-enabled opaque / denied), trusted read-only plugins, and the
    * path allowlist. Verbatim the former Security section, retargeted to this
    * tab's pane. */
-  /** The vault conventions the conformance rail's legacy packs read (#403).
-   *  One field per key, from `CONVENTION_FIELDS`; committed on BLUR like the
-   *  guarded territories, so a half-typed path is never what the next debt or
-   *  drift run measures against. Blank is honest: that convention is dead and
-   *  the report says so; there is no built-in layout behind an empty box. */
-  private renderConformanceTab(containerEl: HTMLElement): void {
-    containerEl.createEl("h3", { text: "Conformance" });
-    containerEl.createEl("p", {
-      cls: "setting-item-description",
-      text:
-        "Where the conformance rail's legacy checks look. There is no built-in layout: a blank folder path means that convention is DEAD — the checks that read it register, are not measured, and the report says so — until you point it at your vault. The baseline note is different: blank means no baseline, and the debt and drift views refuse until you name it. The in-app debt and drift views read these live. The standalone CLI reads VAULT_MCP_CONVENTIONS; for the baseline it reads GOVERNOR_BASELINE_REL first, then VAULT_MCP_CONVENTIONS, then this setting.",
-    });
-    for (const field of CONVENTION_FIELDS) {
-      const current = resolveConventions(this.plugin.settings.vaultConventions)[field.key];
-      const shown = Array.isArray(current) ? current.join("\n") : current;
-      const commit = (raw: string) => {
-        this.plugin.settings.vaultConventions = commitConvention(this.plugin.settings.vaultConventions, field, raw);
-        void this.plugin.saveSettings();
-      };
-      const setting = new Setting(containerEl).setName(field.label).setDesc(field.help);
-      if (field.kind === "paths") {
-        setting.addTextArea((t) => {
-          t.inputEl.rows = 3;
-          t.setValue(shown);
-          t.inputEl.addEventListener("blur", () => commit(t.inputEl.value));
-        });
-      } else {
-        setting.addText((t) => {
-          t.setValue(shown).setPlaceholder(field.key === "baselineRel" ? "blank = no baseline (the debt views refuse)" : "blank = not measured");
-          t.inputEl.addEventListener("blur", () => commit(t.inputEl.value));
-        });
-      }
-    }
-  }
-
   private renderSecurityTab(containerEl: HTMLElement): void {
     containerEl.createEl("h3", { text: "Security" });
 
@@ -1047,9 +1010,10 @@ export class VaultMcpSettingTab extends PluginSettingTab {
 
     // Sits beside the capture settings on purpose: capture is the consumer that
     // makes this list matter, because it is the one that writes note bodies out
-    // of the vault. The conformance/adopt-baseline rail reads the same list,
-    // and so does the Governor plugin when it is installed (#397) — its own
-    // settings tab shows this list read-only and points here, so there is one
+    // of the vault. The conformance rail (the vaultmcp-conformance plugin, through
+    // `api.guardedTerritories()`) reads the same list, and so does the Governor
+    // plugin when it is installed (#397) — its own settings tab shows this list
+    // read-only and points here, so there is one
     // list with one editor rather than two that can disagree.
     new Setting(containerEl)
       .setName("Areas never to copy out of the vault")

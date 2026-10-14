@@ -23,11 +23,9 @@ import { mountAction } from "./mount-state.js";
 import { wireSchemePanes, registerSchemeCommands } from "./scheme/wiring.js";
 import { runHostAdoption, LEGACY_PLUGIN_ID, PLUGIN_ID } from "./id-migration.js";
 import { territoriesOnLoad } from "./territory-policy.js";
-import { conventionsOnLoad } from "./conventions-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
 import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
-import { EMPTY_VAULT_CONVENTIONS, resolveConventions, type VaultConventions } from "./conformance/vault-conventions.js";
 import { DEFAULT_WRITE_SCOPE, normalizeWriteScope, type WriteScope } from "@vault-mcp/core";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
@@ -180,18 +178,13 @@ interface VaultMcpSettings {
    * `guardedTerritories()` on the api and keeps no copy.
    */
   guardedTerritories: string[];
-  /**
-   * The vault conventions the conformance rail's legacy packs read (#403):
-   * where the registries live, the system spine, the ungoverned roots (three
-   * since #412 retired the drift checks that read the other three). EMPTY BY
-   * DEFAULT — the plugin ships no vault layout (the 2026-09-22 ruling) — and an
-   * empty key reads as that convention DEAD: its packs register, are not
-   * measured, and the report says so. An install that predates this setting
-   * is seeded ONCE with the former shipped paths (`conventionsOnLoad`), so an
-   * upgrade changes nothing for it. Read live per call by the debt and drift
-   * sources; the standalone CLI reads `VAULT_MCP_CONVENTIONS` instead.
-   */
-  vaultConventions: VaultConventions;
+  // `vaultConventions` (#403) was declared here until the conformance rail left
+  // for the vaultmcp-conformance satellite (2026-10-14). The host no longer
+  // declares, seeds, forwards or reads it, but it never deletes it: an existing
+  // data.json keeps the key (loadSettings merges the stored record and
+  // saveSettings writes it back), because the satellite adopts it once from
+  // there — the same preserved-adoption-source rule as `modules.<id>` rows of
+  // extracted modules (EXTRACTED_MODULE_IDS).
   /**
    * How a note declares itself a RECORD — historical, byte-verified, extended
    * only by end-of-file append (see `enforceRecordImmutability`). The same
@@ -303,7 +296,6 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   captureObservations: false,
   captureMaxBytes: 50 * 1024 * 1024,
   guardedTerritories: [],
-  vaultConventions: resolveConventions(EMPTY_VAULT_CONVENTIONS),
   recordIdentification: { ...DEFAULT_RECORD_IDENTIFICATION },
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
   syncGuard: { ...DEFAULT_SYNC_GUARD },
@@ -331,10 +323,10 @@ export default class VaultMcpPlugin extends Plugin {
    * adoption is not lost if nothing ever calls `saveSettings`.
    */
   private adoptedSettings: Record<string, unknown> | null = null;
-  // Live-mount handle for the scheme Inbox + Drift panes (jd-dashboard fold
-  // Stages B/C, governor#286): one shared Component for both panes, since
-  // they're gated by the same "scheme" module toggle and always mount/unmount
-  // together. `schemePanesReconcile` serializes mount/unmount so a rapid
+  // Live-mount handle for the scheme Inbox pane (jd-dashboard fold Stage B,
+  // governor#286): one shared Component for the scheme panes, gated by the
+  // "scheme" module toggle. (The Drift pane, Stage C, left with the conformance
+  // rail for the vaultmcp-conformance satellite on 2026-10-14.) `schemePanesReconcile` serializes mount/unmount so a rapid
   // enable→disable can't interleave a half-finished mount with a teardown.
   private schemePanesComponent: Component | null = null;
   private schemePanesReconcile: Promise<void> = Promise.resolve();
@@ -380,13 +372,6 @@ export default class VaultMcpPlugin extends Plugin {
     // legacy operator's folder names on a later load.
     const territories = territoriesOnLoad(own, seed);
     this.settings.guardedTerritories = territories.territories;
-    // #403 — vault conventions, the same shape: no shipped default, seeded
-    // once for an install that predates the key, coerced through
-    // `resolveConventions` so a hand-edited value cannot crash a run.
-    // #493: `exists` lets an all-blank record that predates the baseline key keep the note it was reading.
-    const vaultBase = this.app.vault.adapter instanceof FileSystemAdapter ? this.app.vault.adapter.getBasePath() : "";
-    const conventions = conventionsOnLoad(own, seed, process.env, (rel) => vaultBase !== "" && fs.existsSync(`${vaultBase}/${rel}`));
-    this.settings.vaultConventions = conventions.conventions;
     // #482 — the record folders, the same shape: no shipped folder names; an
     // install that predates the key is seeded once with what #455 hard-coded.
     const recordFoldersLoad = recordFoldersOnLoad(own, seed);
@@ -451,7 +436,7 @@ export default class VaultMcpPlugin extends Plugin {
     setDeclaredProtectedProperties(this.settings.protectedProperties);
     // Persist NOW if the territories key was absent (seeded or fresh), so the
     // seeding branch above can never run a second time for this install.
-    if (territories.persist || conventions.persist || recordFoldersLoad.persist) await this.saveSettings();
+    if (territories.persist || recordFoldersLoad.persist) await this.saveSettings();
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -798,7 +783,6 @@ export default class VaultMcpPlugin extends Plugin {
         // here would freeze it per connection, so an operator's edit would not
         // reach capture until the next reconnect — the inert-toggle shape again.
         guardedTerritories: this.settings.guardedTerritories,
-        vaultConventions: this.settings.vaultConventions,
         // Live per call: an operator who narrows or widens the write scope does not wait for a reconnect.
         writeScope: this.settings.writeScope,
       }),
@@ -869,14 +853,14 @@ export default class VaultMcpPlugin extends Plugin {
 
     this.addSettingTab(new VaultMcpSettingTab(this.app, this));
 
-    // ── scheme Inbox + Drift panes (jd-dashboard fold, Stages B/C) ─────────────
+    // ── scheme Inbox pane (jd-dashboard fold, Stage B) ─────────────────────────
     // Mounted on the scheme module's own enabled flag, matching its
     // default-true semantics elsewhere (modules-mount.ts:
     // `settings.modules?.scheme?.enabled === false` is the disabled check, so
-    // an absent settings row means on) — both panes are meaningless without
+    // an absent settings row means on) — the pane is meaningless without
     // scheme addressing configured. LIVE mount/unmount (governor#286): flipping
-    // the toggle in settings mounts or unmounts both panes immediately, no
-    // plugin reload, via `setSchemePanesMounted` below. Neither pane forces a
+    // the toggle in settings mounts or unmounts it immediately, no
+    // plugin reload, via `setSchemePanesMounted` below. The pane does not force a
     // leaf open on its own — the ribbon icon / command opens it on demand.
     // Headless (declared): no panes, and none of the commands below that open a view or a modal.
     if (!headlessAtLoad && this.settings.modules?.scheme?.enabled !== false) {
@@ -968,7 +952,7 @@ export default class VaultMcpPlugin extends Plugin {
   /**
    * The settings tab calls this when a module's enable toggle flips (connection-ui.ts's per-module
    * "Enabled" toggle). `scheme` is the one module whose Obsidian surface mounts/unmounts LIVE from
-   * here, with no plugin reload — its Inbox + Drift panes (governor#286). Every other module is
+   * here, with no plugin reload — its Inbox pane (governor#286). Every other module is
    * tool-only: its MCP surface mounts per connection, so its toggle takes effect on the next
    * session connect and there is nothing to mount or unmount in-app.
    *
@@ -981,11 +965,11 @@ export default class VaultMcpPlugin extends Plugin {
   }
 
   /**
-   * Drive the scheme Inbox + Drift panes' mount state to `enabled`, live, without a plugin reload.
+   * Drive the scheme Inbox pane's mount state to `enabled`, live, without a plugin reload.
    * Idempotent (enabling when already mounted, or disabling when already unmounted, is a no-op) and
    * serialized so a rapid enable→disable can't interleave a mount with a teardown. Mount runs
-   * `wireSchemePanes` (both views + both ribbons, on one shared child Component); unmount is
-   * `removeChild`, which detaches any open leaves and unregisters both view types.
+   * `wireSchemePanes` (the view + its ribbon, on one shared child Component); unmount is
+   * `removeChild`, which detaches any open leaves and unregisters the view type.
    */
   async setSchemePanesMounted(enabled: boolean): Promise<void> {
     const next = this.schemePanesReconcile.then(() => this.applySchemePanesMount(enabled));
@@ -999,8 +983,6 @@ export default class VaultMcpPlugin extends Plugin {
     if (action === "mount") {
       try {
         this.schemePanesComponent = wireSchemePanes(this, {
-          getTerritories: () => resolveTerritories(this.settings.guardedTerritories),
-          getConventions: () => resolveConventions(this.settings.vaultConventions),
           getSchemes: () => this.settings.schemes ?? DEFAULT_SCHEMES,
         });
       } catch (e) {

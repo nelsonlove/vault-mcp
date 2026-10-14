@@ -14,14 +14,14 @@ The FULL set is locked by `tests/tool-inventory.test.mjs`: the names documented
 here must equal the names registered in source, both directions, or the suite
 fails (the fs-expressible and scheme sub-locks from #25/task-6 still apply).
 
-**Count summary:** 17 fs-expressible + 43 always-live + 6 module-mounted
-(default enabled, settings-toggleable) = **66 base** tools, plus up to
+**Count summary:** 17 fs-expressible + 41 always-live + 6 module-mounted
+(default enabled, settings-toggleable) = **64 base** tools, plus up to
 6 conditional integration tools, 1 Importer-plugin-conditional import tool
 (`obsidian_import_apple_notes`), 5 CLI-binary-conditional dedicated tools
 (`obsidian_note_history`, `obsidian_note_diff`, `obsidian_base_create`,
 `obsidian_plugin_install`, `obsidian_plugin_uninstall`), and 1 settings-gated
 CLI-conditional tool (`obsidian_cli`, default OFF)
-= **up to 79 total**.  The 3 Code Mode meta-tools are an alternative
+= **up to 77 total**.  The 3 Code Mode meta-tools are an alternative
 per-connection surface and are not counted (a session sees one surface or the
 other, never both).  Nothing outside the locked `obsidian_*` family is counted
 here any more: the two always-on `governance_*` revision tools left for the
@@ -31,7 +31,9 @@ them (see "Section 2's governance rows" below).  Section 2c is now EMPTY — the
 default-disabled modules and left with the mutating tier, following `bases` at
 S7. All are satellite tools now (`vaultmcp_provenance_*`, `vaultmcp_fileclass_*`,
 `vaultmcp_jd_scaffold_*`, `vaultmcp_bases_*`), and this inventory has never counted
-external tools.
+external tools. The two conformance-debt tools left the always-live set on
+2026-10-14 with the conformance rail (now `vaultmcp_conformance_debt` and
+`vaultmcp_conformance_debt_render`, the `vaultmcp-conformance` plugin).
 
 Cross-check: the observed live set with Dataview + Templater + Metadata Menu
 loaded (but NOT Omnisearch, no CLI binary) reported 44 tools — an observation
@@ -44,10 +46,11 @@ the scheme write surface (`obsidian_assign_address`,
 `obsidian_refile_address`, `obsidian_renumber_address`), and subsequent
 `main` additions (in-Obsidian dev tool-runner, conformance debt register,
 the snippet tools);
-the same plugin set today registers 17 + 42 + 6 + 6 = **71** (the vocab
+the same plugin set today registers 17 + 40 + 6 + 6 = **69** (the vocab
 module's four left the host at S7, along with health's two and bases' two; the
 mutating tier's eighteen were default-disabled and never in this count; and one
-always-live tool left for the governance provider at S3c).
+always-live tool left for the governance provider at S3c; the conformance
+debt register's two left for the conformance satellite on 2026-10-14).
 
 ---
 
@@ -80,7 +83,7 @@ against its `FilesystemBackend`.
 
 ---
 
-## Section 2 — live-only, always registered (43)
+## Section 2 — live-only, always registered (41)
 
 These tools depend on live Obsidian `app.*` state and cannot be expressed on the
 filesystem.  They are unconditionally registered on every `buildMcpServer` call,
@@ -126,7 +129,7 @@ directory defaults to the same relative path under `mirror_root` as the
 note's own vault folder; `survey-mirror` frontmatter overrides it per note.
 Both are checked against a declared content-root boundary
 (`GOVERNOR_CONTENT_ROOT`/`GOVERNOR_VAULT_ROOT`, legacy `ASSENT_*` aliases honored — same env vars
-`conformance/snapshot.ts` uses) before anything is read — neither is a vault
+the conformance satellite's `snapshot.ts` uses) before anything is read — neither is a vault
 path, so `guard.ts`'s allowlist never sees them otherwise.
 `obsidian_survey_slot` refuses to touch a section last stamped
 `by: "claude-code"` or `by: "human"` unless `force: true`, and routes its
@@ -235,13 +238,6 @@ journaled, and read-only mode or an allowlist blocks both mutators.
 | `obsidian_snippet_read` | R | One snippet's CSS text |
 | `obsidian_snippet_write` | W | Create/overwrite `.obsidian/snippets/<name>.css` (name sanitized; new snippets start disabled) |
 | `obsidian_snippet_toggle` | W | Enable/disable one snippet via `customCss.setCssEnabledStatus` |
-
-### `tools-conformance-debt.ts` — `registerConformanceDebtTools` + `registerConformanceDebtRenderTool` (2 tools, issue #211)
-
-| Tool name | Description |
-|---|---|
-| `obsidian_conformance_debt` | Accepted conformance-debt register: carried items (script/check/target/kind + sidecar metadata + ageDays) with burn-down counts (carried/cleared/new), a stale list, and a budget status; filter by folder/pack/check/kind and group counts. Read-only, whole-vault; never mints acceptance (that is the human-run `--rebaseline`) |
-| `obsidian_conformance_debt_render` | Materialize the debt report as a generated register note (`Conformance debt.md`, default beside the baseline): summary header, carried-debt table (each row wikilinked to the offending note, stale + high-priority first), and a cleared/prune section. Mutating (queue/journal via the guarded registrar); frontmatter is a `generated`/`generator` derivation stamp only — the accept-guard is run over the rendered text; refuses under an active path allowlist unless the register path is inside it |
 
 ---
 
@@ -415,7 +411,7 @@ The 44-tool set observed with Dataview + Templater + Metadata Menu loaded
 it stood then:
 
 - 17 fs-expressible ✓
-- 22 always-live at the time ✓ (now 42 + 6 module-mounted — see Sections 2/2b)
+- 22 always-live at the time ✓ (now 41 + 6 module-mounted — see Sections 2/2b)
 - 5 integration (Dataview×2 + Templater×1 + Metadata Menu×2) ✓
 - `obsidian_omnisearch` absent — Omnisearch plugin not loaded ✓
 - (the dedicated CLI tools additionally register when the CLI binary is
@@ -445,7 +441,6 @@ this historical snapshot.
 | `packages/host/src/mcp/tools-locks.ts` | `registerLockTools` | 4 always-live |
 | `packages/host/src/mcp/tools-uid.ts` | `registerUidTools` | 1 always-live |
 | `packages/host/src/mcp/tools-links.ts` | `registerLinkTools` | 1 always-live |
-| `packages/host/src/mcp/tools-conformance-debt.ts` | `registerConformanceDebtTools` + `registerConformanceDebtRenderTool` | 2 always-live |
 | `packages/host/src/mcp/tools-write-notes.ts` | `registerWriteNotesTool` | 1 always-live |
 | `packages/host/src/mcp/tools-scheme.ts` | `registerSchemeTools` (via `modules-mount.ts`) | 6 module-mounted |
 | `packages/host/src/mcp/tools-snippets.ts` | `registerSnippetTools` | 4 always-live |

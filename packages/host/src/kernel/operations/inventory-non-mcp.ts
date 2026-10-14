@@ -118,14 +118,9 @@ export const COMMAND_SURFACES: CommandRow[] = [
     distribution: "public-optional",
     readOnly: true,
   },
-  {
-    id: "scheme-drift-open",
-    title: "Scheme: open JD drift",
-    postcondition: "Activate the scheme drift view.",
-    owner: "scheme",
-    distribution: "public-optional",
-    readOnly: true,
-  },
+  // The `scheme-drift-open` row lived here until 2026-10-14; the Drift pane and
+  // its command left with the conformance rail for the vaultmcp-conformance
+  // plugin (packages/conformance/src/main.ts registers `open-drift`).
   // The six `skills-*` command rows lived here until the S4 satellite
   // extraction; they moved out with the commands themselves, which are now
   // registered by the `vaultmcp-skills` plugin (packages/skills/src/wiring.ts).

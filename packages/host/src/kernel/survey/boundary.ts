@@ -9,12 +9,12 @@
 // made obsidian_survey_status enumerate it.
 //
 // This repo already solved the identical problem once, for
-// conformance/snapshot.ts's caller-named `root` (issue #157, commit
+// the conformance satellite's snapshot.ts (packages/conformance/src/kernel/) caller-named `root` (issue #157, commit
 // e4efe59) — three checks, in this order: the root's real path must be
 // resolvable at all; it must not fall inside a permanently denied
 // territory, UNCONDITIONALLY, even when explicitly requested; and it must
 // resolve inside a boundary that is DECLARED, never defaulted. Reused here
-// via the same pure `intendedRealPath`/`isInside` pair snapshot.ts uses (no
+// via the same pure `intendedRealPath`/`isInside` pair (in @vault-mcp/core) snapshot.ts uses (no
 // second implementation of "is this path really inside that one" — a
 // symlink is exactly what a second, naive implementation would miss), with
 // survey's own deny-list (there is no reason a filesystem mirror should
@@ -22,7 +22,7 @@
 // trees) rather than snapshot.ts's vault-specific one.
 
 import { sep } from "node:path";
-import { intendedRealPath, isInside } from "../../conformance/path-identity.js";
+import { intendedRealPath, isInside } from "@vault-mcp/core";
 import { envAliased } from "../../env-alias.js";
 
 // Dotfile/dot-directory segments only — matches walk()'s own ignore rule, so
@@ -45,7 +45,7 @@ function deniedTerritory(realPath: string): string | null {
 }
 
 /** The declared boundary a mirror root must resolve inside. Reuses the same
- *  env vars conformance/snapshot.ts declares its own boundary with — one
+ *  env vars the conformance satellite's snapshot.ts declares its own boundary with — one
  *  vault-wide "where real content lives" declaration, not a second one
  *  invented for this module. NO fallback: absence is a refusal, decided by
  *  the caller, not a default guessed here. */

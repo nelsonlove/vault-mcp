@@ -317,9 +317,10 @@ const schemeBinding: ConfigBinding = {
 // TWO THINGS DID NOT LEAVE WITH IT, and both are deliberate:
 //
 //   • THE KERNEL. `src/kernel/vocab/` moved to `@vault-mcp/core`, not into the
-//     satellite, because the host's conformance rail is its second consumer
-//     (`conformance/packs/vocab.ts` wraps `noteVocabFindings`,
-//     `conformance/cli.ts` builds a `VocabRegistry` per run). Same shape as the
+//     satellite, because the conformance rail (then the host's, since
+//     2026-10-14 the vaultmcp-conformance satellite's) is its second consumer
+//     (`packs/vocab.ts` wraps `noteVocabFindings`, `cli.ts` builds a
+//     `VocabRegistry` per run). Same shape as the
 //     `queryBaseRows` question at S5, same forbidden answer: two copies of a
 //     rule core is how one vault gets two vocabularies.
 //   • THE SETTING. `settings.vocabularies` is a TOP-LEVEL host setting, not a
@@ -372,7 +373,23 @@ const schemeBinding: ConfigBinding = {
 // blocked WHOLESALE while a path allowlist is active, which is stricter than
 // the documented-exception outcome the issue was weighing. The issue's list is
 // down to `provenance_reconcile` and `obsidian_conformance_debt`, both still
-// here.
+// here. (Both have since left: `provenance_reconcile` with the mutating tier,
+// `obsidian_conformance_debt` with the conformance rail — see below.)
+//
+// ── the conformance-debt config USED TO LIVE HERE (in settings, not a manifest)
+//
+// `conformance-debt` was never a mounted module: `obsidian_conformance_debt`
+// and `obsidian_conformance_debt_render` were registered by hand in server.ts,
+// but they read their config from `modules["conformance-debt"].config`
+// (`staleAfterDays`, `debtBudget`, `strictBudget`, `registerDir`,
+// `registerMaxRows`), which no manifest declared and no settings field showed.
+// On 2026-10-14 the whole conformance rail left the host as `packages/conformance`
+// (id `vaultmcp-conformance`), publishing `vaultmcp_conformance_debt` and
+// `vaultmcp_conformance_debt_render`; it adopts that config row once, and the
+// host's `vaultConventions` with it. The id is in EXTRACTED_MODULE_IDS so the
+// preserved row is skipped silently. Under an allowlist both tools are now
+// refused outright by the host (no path-key argument), which takes the last
+// tool off #381's list.
 //
 // ── the fileclass module manifest USED TO LIVE HERE ────────────────────────
 //
