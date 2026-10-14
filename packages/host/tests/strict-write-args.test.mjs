@@ -63,6 +63,12 @@ describe("strict arguments on write tools (#510)", () => {
     }
   });
 
+  test("the plugin's own kernel-argument descriptions are kept on shared write tools (#546 review 2)", () => {
+    assert.match(tools.obsidian_append_note.inputSchema.shape.idempotency_key.description, /^REQUIRED for this tool/);
+    assert.match(tools.obsidian_write_note.inputSchema.shape.if_rev.description, /^REQUIRED when overwrite is true/);
+    assert.doesNotMatch(tools.obsidian_append_note.inputSchema.shape.idempotency_key.description, /file-system server/);
+  });
+
   test("the kernel arguments stay accepted on a strict write tool", () => {
     const r = tools.obsidian_append_note.inputSchema.safeParse({ path: "A.md", content: "x", idempotency_key: "k", intent: "why" });
     assert.equal(r.success, true, JSON.stringify(r.error?.issues));
