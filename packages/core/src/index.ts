@@ -328,3 +328,19 @@ export type { HostSettingKey, ProviderSettingKey } from "./settings-split.js";
 export { CHANGE_CLASSES, NOTE_WRITE_ACTION } from "./action-contract.js";
 export type { ChangeClass } from "./action-contract.js";
 export { vaultSlug } from "./vault-slug.js";
+
+// ── Shared with the conformance and scheme satellites (2026-10-14) ─────────────
+// The JD scheme grammar and registry (jd: addressing stays in the host's guard),
+// scheme findings, the argument-path walk, path identity and the env aliases:
+// published into core, as the vocab kernel was, so a satellite and the host read
+// one copy (suite split; Nelson, 2026-10-14: "the conformance and scheme features
+// still in core ... need to be split out into satellites").
+export type { Capabilities, Address, Scope, Member, SchemeFinding, ScopeProvider } from "./scheme/provider.js";
+export { DEFAULT_JD_CONFIG, jdProvider, validateJdConfig } from "./scheme/jd.js";
+export type { JdConfig } from "./scheme/jd.js";
+export { DEFAULT_SCHEMES, SchemeRegistry, validateExcludedRoots, excludeRoots, makeRegistry, AddressUnresolvedError, AddressAmbiguousError, SchemeUnavailableError, requireOneAddress, resolveSchemeArgs } from "./scheme/registry.js";
+export type { SchemeInstanceConfig, SchemeInstance, ParsedRef, SchemeAddressing } from "./scheme/registry.js";
+export { schemeFindings } from "./scheme/findings.js";
+export { intendedRealPath, sameFile, isInside } from "./path-identity.js";
+export { envAliased, envAliasNames } from "./env-alias.js";
+export { mapPaths, collectPaths, visiblePaths } from "./guard-paths.js";

@@ -32,6 +32,7 @@ import { z } from "zod";
 import { ok, okError, codedError } from "./helpers.js";
 import { PROTECTION_REQUIRED } from "../kernel/write-protection.js";
 import { composeNote, AcceptForbiddenError, type ComposeResult } from "./write-notes-compose.js";
+import { strictInput } from "@vault-mcp/core";
 
 /** readOnlyHint:false is honest — this tool mutates. It bypasses the monkeypatch, not the truth. */
 const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
@@ -153,7 +154,9 @@ export function registerWriteNotesTool(
         "NEVER writes acceptance, and any item whose frontmatter sets accepted/accepted-by/accepted-on is REJECTED " +
         "(Error [accept_forbidden]) — acceptance is a human gesture, in no API. `stamp` is opt-in per call; leave it off " +
         "for templates/blueprints, where a uid on a merge-payload would corrupt every instance.",
-      inputSchema: {
+      // Strict at both levels (#510): an unknown argument, or an unknown key on an item (`content` for `body`),
+      // is refused rather than dropped.
+      inputSchema: strictInput({
         notes: z
           .array(
             z.object({
@@ -173,7 +176,7 @@ export function registerWriteNotesTool(
                 .max(200)
                 .optional()
                 .describe("Per-item retry-safety key: a repeat with the same key replays the first result instead of writing again."),
-            })
+            }).strict()
           )
           .min(1)
           .max(50)
@@ -192,7 +195,7 @@ export function registerWriteNotesTool(
               "record (review surfaces display it per pending row as \"agent says\"). Journal-only: never written " +
               "to the notes, never trusted, never an acceptance signal."
           ),
-      },
+      }),
       annotations: RW,
     },
     async (

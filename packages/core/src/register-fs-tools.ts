@@ -15,6 +15,7 @@ import { ok, fail } from "./responses.js";
 import { CHARACTER_LIMIT, decodeHtmlEntities } from "./fs-backend/vault.js";
 import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
+import { z } from "zod";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -31,6 +32,13 @@ export interface IndexStatusSnapshot {
 }
 
 export interface RegisterFsToolsOpts {
+  /**
+   * Name the kernel arguments (`if_rev`, `idempotency_key`, `intent`) on each strict write tool, accepted and
+   * not checked. For the file-system server only, which has no kernel: without them its strict write tools
+   * would refuse a key a client sends because the plugin requires it. The plugin leaves this off and adds
+   * its own copies, with their REQUIRED lead, through `withKernelArgs` (#546 review 2).
+   */
+  kernelArgs?: boolean;
   /**
    * When true, run decodeHtmlEntities on every string argument before passing
    * it to the backend. Required for the remote HTTP server (HTML entities can
@@ -83,6 +91,18 @@ export interface RegisterFsToolsOpts {
  * Minimal duck-type for McpServer.registerTool — satisfied structurally by the
  * real McpServer from @modelcontextprotocol/sdk without importing it here.
  */
+/**
+ * The kernel arguments, named on every strict write tool here (#546 review). The plugin adds its own,
+ * fuller copies with `withKernelArgs`; the file-system server has no kernel and nothing else names
+ * them, so without these a strict write tool there would refuse an `idempotency_key` a client sends
+ * because the plugin requires it. On that server they are accepted and not checked, as before.
+ */
+const KERNEL_ARGS_FS = {
+  if_rev: z.number().optional().describe("The note's rev from a read. Checked by the Obsidian plugin's kernel; the file-system server does not check it."),
+  idempotency_key: z.string().min(1).max(200).optional().describe("A retry-safety key. Honoured by the Obsidian plugin's kernel; the file-system server does not deduplicate."),
+  intent: z.string().min(1).max(2000).optional().describe("Advisory text for the journal. Recorded by the Obsidian plugin; the file-system server does not record it."),
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ToolRegistrar = { registerTool(name: string, meta: any, handler: (args: any) => any): any };
 
@@ -98,7 +118,7 @@ type ToolRegistrar = { registerTool(name: string, meta: any, handler: (args: any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerFsTools(server: any, backend: VaultBackend, opts: RegisterFsToolsOpts = {}): void {
   const reg = server as ToolRegistrar;
-  const { decodeHtml = false, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml = jsonFlowYaml } = opts;
+  const { decodeHtml = false, kernelArgs = false, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml = jsonFlowYaml } = opts;
 
   const dec = (s: string): string => (decodeHtml ? decodeHtmlEntities(s) : s);
 
@@ -109,7 +129,15 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
       {
         title: tool.title,
         description: tool.description,
-        inputSchema: tool.strictArgs ? strictInput(tool.inputSchema) : tool.inputSchema,
+        // Every WRITE tool refuses an argument it does not name (#510, Nelson's pick A of 2026-10-12): a dropped
+        // argument on a write is how two notes lost their frontmatter on 2026-10-09. Reads keep the SDK's
+        // lenient object until someone asks for them; `strictArgs` still makes a read strict by hand.
+        inputSchema:
+          tool.annotations?.readOnlyHint === false
+            ? strictInput({ ...(kernelArgs ? KERNEL_ARGS_FS : {}), ...tool.inputSchema })
+            : tool.strictArgs
+              ? strictInput(tool.inputSchema)
+              : tool.inputSchema,
         annotations: tool.annotations,
       },
       handler,
