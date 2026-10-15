@@ -167,6 +167,10 @@ describe("write protection: a v3 satellite tool's declared class is enforced lik
     assert.equal(requiredProtection("vaultmcp_scheme_assign", {}, "both"), "both");
     assert.equal(requiredProtection("vaultmcp_scheme_assign", {}), null);
   });
+  test("a declaration with a '__proto__' value key is refused at registration (#553 review 2)", () => {
+    const values = JSON.parse('{"__proto__": "both"}');
+    assert.throws(() => validateDeclaration(tool("assign", { protection: { arg: "address", values, otherwise: "both" }, paths: ["path"] })), /__proto__/);
+  });
   test("an inherited key never stands in for a per-argument rule (#553 review 1)", () => {
     const prot = { arg: "mode", values: { dry: "exempt" }, otherwise: "both" };
     for (const mode of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {

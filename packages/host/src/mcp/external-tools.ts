@@ -341,8 +341,11 @@ export function validateDeclaration(spec: ExternalToolSpec): ToolDeclaration | u
     onlyKeys(v, ["arg", "values", "otherwise"], what);
     const arg = argOk(v.arg, `${what}.arg`);
     if (!plainObject(v.values)) return bad(`${what}.values must be an object of value → class`);
-    const values: Record<string, C> = {};
+    // No prototype (#553 review 2): an own "__proto__" key would set the prototype on a plain object and be
+    // dropped without a word; it is refused, and the map holds own keys only.
+    const values: Record<string, C> = Object.create(null);
     for (const [k, c] of Object.entries(v.values)) {
+      if (k === "__proto__") return bad(`${what}.values may not use the key '__proto__'`);
       if (typeof c !== "string" || !set.has(c)) return bad(`${what}.values['${k}'] must be one of ${[...set].join(", ")}`);
       values[k] = c as C;
     }
