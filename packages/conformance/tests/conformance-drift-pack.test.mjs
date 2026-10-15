@@ -36,7 +36,11 @@ import { runEngine } from "../src/kernel/engine.ts";
 function snap({ sources = [], dirs = [], walkOrder = [] } = {}) {
   return { notes: [], paths: [], blueprints: [], sources, dirs, walkOrder };
 }
-const run = (s) => driftPack(SEED).run(s);
+/** The E and J findings only: K and L (uid present, date stamps; the Forge-only
+ * checks, 2026-10-15) fire on almost every fixture below, whose notes carry no
+ * `created`/`modified`, and are pinned in their own describe at the end. */
+const run = (s) => driftPack(SEED).run(s).filter((f) => f.check === "E" || f.check === "J");
+const runAll = (s) => driftPack(SEED).run(s);
 const targets = (findings, letter) => findings.filter((f) => f.check === letter).map((f) => f.target);
 
 // ── key shape ─────────────────────────────────────────────────────────────────
@@ -217,8 +221,8 @@ describe("#412 — A, B, D, F and G are retired; the pack reads only systemRoot"
     const walkOrder = sources.map((s) => s.path);
     const findings = run(snap({ sources, walkOrder, dirs: [] }));
     assert.deepEqual(findings, [], `nothing the retired checks measured is a finding now: ${JSON.stringify(findings)}`);
-    const letters = new Set(run(snap({ sources, walkOrder, dirs: ["00-09 System/00 A", "00-09 System/00 B"] })).map((f) => f.check));
-    assert.deepEqual([...letters].sort(), ["J"]);
+    const letters = new Set(runAll(snap({ sources, walkOrder, dirs: ["00-09 System/00 A", "00-09 System/00 B"] })).map((f) => f.check));
+    assert.deepEqual([...letters].sort(), ["J", "K", "L"], "the uid-less notes are K and L findings now (one per note), never the retired F");
   });
 
   test("source pin: no push of a retired letter, and the pack reads no retired convention key", () => {
@@ -243,5 +247,79 @@ describe("#412 — A, B, D, F and G are retired; the pack reads only systemRoot"
       assert.equal(errs.length, 1, `absent ${missing} refuses`);
       assert.match(errs[0].detail, new RegExp(missing));
     }
+  });
+});
+
+// ── K and L: the uid and date rules carried over from 00.92 (check (b) of
+// "Replace the four Forge-only checks", Nelson's verify of 2026-10-14) ────────
+
+describe("driftPack K (uid present) and L (created / modified are date stamps)", () => {
+  const UID = "0192f1a0-1234-7abc-8def-0123456789ab";
+  const note = (p, fm) => ({ path: p, text: `---\n${fm}\n---\n# body\n` });
+  const ok = `uid: ${UID}\ncreated: 2026-10-14T22:15:56-04:00\nmodified: 2026-10-15`;
+  const one = (p, fm) => runAll(snap({ walkOrder: [p], sources: [note(p, fm)] })).filter((f) => f.check === "K" || f.check === "L");
+
+  test("a note with a uid and two good stamps is clean", () => {
+    assert.deepEqual(one("Notes/a.md", ok), []);
+  });
+
+  test("K: a missing, blank, empty-quoted or null uid is one error finding keyed on the path", () => {
+    for (const fm of ["created: 2026-10-14\nmodified: 2026-10-14", "uid:\ncreated: 2026-10-14\nmodified: 2026-10-14", "uid: ''\ncreated: 2026-10-14\nmodified: 2026-10-14", "uid: null\ncreated: 2026-10-14\nmodified: 2026-10-14"]) {
+      const f = one("Notes/a.md", fm);
+      assert.equal(f.length, 1, fm);
+      assert.equal(findingKey(f[0]), "drift_audit|K|Notes/a.md|missing-uid");
+      assert.equal(f[0].detail, "K: Notes/a.md has no uid");
+    }
+  });
+
+  test("K: a uid that is present but not a UUID is present (uniqueness is E's)", () => {
+    assert.deepEqual(one("Notes/a.md", ok.replace(UID, "not-a-uuid")), []);
+  });
+
+  test("K: a note with no frontmatter at all has no uid, no created and no modified", () => {
+    const f = runAll(snap({ walkOrder: ["Notes/bare.md"], sources: [{ path: "Notes/bare.md", text: "# just a body\n" }] }));
+    assert.deepEqual(f.map(findingKey).sort(), ["drift_audit|K|Notes/bare.md|missing-uid", "drift_audit|L|Notes/bare.md|created-missing", "drift_audit|L|Notes/bare.md|modified-missing"]);
+  });
+
+  test("L: the 00.92 pattern plus a UTC offset — every accepted shape passes", () => {
+    for (const v of ["2026-10-14", "2026-10-14T09:31", "2026-10-14 09:31", "2026-10-14T09:31:05", "2026-10-14T09:31:05-04:00", "2026-10-14T09:31+05:30", "2026-10-14T09:31:05Z", "'2026-09-29T03:34:10-04:00'", '"2026-10-14"']) {
+      assert.deepEqual(one("Notes/a.md", `uid: ${UID}\ncreated: ${v}\nmodified: ${v}`), [], v);
+    }
+  });
+
+  test("L: fractional seconds, a bare offset with no time, and free text are not date stamps", () => {
+    for (const v of ["2026-08-19T19:42:17.027-04:00", "2026-10-14-04:00", "yesterday", "14/10/2026", "2026-10-14T9:31"]) {
+      const f = one("Notes/a.md", `uid: ${UID}\ncreated: ${v}\nmodified: 2026-10-14`);
+      assert.equal(f.length, 1, v);
+      assert.equal(findingKey(f[0]), "drift_audit|L|Notes/a.md|created-format");
+    }
+  });
+
+  test("L: the severity is 00.92's (created warning, modified info) and travels in detail only, never in the key", () => {
+    const f = one("Notes/a.md", `uid: ${UID}`);
+    const byKind = Object.fromEntries(f.map((x) => [x.kind, x]));
+    assert.equal(byKind["created-missing"].detail, "L: [warning] Notes/a.md has no created");
+    assert.equal(byKind["modified-missing"].detail, "L: [info] Notes/a.md has no modified");
+    const bad = one("Notes/a.md", `uid: ${UID}\ncreated: 2026-10-14\nmodified: soon`)[0];
+    assert.equal(bad.kind, "modified-format");
+    assert.match(bad.detail, /^L: \[info\] Notes\/a\.md has modified 'soon', which is not a date stamp/);
+  });
+
+  test("the key is the path and the rule, never the value: a bad stamp fixed badly keeps its key", () => {
+    const a = one("Notes/a.md", `uid: ${UID}\ncreated: soon\nmodified: 2026-10-14`)[0];
+    const b = one("Notes/a.md", `uid: ${UID}\ncreated: later\nmodified: 2026-10-14`)[0];
+    assert.equal(findingKey(a), findingKey(b));
+  });
+
+  test("only top-level keys count: a nested `at:` or an indented `created:` is not the note's stamp", () => {
+    const f = one("Notes/a.md", `uid: ${UID}\ngenerated:\n  created: 2026-10-14\nmodified: 2026-10-14`);
+    assert.deepEqual(f.map((x) => x.kind), ["created-missing"]);
+  });
+
+  test("scope: the same governed walk as E — dot/.trash segments, _ roots and Assent are not checked", () => {
+    for (const p of ["_hold/s.md", "Assent/t.md", ".obsidian/u.md", "x/.hidden/v.md"]) {
+      assert.deepEqual(one(p, "title: x"), [], p);
+    }
+    assert.equal(one("Notes/real.md", "title: x").length, 3);
   });
 });

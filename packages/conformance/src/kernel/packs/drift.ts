@@ -22,6 +22,22 @@
 //   H  tag registration — dropped before the port (print-only)
 //   I  band filing — dropped before the port (print-only)
 //   J  category-number collisions on the System spine                                [findings] — kept
+//   K  a note with no `uid` (severity error)                                          [findings] — NEW 2026-10-15
+//   L  `created` / `modified` missing or not a date stamp (warning / info)            [findings] — NEW 2026-10-15
+//
+// K and L are check (b) of the vault task "Replace the four Forge-only checks"
+// (Nelson's verify of 2026-10-14, pick A: the checks live in the
+// vaultmcp-conformance satellite). They carry over from `00.92 Forge schema`
+// exactly the rules the plan names and nothing else: `uid` present (unique is
+// E), `created` and `modified` present and matching
+// `^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?)?$` with a UTC offset added
+// (`Z` or `±HH:MM`), because the vault now writes `-04:00` stamps. Fractional
+// seconds stay rejected, as 00.92 rejected them on purpose. The severity is
+// 00.92's (uid error, created warning, modified info) and travels in `detail`
+// only: the finding shape has no severity field, and 01.53 rule 6 forbids a
+// new finding shape. K is not the retired F: F was one aggregated finding over
+// a uid-exempt carve-out (#412); K is one finding per note, keyed on the path,
+// over the same governed walk as E, with no carve-out.
 //
 // So the pack reads ONE convention, `systemRoot` (J's scan root), and E reads
 // none: it runs over the whole governed walk with no exemption, since a note
@@ -90,6 +106,23 @@ function fmValue(block: string, key: string): string | null {
   // .strip() then .strip('"'): trim whitespace, then remove leading/trailing
   // double-quotes (all consecutive ones, as Python's str.strip(chars) does).
   return m[1].trim().replace(/^"+/, "").replace(/"+$/, "");
+}
+
+/** 00.92's stamp pattern with a UTC offset added ("Replace the four Forge-only checks", check (b)). */
+export const DATE_STAMP_RE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** A frontmatter scalar as written: whitespace trimmed, then ONE pair of matching outer quotes removed (`"…"` or `'…'`). */
+function unquoted(v: string): string {
+  const t = v.trim();
+  return t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1).trim() : t;
+}
+
+/** The raw text of a top-level frontmatter key, or null when the key is absent, blank or a YAML null (`null`, `~`). */
+function fmRaw(block: string, key: string): string | null {
+  const m = block.match(new RegExp("^" + escapeRe(key) + ":[ \\t]*(.*)$", "m"));
+  if (!m) return null;
+  const v = unquoted(m[1].replace(/[ \t]+#.*$/, ""));
+  return v === "" || v === "~" || v === "null" ? null : v;
 }
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -175,6 +208,26 @@ export function driftPack(conv: VaultConventions): RulePack {
         const names = seenCodes.get(code)!;
         if (names.length > 1)
           push("J", `category number ${code} is claimed by ${names.length} folders: ` + [...names].sort().join("; "));
+      }
+
+      // ── K and L. uid present; created and modified present and a date stamp.
+      // One finding per note and rule, keyed on the path (never the value, which
+      // changes when someone fixes it badly), over E's governed walk. ──────────
+      for (const rel of governed) {
+        const text = sourceText.get(rel);
+        if (text === undefined) continue;
+        const block = fmBlock(text);
+        if (fmRaw(block, "uid") === null)
+          push("K", `${rel} has no uid`, { target: rel, kind: "missing-uid" });
+        for (const [key, severity] of [["created", "warning"], ["modified", "info"]] as const) {
+          const v = fmRaw(block, key);
+          if (v === null) push("L", `[${severity}] ${rel} has no ${key}`, { target: rel, kind: `${key}-missing` });
+          else if (!DATE_STAMP_RE.test(v))
+            push("L", `[${severity}] ${rel} has ${key} '${v}', which is not a date stamp (YYYY-MM-DD, optionally THH:MM[:SS] and an offset)`, {
+              target: rel,
+              kind: `${key}-format`,
+            });
+        }
       }
 
       return out;
