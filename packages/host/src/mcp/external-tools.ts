@@ -142,7 +142,7 @@ export interface ExternalToolEntry {
   toolName: string;  // namespaced published name
   spec: ExternalToolSpec;
   /** The spec's apiVersion-3 declaration, validated and frozen at registration;
-   *  absent for a v2 spec. A later edit of the publisher's spec object changes nothing. */
+   *  absent for a v2 spec. A later edit of a v3 publisher's spec object changes nothing; a v2 spec is read again on each server build. */
   declaration?: ToolDeclaration;
 }
 

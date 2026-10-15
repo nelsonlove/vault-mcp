@@ -258,7 +258,8 @@ export function syncKindOf(tool: string, args: Record<string, unknown>, declared
   if (typeof k === "string") return k;
   const v = args[k.arg];
   const key = typeof v === "boolean" ? String(v) : typeof v === "string" ? v : undefined;
-  return (key !== undefined && k.values[key]) || k.otherwise;
+  // Own keys only (#553 review 1): an inherited name such as "constructor" must not stand in for a kind.
+  return (key !== undefined && Object.hasOwn(k.values, key) && k.values[key]) || k.otherwise;
 }
 
 // ── the decision ─────────────────────────────────────────────────────────────

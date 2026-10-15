@@ -37,7 +37,8 @@ export function requiredProtection(tool: string, args: Record<string, unknown>, 
   if (typeof p === "object") {
     const v = args[p.arg];
     const key = typeof v === "boolean" ? String(v) : typeof v === "string" ? v : undefined;
-    return (key !== undefined && p.values[key]) || p.otherwise;
+    // Own keys only (#553 review 1): an inherited name such as "constructor" must not stand in for a rule.
+    return (key !== undefined && Object.hasOwn(p.values, key) && p.values[key]) || p.otherwise;
   }
   switch (p) {
     case "token":

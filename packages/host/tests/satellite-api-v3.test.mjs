@@ -7,7 +7,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { ExternalToolRegistry, registerExternalTools, validateDeclaration } from "../src/mcp/external-tools.ts";
 import { makeGuarded, withKernelArgs } from "../src/mcp/guarded.ts";
-import { createSyncGuard, normalizeSyncGuard, SYNC_BEHIND } from "../src/kernel/sync-guard.ts";
+import { createSyncGuard, normalizeSyncGuard, SYNC_BEHIND, syncKindOf } from "../src/kernel/sync-guard.ts";
 import { requiredProtection } from "../src/kernel/write-protection.ts";
 import { declarationOf, TOOL_DECLARATION } from "../src/kernel/tool-declaration.ts";
 import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore } from "../src/kernel/index.ts";
@@ -166,6 +166,17 @@ describe("write protection: a v3 satellite tool's declared class is enforced lik
     assert.equal(requiredProtection("obsidian_move_note", {}, "exempt"), "key");
     assert.equal(requiredProtection("vaultmcp_scheme_assign", {}, "both"), "both");
     assert.equal(requiredProtection("vaultmcp_scheme_assign", {}), null);
+  });
+  test("an inherited key never stands in for a per-argument rule (#553 review 1)", () => {
+    const prot = { arg: "mode", values: { dry: "exempt" }, otherwise: "both" };
+    for (const mode of ["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"]) {
+      assert.equal(requiredProtection("vaultmcp_x_write", { mode }, prot), "both", mode);
+    }
+    assert.equal(requiredProtection("vaultmcp_x_write", { mode: "dry" }, prot), "exempt");
+    const sync = { arg: "mode", values: { dry: "content" }, otherwise: "structure" };
+    for (const mode of ["constructor", "toString", "__proto__"]) {
+      assert.equal(syncKindOf("vaultmcp_x_write", { mode }, { kind: sync }), "structure", mode);
+    }
   });
 });
 
