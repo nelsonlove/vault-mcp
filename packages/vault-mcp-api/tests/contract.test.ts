@@ -7,12 +7,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { publishTools, API_VERSION_MIN, hostApiSupported, partial, isPartial, PARTIAL_BRAND } from "../src/index.js";
+import { publishTools, API_VERSION_MIN, API_VERSION_DECLARATIONS, hostApiSupported, partial, isPartial, PARTIAL_BRAND } from "../src/index.js";
 import type {
   VaultMcpApi as SdkVaultMcpApi,
   ExternalToolSpec as SdkExternalToolSpec,
   JsonSchemaObject as SdkJsonSchemaObject,
   CallContext as SdkCallContext,
+  ProtectionDeclaration as SdkProtectionDeclaration,
+  SyncDeclaration as SdkSyncDeclaration,
 } from "../src/index.js";
 import {
   ExternalToolRegistry,
@@ -22,6 +24,8 @@ import {
   type VaultMcpApi as HostVaultMcpApi,
   type ExternalToolSpec as HostExternalToolSpec,
   type CallContext as HostCallContext,
+  type ProtectionDeclaration as HostProtectionDeclaration,
+  type SyncDeclaration as HostSyncDeclaration,
 } from "../../host/src/mcp/external-tools.js";
 import type { JsonSchemaObject as HostJsonSchemaObject } from "../../host/src/mcp/json-schema-to-zod.js";
 
@@ -78,7 +82,16 @@ const _gtHostToSdk: Required<SdkVaultMcpApi>["guardedTerritories"] =
   null as unknown as Required<HostVaultMcpApi>["guardedTerritories"];
 const _gtSdkToHost: Required<HostVaultMcpApi>["guardedTerritories"] =
   null as unknown as Required<SdkVaultMcpApi>["guardedTerritories"];
-void [_api, _apiHostSatisfiesSdk, _hostDeclaresALevel, _spec, _schema, _gtHostToSdk, _gtSdkToHost, _ctx, _handlerCtx];
+// The apiVersion-3 declarations (#550), pinned in BOTH directions member by
+// member, because each is optional on the spec and `MutuallyAssignable` is blind
+// to an optional member: a field dropped or reshaped on either side is a type
+// error here.
+const _protection: MutuallyAssignable<SdkProtectionDeclaration, HostProtectionDeclaration> = true;
+const _sync: MutuallyAssignable<SdkSyncDeclaration, HostSyncDeclaration> = true;
+const _specProtection: MutuallyAssignable<Required<SdkExternalToolSpec>["protection"], Required<HostExternalToolSpec>["protection"]> = true;
+const _specSync: MutuallyAssignable<Required<SdkExternalToolSpec>["sync"], Required<HostExternalToolSpec>["sync"]> = true;
+const _specPaths: MutuallyAssignable<Required<SdkExternalToolSpec>["paths"], Required<HostExternalToolSpec>["paths"]> = true;
+void [_api, _apiHostSatisfiesSdk, _hostDeclaresALevel, _spec, _schema, _gtHostToSdk, _gtSdkToHost, _ctx, _handlerCtx, _protection, _sync, _specProtection, _specSync, _specPaths];
 
 // ── Runtime contract: the real SDK against the real host registry ────────────
 // Mirrors how packages/host/src/main.ts exposes the api object
@@ -87,7 +100,7 @@ void [_api, _apiHostSatisfiesSdk, _hostDeclaresALevel, _spec, _schema, _gtHostTo
 function hostWorld() {
   const registry = new ExternalToolRegistry();
   const api: HostVaultMcpApi = {
-    apiVersion: 2,
+    apiVersion: 3,
     registerTools: (owner, tools) => registry.registerTools(owner, tools),
   };
   const app = {
@@ -157,12 +170,13 @@ test("readOnly omitted ⇒ host sees a mutating tool (readOnlyHint false)", () =
 
 // ── #402 step A: the floor and the envelope against the real host shape ──────
 
-test("the host's declared apiVersion (2) meets the SDK's floor (1): a host bump lands here as a fixture edit, on purpose", () => {
+test("the host's declared apiVersion (3) meets the SDK's floor (1): a host bump lands here as a fixture edit, on purpose", () => {
   const { registry } = hostWorld();
   void registry;
-  const api: HostVaultMcpApi = { apiVersion: 2, registerTools: () => () => {} };
+  const api: HostVaultMcpApi = { apiVersion: 3, registerTools: () => () => {} };
   assert.equal(API_VERSION_MIN, 1, "the floor stays 1: a host at 1 is still a host");
-  assert.equal(hostApiSupported(api), true, "the host at 2 meets the floor");
+  assert.equal(hostApiSupported(api), true, "the host at 3 meets the floor");
+  assert.ok(api.apiVersion >= API_VERSION_DECLARATIONS, "the host carries the write declarations");
   assert.equal(hostApiSupported({ apiVersion: 2 }), true, "a newer host registers");
   assert.equal(hostApiSupported({ apiVersion: 0 }), false);
   assert.equal(hostApiSupported({ apiVersion: "1" }), false, "a string is not a version");
@@ -195,4 +209,51 @@ test("the brand is spelled the same on both sides, and the two predicates agree 
     "partial", null, undefined, 3, [partial({ a: 1 }, "m")],
   ];
   for (const s of shapes) assert.equal(hostIsPartialEnvelope(s), isPartial(s), JSON.stringify(s));
+});
+
+// ── apiVersion 3: the write declarations cross intact and the host validates them (#550) ──
+
+test("a v3 declaration crosses the real host registry intact and is frozen on the entry", () => {
+  const { registry, plugin } = hostWorld();
+  publishTools(plugin, [{
+    name: "assign",
+    description: "move a note to the next free address",
+    inputSchema: { path: z.string(), dry_run: z.boolean().optional() },
+    protection: { arg: "dry_run", values: { true: "exempt" }, otherwise: "key" },
+    sync: { kind: "structure", strictStatus: true, destinationUnnamed: true },
+    paths: ["path"],
+    handler: () => ({}),
+  }]);
+  const [entry] = registry.entries();
+  // The host keeps the value map without a prototype (#553 review 2), so the expected map has none either.
+  assert.deepEqual(entry.declaration, {
+    protection: { arg: "dry_run", values: Object.assign(Object.create(null), { true: "exempt" }), otherwise: "key" },
+    sync: { kind: "structure", strictStatus: true, destinationUnnamed: true },
+    paths: ["path"],
+  });
+  assert.ok(Object.isFrozen(entry.declaration));
+});
+
+test("a malformed v3 declaration is refused by the real host: publishTools registers nothing and the host throws", () => {
+  const { registry, plugin } = hostWorld();
+  const errors: unknown[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { errors.push(a); };
+  try {
+    publishTools(plugin, [
+      { name: "fine", description: "d", handler: () => ({}) },
+      { name: "bad", description: "d", inputSchema: { path: z.string() }, sync: { kind: "structure" }, paths: ["path"], handler: () => ({}) },
+    ]);
+  } finally {
+    console.error = orig;
+  }
+  assert.equal(registry.entries().length, 0, "atomic: a malformed spec registers nothing");
+  assert.match(String((errors[0] as unknown[])[1]), /must also declare protection/);
+});
+
+test("a v2 spec (no declaration) registers with no declaration on the entry", () => {
+  const { registry, plugin } = hostWorld();
+  publishTools(plugin, [{ name: "plain", description: "d", inputSchema: { path: z.string() }, handler: () => ({}) }]);
+  assert.equal(registry.entries()[0].declaration, undefined);
+  assert.equal("protection" in registry.entries()[0].spec, false);
 });

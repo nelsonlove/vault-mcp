@@ -20,6 +20,62 @@ export interface ExternalToolSpec {
    *  per-call `CallContext` as the SECOND argument; a v1 host passes nothing
    *  there. A handler written against this SDK may ignore it. */
   handler: (args: Record<string, unknown>, ctx?: CallContext) => Promise<unknown> | unknown;
+  /** apiVersion 3: the write protection a call must carry. See `ProtectionDeclaration`. */
+  protection?: ProtectionDeclaration;
+  /** apiVersion 3: how the host's Sync guard treats the tool. See `SyncDeclaration`. */
+  sync?: SyncDeclaration;
+  /** apiVersion 3: the argument names that carry vault paths. */
+  paths?: string[];
+}
+
+// ── apiVersion 3 members: the write declarations (#550) ──────────────────────
+//
+// A host tool states its write protection and its Sync-guard membership in the
+// host's own tables, keyed by tool name. A published tool has no row there, so
+// through apiVersion 2 the host checked none of it. From apiVersion 3 a spec
+// declares them, and the host enforces them exactly as for one of its own
+// tools. A spec that declares none of the three is an apiVersion-2 spec and
+// behaves as before. The host refuses a malformed declaration at registration
+// (fail closed): an unknown key, a class outside the closed set, an argument
+// the tool's inputSchema does not declare, a path argument the host's path walk
+// does not recognize, the Sync lists on a content-only tool, protection or sync
+// on a tool that claims to be read-only, and a mutating tool that declares sync
+// or paths but no protection.
+
+/** The level of host members a spec carrying `protection`, `sync` or `paths` needs. */
+export const API_VERSION_DECLARATIONS = 3;
+
+/** One class of write protection (01.33 rule 6f): `token` ⇒ the call must carry
+ *  `if_rev`, `key` ⇒ `idempotency_key`, `both`, or `exempt` (nothing required). */
+export type ProtectionClassDeclaration = "token" | "key" | "both" | "exempt";
+
+/** A tool's declared protection: a class, or a class chosen by one argument's
+ *  value (booleans as "true"/"false"; `otherwise` covers every other value and
+ *  the argument's absence). A call that omits what its class requires is
+ *  refused `Error [protection_required]` before it runs. */
+export type ProtectionDeclaration =
+  | ProtectionClassDeclaration
+  | { arg: string; values: Record<string, ProtectionClassDeclaration>; otherwise: ProtectionClassDeclaration };
+
+/** A tool's place in the host's Sync guard (Obsidian Sync checked before a write). */
+export interface SyncDeclaration {
+  /** `structure` (rename, move, delete, create: waits for Sync, then refused
+   *  `sync_behind` if Sync is still behind) or `content` (edit, append: waits,
+   *  then goes on with a warning); or chosen by one argument's value. */
+  kind:
+    | "structure"
+    | "content"
+    | { arg: string; values: Record<string, "structure" | "content">; otherwise: "structure" | "content" };
+  /** The strict list: a rename, move or delete, which also waits for "Fully synced". Structure only. */
+  strictStatus?: boolean;
+  /** The destination-unnamed list: the tool does not name where it writes, so a
+   *  server change waiting anywhere in the vault counts. Structure only. */
+  destinationUnnamed?: boolean;
+}
+
+/** Whether a spec carries any apiVersion-3 declaration. */
+export function declaresWrites(spec: { protection?: unknown; sync?: unknown; paths?: unknown }): boolean {
+  return spec.protection !== undefined || spec.sync !== undefined || spec.paths !== undefined;
 }
 
 // ── apiVersion 2 members, in the SDK ahead of the host (#402 step A) ─────────
@@ -241,6 +297,16 @@ export interface SdkToolSpec {
    *  `CallContext` (see its doc for what absence means). May return a
    *  `partial(...)` to set the error bit while still returning data. */
   handler: (args: Record<string, unknown>, ctx?: CallContext) => Promise<unknown> | unknown;
+  /** apiVersion 3: the protection a call must carry (`if_rev`, `idempotency_key`).
+   *  Required on a mutating tool that declares `sync` or `paths`. */
+  protection?: ProtectionDeclaration;
+  /** apiVersion 3: the tool's place in the host's Sync guard. */
+  sync?: SyncDeclaration;
+  /** apiVersion 3: the argument names that carry vault paths, each a key the
+   *  host's path walk recognizes (`path`, `from`, `to`, `paths`, `note_path`, …).
+   *  Under a path allowlist each call is checked per path, and refused when no
+   *  declared argument carries one. */
+  paths?: string[];
 }
 
 /**
@@ -314,7 +380,27 @@ function toExternalSpec(t: SdkToolSpec): ExternalToolSpec {
       ...(t.idempotent !== undefined && { idempotentHint: t.idempotent }),
     },
     handler: t.handler,
+    ...(t.protection !== undefined && { protection: t.protection }),
+    ...(t.sync !== undefined && { sync: t.sync }),
+    ...(t.paths !== undefined && { paths: t.paths }),
   };
+}
+
+/**
+ * The specs a host can be handed. A host below apiVersion 3 ignores the write
+ * declarations, so a declaring tool would run there with none of the
+ * protection it asked for: FAIL CLOSED and leave it out, with one warning
+ * naming each. The other tools register as before.
+ */
+export function specsForHost(api: { apiVersion?: unknown }, specs: ExternalToolSpec[], owner = "?"): ExternalToolSpec[] {
+  const level = typeof api.apiVersion === "number" ? api.apiVersion : 0;
+  if (level >= API_VERSION_DECLARATIONS) return specs;
+  const kept = specs.filter((s) => !declaresWrites(s));
+  if (kept.length < specs.length) {
+    const dropped = specs.filter((s) => declaresWrites(s)).map((s) => s.name);
+    console.warn(`[vault-mcp-api] host apiVersion ${String(api.apiVersion)} cannot enforce write declarations (needs ${API_VERSION_DECLARATIONS}); not registering '${owner}' tools: ${dropped.join(", ")}`);
+  }
+  return kept;
 }
 
 /**
@@ -348,7 +434,7 @@ export function publishTools(plugin: Plugin, tools: SdkToolSpec[]): () => void {
   const register = () => {
     const api = getApi();
     if (!api) return;
-    try { unregister = api.registerTools(plugin.manifest.id, specs); }
+    try { unregister = api.registerTools(plugin.manifest.id, specsForHost(api, specs, plugin.manifest.id)); }
     catch (e) { console.error(`[vault-mcp-api] registerTools failed for '${plugin.manifest.id}'`, e); }
   };
 
