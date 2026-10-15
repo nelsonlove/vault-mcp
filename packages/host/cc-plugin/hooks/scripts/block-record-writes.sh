@@ -97,7 +97,8 @@ record_state() {
     [ -r "$f" ] || { echo unreadable; return; }
     local fm
     # CRLF and a leading BOM are read as Obsidian reads them (#560 review 1).
-    if ! fm=$(awk '{ sub(/\r$/, "") } NR==1 { sub(/^\xef\xbb\xbf/, ""); if ($0 != "---") exit; next } $0 == "---" { exit } { print }' "$f" 2>/dev/null); then
+    # LC_ALL=C: a binary attachment must read as bytes, not fail as bad UTF-8 and look unreadable (#560 review 3).
+    if ! fm=$(LC_ALL=C awk '{ sub(/\r$/, "") } NR==1 { sub(/^\xef\xbb\xbf/, ""); if ($0 != "---") exit; next } $0 == "---" { exit } { print }' "$f" 2>/dev/null); then
         echo unreadable; return
     fi
     # Any case (`True`, `"TRUE"`): YAML and the host's record guard read those as true too.
@@ -143,7 +144,8 @@ CMD='(^|[|;&()[:space:]])([^[:space:]|;&()]*/)?g?'
 # What may follow the record's literal: so REC.bak is not REC (#560 review 2).
 TAIL='([[:space:]]|$|[|;&)<>])'
 
-# Candidates in a shell command: every '…' and "…" string, and every bare word.
+# Candidates in a shell command: every '…' and "…" string (an empty '' too, or
+# its quotes pair with the next string's: `sed -i '' … REC`, #560 review 3), and every bare word.
 # Over-collecting is harmless: a candidate counts only if it names an existing
 # record file (or an existing file that cannot be read).
 # A candidate is printed as two tab-separated fields: the literal as written in
@@ -151,7 +153,7 @@ TAIL='([[:space:]]|$|[|;&)<>])'
 # escapes and quotes removed, so `Notes/A\ record.md` and $'Notes/A record.md'
 # are seen; #560 review 1).
 bash_candidates() {
-    grep -oE "\\$'[^']*'|'[^']+'|\"[^\"]+\"|(\\\\.|[^[:space:]'\"|;&<>()\\\\])+" <<<"$1" |
+    grep -oE "\\$'[^']*'|'[^']*'|\"[^\"]*\"|(\\\\.|[^[:space:]'\"|;&<>()\\\\])+" <<<"$1" |
         while IFS= read -r lit; do
             path=$lit
             case "$path" in
@@ -211,8 +213,12 @@ case "$tool" in
             # and `cp x REC -f` still end in the record (#560 review 2).
             if [ -z "$hit" ]; then
                 while IFS= read -r seg; do
+                    # The record's literal becomes one placeholder word first, so the stripping
+                    # cannot cut inside a quoted path such as "A - record.md" (#560 review 3).
+                    seg=${seg//"$rawlit"/ __RECORD__ }
                     seg2=$(sed -E 's/[[:space:]]#.*$//; s/[0-9]*&?>>?[|&]?[0-9]*[[:space:]]*[^[:space:]]*//g; s/[0-9]*<[[:space:]]*[^[:space:]]*//g; s/[[:space:]]+--?[^[:space:]]*//g' <<<"$seg")
-                    grep -Eq "[[:space:]]$lit[[:space:]]*$" <<<"$seg2" && { hit="overwriting copy (cp/rsync/install/ditto/ln)"; break; }
+                    # A closing ')' may end it: `(cp x REC)`, `$(cp x REC)` (#560 review 3).
+                    grep -Eq "[[:space:]]__RECORD__[[:space:]]*[)]*[[:space:]]*$" <<<"$seg2" && { hit="overwriting copy (cp/rsync/install/ditto/ln)"; break; }
                 done < <(grep -oE "${CMD}(cp|rsync|install|ditto|ln)[[:space:]][^|;&]*" <<<"$stripped")
             fi
             [ -z "$hit" ] && grep -Eq "${CMD}dd[[:space:]][^|;&]*of=['\"]?$lit$TAIL" <<<"$stripped" && hit="dd of="

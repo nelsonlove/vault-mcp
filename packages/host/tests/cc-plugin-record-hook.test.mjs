@@ -19,6 +19,8 @@ const LOCKED = "Notes/Locked.md";
 const MENTIONS = "Notes/Machinery record notes.md";
 const CRLF = "Notes/Crlf.md";
 const CAPS = "Notes/Caps.md";
+const DASH = "Notes/A - record.md";
+const BIN = "Notes/picture.png";
 
 before(() => {
   tmp = mkdtempSync(join(tmpdir(), "record-hook-"));
@@ -32,6 +34,8 @@ before(() => {
   writeFileSync(join(vault, LOCKED), "---\nrecord: true\n---\n");
   writeFileSync(join(vault, CRLF), "\ufeff---\r\ntitle: c\r\nrecord: true\r\n---\r\nbody\r\n");
   writeFileSync(join(vault, CAPS), '---\nrecord: "TRUE"\n---\n');
+  writeFileSync(join(vault, DASH), "---\nrecord: true\n---\n");
+  writeFileSync(join(vault, BIN), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0xc3, 0x28, 0x0a]));
   chmodSync(join(vault, LOCKED), 0o000);
   writeFileSync(join(disc, "scratch.json"), JSON.stringify({ vault_path: vault, vault_name: "scratch" }));
 });
@@ -100,6 +104,14 @@ describe("Bash: a write to a record: true file is refused, an append passes", ()
     assert.equal(bash(`cp '${REC}' '${REC}.bak'; rm '${REC}.bak'`).code, 0, "REC.bak is another file");
     const r = bash(`echo x > '${REC}'`);
     assert.doesNotMatch(r.err, /stray/, "no grep warning noise");
+  });
+  test("#560 review 3: a cp inside ( ), a quoted path with ' - ', and a binary file is not 'unreadable'", () => {
+    assert.equal(bash(`(cp /tmp/x '${REC}')`).code, 2);
+    assert.equal(bash(`echo $(cp /tmp/x '${REC}')`).code, 2);
+    assert.equal(bash(`cp /tmp/x "${DASH}"`).code, 2);
+    assert.equal(bash(`cp /tmp/x '${DASH}' -f`).code, 2);
+    assert.equal(bash(`rm '${BIN}'`).code, 0, "a binary attachment reads as a plain file");
+    assert.equal(bash(`/usr/bin/sed -i.bak s/a/b/ '${PLAIN}'`).code, 0, "the sed binary itself is not an unreadable record");
   });
   test("a long command with no record in it stays fast", () => {
     const words = Array.from({ length: 3000 }, (_, i) => `w${i}`).join(" ");
