@@ -66,12 +66,14 @@ export interface VocabFinding {
     | "deprecated"
     | "ambiguous"
     | "malformed_token"
-    // the scope-tags provider's five-finding pack (#251)
+    // the scope-tags provider's whole-vault pack (the `## Tags` table model,
+    // #551; it replaced #251's allowedTags_unregistered, registry_entry_untagged
+    // and registry_duplicate, which described the retired Meta/Tag registry)
     | "tag_unregistered"
     | "tag_out_of_scope"
-    | "allowedTags_unregistered"
-    | "registry_entry_untagged"
-    | "registry_duplicate";
+    | "tag_declared_twice_on_chain"
+    | "tag_declared_on_two_branches"
+    | "scope_root_missing";
   token: string;
   path: string | null;
   detail: string;

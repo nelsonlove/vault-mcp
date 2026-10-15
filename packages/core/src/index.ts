@@ -252,7 +252,7 @@ export type {
 } from "./vocab/provider.js";
 export { blueprintProvider, scanFrontmatter } from "./vocab/blueprint.js";
 export type { BlueprintConfig, VocabNote } from "./vocab/blueprint.js";
-export { glossaryProvider, parseTermsSection, DEFAULT_GLOSSARY_CONFIG } from "./vocab/glossary.js";
+export { glossaryProvider, parseTermsSection, resolveGlossaryConfig, DEFAULT_GLOSSARY_CONFIG } from "./vocab/glossary.js";
 export type { GlossaryConfig } from "./vocab/glossary.js";
 export { noteVocabFindings } from "./vocab/findings.js";
 export type { NoteVocabInput } from "./vocab/findings.js";
@@ -260,6 +260,9 @@ export {
   scopeTagsProvider,
   scopeTagsFindings,
   validateScopeTagsConfig,
+  resolveScopeTagsConfig,
+  parseTagsTable,
+  isScopeTagsSource,
   DEFAULT_SCOPE_TAGS_CONFIG,
 } from "./vocab/scope-tags.js";
 export type { ScopeTagsConfig, ScopeTagsProvider } from "./vocab/scope-tags.js";

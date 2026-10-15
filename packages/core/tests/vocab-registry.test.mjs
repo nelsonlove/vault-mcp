@@ -13,7 +13,7 @@ const LISTING = [
   { path: "Elsewhere/rogue.tag.md" },
   {
     path: "Glossary/Term.md",
-    frontmatter: { title: "Term", description: "A defined word.", tags: ["note/definition"] },
+    frontmatter: { title: "Term", description: "A defined word.", type: "Topic/Term" },
   },
 ];
 
@@ -52,6 +52,16 @@ describe("VocabRegistry", () => {
     assert.equal(inst.provider.resolve("Beta", "term"), null);
   });
 
+  test("glossary config flows through: a custom term class", () => {
+    const reg = new VocabRegistry([{ id: "g", provider: "glossary", root: "", config: { termType: "Meta/Term" } }]);
+    const [inst] = reg.build([
+      { path: "A.md", frontmatter: { title: "Alpha", type: "Meta/Term" } },
+      { path: "B.md", frontmatter: { title: "Beta", type: "Topic/Term" } },
+    ]);
+    assert.equal(inst.provider.resolve("Alpha", "term").canonical, "Alpha");
+    assert.equal(inst.provider.resolve("Beta", "term"), null);
+  });
+
   test("an unknown provider name is skipped and reported, never thrown", () => {
     const reg = new VocabRegistry([
       { id: "x", provider: "sparkle", root: "" },
@@ -72,7 +82,7 @@ describe("VocabRegistry", () => {
     assert.equal(reg.problems.length, 1);
   });
 
-  test("the defaults: the live scope-tags model, one glossary (2026-08-19 correction)", () => {
+  test("the defaults: the live scope-tags model, one glossary (#551)", () => {
     assert.deepEqual(
       DEFAULT_VOCABULARIES.map((v) => [v.id, v.provider]),
       [
@@ -94,29 +104,35 @@ describe("VocabRegistry", () => {
     }
   });
 
-  test("the defaults parse a fixture mirroring the live vault shapes", () => {
-    // The live model, in miniature: a Meta/Tag registry note, the root scope
-    // note + a category folder-note carrying allowedTags, a definition note.
+  test("the defaults parse a fixture mirroring the live vault shapes (2026-10-14, #551)", () => {
+    // The live model, in miniature: the root scope note (the folder note of
+    // category 00) with its `## Tags` table in the BODY, a category folder
+    // note with its own table, and a `type: Topic/Term` note.
     const reg = new VocabRegistry(DEFAULT_VOCABULARIES);
     assert.deepEqual(reg.problems, []);
+    const table = (rows) => "\n## Tags\n\n| Tag | Description |\n| --- | --- |\n" + rows.map(([t, d]) => `| \`${t}\` | ${d} |`).join("\n") + "\n";
     const instances = reg.build([
-      { path: "The system.md", frontmatter: { fileClass: "Scope/Root", allowedTags: ["system"] } },
       {
         path: "00-09 System/00 System management/00 System management.md",
-        frontmatter: { fileClass: "Scope/Category", allowedTags: [] },
+        frontmatter: { type: "Meta/Scope/Category" },
+        body: "---\ntitle: 00 System management\n---\n# 00 System management\n" + table([["note/*", "What kind of thing is this single note?"], ["note/task", "Actionable work."]]),
       },
       {
-        path: "00-09 System/00 System management/00.01-00.09 Operations/00.05 Registries for the system/note task.md",
-        frontmatter: { fileClass: "Meta/Tag", tag: "note/task", description: "Actionable work." },
+        path: "00-09 System/03 Agents/03 Agents.md",
+        frontmatter: { type: "Meta/Scope/Category" },
+        body: table([["rollup", "A rollup note that gathers a period of records."]]),
       },
       {
-        path: "00-09 System/01 System architecture/Glossary/Canonical.md",
-        frontmatter: { title: "Canonical", description: "Holding authority.", tags: ["note/definition"] },
+        path: "00-09 System/01 System architecture/01.05 Controlled vocabulary/Canonical.md",
+        frontmatter: { title: "Canonical", description: "Holding authority.", type: "Topic/Term" },
       },
     ]);
     const tags = instances.find((i) => i.id === "scope-tags");
     assert.equal(tags.provider.resolve("note/task", "tag").canonical, "note/task");
-    assert.equal(tags.provider.list("tag").length, 1);
+    assert.equal(tags.provider.resolve("note/clipping", "tag").definition, "What kind of thing is this single note?");
+    assert.equal(tags.provider.list("tag").length, 3);
+    assert.deepEqual(tags.provider.registryFindings(), []);
+    assert.deepEqual(tags.provider.noteFindings({ path: "10-19 Personal/x.md", frontmatter: { tags: ["rollup"] } }).map((f) => f.code), ["tag_out_of_scope"]);
     const gloss = instances.find((i) => i.id === "glossary");
     assert.equal(gloss.provider.resolve("Canonical", "term").definition, "Holding authority.");
   });

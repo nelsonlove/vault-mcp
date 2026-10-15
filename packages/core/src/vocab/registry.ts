@@ -14,8 +14,8 @@
 // event wiring is the uid store's problem, not this module's).
 
 import { blueprintProvider, type VocabNote } from "./blueprint.js";
-import { glossaryProvider, DEFAULT_GLOSSARY_CONFIG } from "./glossary.js";
-import { scopeTagsProvider, validateScopeTagsConfig, DEFAULT_SCOPE_TAGS_CONFIG, type ScopeTagsConfig } from "./scope-tags.js";
+import { glossaryProvider, type GlossaryConfig } from "./glossary.js";
+import { scopeTagsProvider, validateScopeTagsConfig, resolveScopeTagsConfig } from "./scope-tags.js";
 import type { VocabularyProvider } from "./provider.js";
 
 /** The provider names a vocabulary instance may name — the single source of
@@ -37,7 +37,7 @@ const CONFIG_VALIDATORS: Partial<Record<VocabProviderName, (config: unknown) => 
 
 export interface VocabInstanceSettings {
   id: string;
-  /** Provider name: "scope-tags" (per-scope tag whitelists), "blueprint"
+  /** Provider name: "scope-tags" (scope notes' `## Tags` tables), "blueprint"
    * (gen-old registry grammar), or "glossary" (terms). */
   provider: string;
   /** Vault-relative path prefix this vocabulary is read from; "" = whole vault. */
@@ -46,26 +46,29 @@ export interface VocabInstanceSettings {
 }
 
 export const DEFAULT_VOCABULARIES: VocabInstanceSettings[] = [
-  // The live tag model (read from the vault 2026-08-19, #251): Meta/Tag
-  // registry notes + per-scope `allowedTags` chain-union, served by the
-  // scope-tags provider over the whole vault. This REPLACES the gen-old
-  // "registry" blueprint instance: its shipped root ("00-09 System/00 System
-  // management/00.05 Registries for the system") no longer exists — the slot
-  // moved under 00.01-00.09 Operations and holds only its folder note — and
-  // its `.tag.md` / `.property.md` / `.fileclass` grammar (tag-macros.blueprint
-  // / drift_audit.py, both dead) has no live surface. The blueprint provider
-  // itself remains available via settings for vaults still on that grammar.
+  // The live tag model (vault spec 01.13 rules 5a, 6 and 6a; read from the
+  // vault 2026-10-14, #551): each scope note's `## Tags` table declares the
+  // tags it owns, and a note's allowed set is the union of the tables up its
+  // scope chain to the root scope note (`00 System management`, the folder
+  // note of category 00), whose table declares the families every note may
+  // carry. Served by the scope-tags provider over the whole vault. It replaced
+  // the #251 model (`Meta/Tag` registry notes, `allowedTags` frontmatter keys,
+  // a vault-root `The system.md`), which the vault retired; that model had in
+  // turn replaced the gen-old "registry" blueprint instance, whose
+  // `.tag.md` / `.property.md` / `.fileclass` grammar has no live surface. The
+  // blueprint provider itself remains available via settings for vaults still
+  // on that grammar. The root note's path is the provider's DEFAULT, not a row
+  // config, and a dead one is loud: `scope_root_missing`.
   { id: "scope-tags", provider: "scope-tags", root: "" },
-  // The glossary ships with NO `termsRoot`: the plugin ships no vault layout
-  // (the #403 ruling for the conformance conventions, applied here). The
-  // default used to name one vault's framework folder and went dead three
-  // times as that folder was renamed (`Assent` → `00.89 obsidian-governor` →
-  // `00.89 obsidian-mcp-suite`), each time failing SILENTLY: a dead termsRoot
-  // returns no terms rather than an error. Without it the glossary serves
-  // definition notes (`note/definition`) everywhere under its root, and the
-  // vocab satellite reads no `## Terms` bodies; an operator who wants the
-  // `## Terms` chapters sets `termsRoot` in the satellite's settings, where an
-  // install upgrading from the host adopts the value it already had.
+  // The glossary serves term notes (`type: Topic/Term`, the live model) and
+  // ships with NO `termsRoot`: the plugin ships no vault layout (the #403
+  // ruling, applied here). The default used to name one vault's framework
+  // folder and went dead three times as that folder was renamed (`Assent` →
+  // `00.89 obsidian-governor` → `00.89 obsidian-mcp-suite`), each time failing
+  // SILENTLY: a dead termsRoot returns no terms rather than an error. Without
+  // it the vocab satellite reads no `## Terms` bodies; an operator who wants
+  // the `## Terms` chapters sets `termsRoot` in the satellite's settings, where
+  // an install upgrading from the host adopts the value it already had.
   // termsRoot is read by the TOOL layer (it decides which bodies to read); the
   // provider itself parses whatever bodies arrive.
   { id: "glossary", provider: "glossary", root: "" },
@@ -124,8 +127,8 @@ export class VocabRegistry {
         row.provider === "blueprint"
           ? blueprintProvider({ root: "" }, scoped)
           : row.provider === "scope-tags"
-            ? scopeTagsProvider({ ...DEFAULT_SCOPE_TAGS_CONFIG, ...(row.config ?? {}) } as ScopeTagsConfig, scoped)
-            : glossaryProvider({ ...DEFAULT_GLOSSARY_CONFIG, ...(row.config ?? {}) } as { definitionTag: string }, scoped);
+            ? scopeTagsProvider(resolveScopeTagsConfig(row.config), scoped)
+            : glossaryProvider((row.config ?? {}) as GlossaryConfig, scoped);
       return { id: row.id, providerName: row.provider, root: row.root, provider };
     });
   }

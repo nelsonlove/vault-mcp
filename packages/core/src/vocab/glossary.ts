@@ -1,18 +1,21 @@
 // glossary.ts — the glossary VocabularyProvider: the vault's term vocabulary,
 // over a supplied note listing.
 //
-// Two live surfaces feed it (the deleted obsidian-new `defines:`/`Terms.base`
+// Three surfaces feed it (the deleted obsidian-new `defines:`/`Terms.base`
 // scheme is deliberately absent — the VocabEntry shape leaves room for it, but
-// v1 parses what the vault actually has):
+// the provider parses what the vault actually has):
 //
-//   (a) DEFINITION NOTES — notes tagged `note/definition` (the definitional-
-//       note convention): term = `title` frontmatter (fallback: basename),
-//       gloss = `description`, aliases = `aliases`. The body's bold-lead
-//       sentence mirrors `description` by convention, so frontmatter alone
-//       carries the sense and no body read is needed.
-//   (b) `## Terms` SECTIONS — `- **term** — definition` bullets under a
-//       `## Terms` heading (the Assent chapters' controlled-vocabulary lists).
-//       Bullets under any other heading are prose, not vocabulary.
+//   (a) TERM NOTES — notes whose `type` is `Topic/Term` (the live model: about
+//       651 notes, measured 2026-10-14, #551): term = `title` frontmatter
+//       (fallback: basename), gloss = `description`, aliases = `aliases`. The
+//       key and the class are config (`typeKey`, `termType`). Frontmatter alone
+//       carries the sense, so no body read is needed.
+//   (b) DEFINITION NOTES — notes carrying a definition tag, the retired
+//       `note/definition` convention (0 notes on 2026-10-14). OFF by default
+//       (`definitionTag: ""`); a vault still on that convention sets the tag.
+//   (c) `## Terms` SECTIONS — `- **term** — definition` bullets under a
+//       `## Terms` heading (the framework chapters' controlled-vocabulary
+//       lists). Bullets under any other heading are prose, not vocabulary.
 //
 // Terms resolve case-insensitively (**drift** in running text, `Drift` as a
 // title) but the canonical form keeps its declared case. Ambiguity refuses:
@@ -34,11 +37,37 @@ import {
 import type { VocabNote } from "./blueprint.js";
 
 export interface GlossaryConfig {
-  /** The tag that marks a definition note. */
-  definitionTag: string;
+  /** The frontmatter key naming a note's class. */
+  typeKey?: string;
+  /** The class that marks a term note; "" = no term notes. */
+  termType?: string;
+  /** A tag that also marks a definition note (the retired convention); "" =
+   * off. */
+  definitionTag?: string;
 }
 
-export const DEFAULT_GLOSSARY_CONFIG: GlossaryConfig = { definitionTag: "note/definition" };
+/** Today's live shape (2026-10-14, #551): `type: Topic/Term`; the
+ * `note/definition` tag is retired, so it is off. */
+export const DEFAULT_GLOSSARY_CONFIG: Required<GlossaryConfig> = {
+  typeKey: "type",
+  termType: "Topic/Term",
+  definitionTag: "",
+};
+
+/** `[[A/Topic/Term.md|alias]]` → `A/Topic/Term`; plain values pass through. */
+function classInner(v: string): string {
+  const inner = v.trim().replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0];
+  return inner.replace(/\.fileclass$/, "").replace(/\.md$/, "");
+}
+
+/** Does the class value name `termType`? The plain class (`Topic/Term`) or a
+ * wikilinked path to it, matched by suffix. */
+function isTermType(value: unknown, termType: string): boolean {
+  return asStrings(value).some((v) => {
+    const inner = classInner(v);
+    return inner === termType || inner.endsWith("/" + termType);
+  });
+}
 
 const SUPERSEDED = /^\[superseded\]/i;
 
@@ -66,12 +95,14 @@ export function parseTermsSection(body: string): Array<{ term: string; definitio
   return out;
 }
 
-function definitionEntries(cfg: GlossaryConfig, listing: VocabNote[]): VocabEntry[] {
+function definitionEntries(cfg: Required<GlossaryConfig>, listing: VocabNote[]): VocabEntry[] {
   const entries: VocabEntry[] = [];
   for (const note of listing) {
     const fm = note.frontmatter;
     if (!fm) continue;
-    if (!asStrings(fm.tags).includes(cfg.definitionTag)) continue;
+    const byType = cfg.termType !== "" && isTermType(fm[cfg.typeKey], cfg.termType);
+    const byTag = cfg.definitionTag !== "" && asStrings(fm.tags).includes(cfg.definitionTag);
+    if (!byType && !byTag) continue;
     const canonical = typeof fm.title === "string" && fm.title !== "" ? fm.title : basename(note.path);
     entries.push({
       canonical,
@@ -105,7 +136,17 @@ function sectionEntries(listing: VocabNote[]): VocabEntry[] {
   return entries;
 }
 
-export function glossaryProvider(cfg: GlossaryConfig, listing: VocabNote[]): VocabularyProvider {
+/** The effective config: `config` over the defaults, ignoring wrong-typed
+ * values. */
+export function resolveGlossaryConfig(config: Record<string, unknown> | GlossaryConfig | undefined): Required<GlossaryConfig> {
+  const c = (config ?? {}) as Record<string, unknown>;
+  const str = (k: keyof GlossaryConfig): string => (typeof c[k] === "string" ? (c[k] as string).trim() : DEFAULT_GLOSSARY_CONFIG[k]);
+  const typeKey = str("typeKey");
+  return { typeKey: typeKey === "" ? DEFAULT_GLOSSARY_CONFIG.typeKey : typeKey, termType: str("termType"), definitionTag: str("definitionTag") };
+}
+
+export function glossaryProvider(config: GlossaryConfig, listing: VocabNote[]): VocabularyProvider {
+  const cfg = resolveGlossaryConfig(config);
   const capabilities: VocabCapabilities = {
     validate: true,
     resolveDefinition: true,
