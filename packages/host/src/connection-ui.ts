@@ -12,7 +12,7 @@ import {
   LEGACY_MCP_SERVER_NAME,
 } from "./claude-cli.js";
 import { DANGEROUS_LIST_DESC } from "./mcp/tools-cli.js";
-import { OPAQUE_ACCEPT_CLI_COMMANDS, OPAQUE_ACCEPT_COMMAND_IDS } from "./mcp/cli-policy.js";
+import { OPAQUE_ACCEPT_CLI_COMMANDS, OPAQUE_ACCEPT_COMMAND_IDS, quickAddChoicesFrom, reenabledOpaqueCommandIds } from "./mcp/cli-policy.js";
 import { CommandSuggest } from "./command-suggest.js";
 import { builtinModules } from "./mcp/modules-mount.js";
 import {
@@ -527,6 +527,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             if (allowOpaqueTextarea) {
               allowOpaqueTextarea.value = next.join("\n");
             }
+            showReach();
           }
           // Clear whenever the box holds a real, currently-registered command
           // id — whether that pick just got added OR was already in the list.
@@ -547,9 +548,13 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .setDesc(
         `Opaque macro/code commands (${[...OPAQUE_ACCEPT_CLI_COMMANDS].join(", ")}; ${[...OPAQUE_ACCEPT_COMMAND_IDS].join(", ")} ` +
           "command ids) are denied by default — the acceptance guard cannot inspect what they execute. List a " +
-          "specific command or exact command id here (one per line; no wildcards — each entry re-enables exactly " +
-          "one) to re-enable it, or use the picker above for a registered command id. eval/command additionally " +
-          "require the dangerous-CLI toggle above. Takes effect immediately."
+          "command or command id here, one per line, to re-enable it, or use the picker above. A trailing * " +
+          "re-enables QuickAdd choices only (for example quickadd:choice:*): it skips any choice that is, or " +
+          "runs, an accept verb (Verify, Reopen, Request revision, Answer, Reject), any choice on the Never " +
+          "re-enable list, CLI commands and JS Engine commands (name those exactly). Take care: a wildcard also " +
+          "opens choices added later, and a choice's script is a vault note an agent may be able to edit. Denied " +
+          "commands below still win. eval/command additionally require the dangerous-CLI toggle above. Takes " +
+          "effect immediately."
       )
       .addTextArea((ta) => {
         allowOpaqueTextarea = ta.inputEl;
@@ -562,8 +567,47 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             allowOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
           };
           await this.plugin.saveSettings();
+          showReach();
         });
       });
+
+    new Setting(containerEl)
+      .setName("Never re-enable")
+      .setDesc(
+        "QuickAdd choice command ids that a wildcard above never re-enables, one per line (a trailing * makes a " +
+          "prefix). List here any choice that only you should run; quickadd:choice:* then opens the others, " +
+          "accept verbs excepted. An exact entry above still re-enables the same id, and Denied commands still win."
+      )
+      .addTextArea((ta) => {
+        ta.setValue(this.plugin.settings.cliPolicy.neverOpaque.join("\n"));
+        ta.inputEl.rows = 3;
+        ta.inputEl.style.width = "100%";
+        ta.onChange(async (value) => {
+          this.plugin.settings.cliPolicy = {
+            ...this.plugin.settings.cliPolicy,
+            neverOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
+          };
+          await this.plugin.saveSettings();
+          showReach();
+        });
+      });
+
+    // What the re-enable list opens today (01.41, pick A): the count and the ids, redrawn on every save,
+    // so a wildcard's reach is seen when it is saved.
+    const reachEl = containerEl.createEl("details", { cls: "setting-item-description" });
+    const showReach = () => {
+      // app.commands.commands is not in the public obsidian types (same cast as the picker above).
+      const ids = Object.keys(((this.app as any).commands?.commands ?? {}) as Record<string, unknown>);
+      const choices = quickAddChoicesFrom((this.app as any).plugins?.plugins?.quickadd?.settings);
+      const open = reenabledOpaqueCommandIds(ids, this.plugin.settings.cliPolicy, choices);
+      reachEl.empty();
+      reachEl.createEl("summary", { text: `Agents can run ${open.length} QuickAdd or JS Engine command${open.length === 1 ? "" : "s"} today.` });
+      if (open.length > 0) {
+        const ul = reachEl.createEl("ul");
+        for (const id of open) ul.createEl("li", { text: id });
+      }
+    };
+    showReach();
 
     new Setting(containerEl)
       .setName("Denied commands")
@@ -581,6 +625,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             deny: value.split("\n").map((s) => s.trim()).filter(Boolean),
           };
           await this.plugin.saveSettings();
+          showReach();
         });
       });
 

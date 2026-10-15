@@ -6,7 +6,8 @@
  * Load-bearing properties:
  *   • the opaque-accept set is DENIED BY DEFAULT (fail closed) on both
  *     surfaces — obsidian_cli commands and obsidian_run_command ids;
- *   • re-enable is per-command (allowOpaque names exactly one entry);
+ *   • re-enable is per-command by an exact entry, or per family of command ids by a
+ *     trailing-* entry, which never reaches a CLI command or an accept verb;
  *   • deny ALWAYS wins — over allowOpaque, over defaults;
  *   • the policy composes with the danger gate: a re-enabled `eval` still
  *     needs allowDangerousCli;
@@ -24,6 +25,10 @@ import {
   configPathRefusal,
   matchesCommandPattern,
   runCommandRefusal,
+  isAcceptVerbCommandId,
+  reenabledOpaqueCommandIds,
+  quickAddChoicesFrom,
+  choiceIsOrRunsVerb,
 } from "../src/mcp/cli-policy.ts";
 import { registerCliTools } from "../src/mcp/tools-cli.ts";
 
@@ -115,6 +120,76 @@ describe("cliCommandRefusal: history:restore uninspectable-write default-deny (#
   });
 });
 
+// A QuickAdd settings object in the live shape (00.14 compiled ids), for the glob tests.
+const VERB_SCRIPT = "00-09 System/00 System management/00.13 Scripts/verify-current-note.md";
+const qa = (id, name, commands = []) => ({ id, name, type: "Macro", command: true, macro: { name, id: `${id}#macro`, commands } });
+const QA_SETTINGS = {
+  choices: [
+    qa("qan:Q/Verify current note.md#choice", "Verify current note", [{ type: "UserScript", path: VERB_SCRIPT }]),
+    qa("qan:Q/New idea.md#choice", "New idea", [{ type: "UserScript", path: "S/new-idea.md" }]),
+    qa("qan:Q/Pay the rent.md#choice", "Pay the rent", [{ type: "UserScript", path: "S/rent.md" }]),
+    qa("qan:Q/A.md#choice", "A"),
+    qa("qan:Q/B.md#choice", "B"),
+    qa("8f1c2d3e-uuid", "Verify current note"),
+    qa("qan:Q/Copy.md#choice", "Tidy up", [{ type: "UserScript", path: VERB_SCRIPT }]),
+    qa("qan:Q/Runs verb.md#choice", "Runs verb", [{ type: "Choice", choiceId: "qan:Q/Verify current note.md#choice" }]),
+    qa("qan:Q/Runs cmd.md#choice", "Runs cmd", [{ type: "Conditional", thenCommands: [{ type: "Obsidian", commandId: "quickadd:choice:qan:Q/Verify current note.md#choice" }] }]),
+    qa("qan:Q/Runs js.md#choice", "Runs js", [{ type: "Obsidian", commandId: "js-engine:execute-js-file" }]),
+    qa("qan:Q/Cond.md#choice", "Check note", [{ type: "Conditional", condition: { mode: "script", scriptPath: VERB_SCRIPT, exportName: "default" }, thenCommands: [] }]),
+    qa("qan:Q/Fmt.md#choice", "Format macro", [{ type: "Wait", note: "{{MACRO:Verify current note}}" }]),
+    { id: "qan:Q/Capture.md#choice", name: "Capture idea", type: "Capture", command: true, format: { enabled: true, format: "{{VALUE}}" } },
+    qa("qan:Q/AI.md#choice", "Ask AI", [{ type: "AIAssistant", promptTemplate: { enable: true, name: "Prompt" } }]),
+    qa("qan:Q/SameId.md#choice", "Safe one"),
+    qa("qan:Q/SameId.md#choice", "Other one"),
+    qa("qan:Q/Dup1.md#choice", "Same name"),
+    qa("qan:Q/Dup2.md#choice", "Same name"),
+    { id: "multi", name: "Folder", type: "Multi", choices: [qa("qan:Q/Nested.md#choice", "Nested", [{ type: "NestedChoice", choice: qa("inner-1", "Reject current note") }])] },
+  ],
+};
+const CHOICES = quickAddChoicesFrom(QA_SETTINGS);
+const cid = (id) => `quickadd:choice:${id}`;
+
+describe("runCommandRefusal: a glob reaches resolvable, non-verb QuickAdd choices only (#552 review 1)", () => {
+  const glob = { allowOpaque: ["quickadd:*"] };
+  test("a plain choice opens; the lookup is required", () => {
+    assert.equal(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob, CHOICES), null);
+    assert.ok(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob), "no lookup: fail closed");
+    assert.ok(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob, quickAddChoicesFrom(null)), "QuickAdd absent: fail closed");
+    assert.ok(runCommandRefusal(cid("qan:Q/Gone.md#choice"), glob, CHOICES), "an id that does not resolve");
+  });
+  test("a glob never opens a non-choice quickadd command or a js-engine id", () => {
+    assert.ok(runCommandRefusal("quickadd:runQuickAdd", glob, CHOICES));
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", glob, CHOICES));
+    assert.ok(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }, CHOICES));
+    assert.ok(runCommandRefusal("js-engine:execute-js-file", { allowOpaque: ["js-engine:*"] }, CHOICES));
+  });
+  test("a verb is caught by its name, its pick-day variant, its script and through another choice", () => {
+    for (const id of [
+      "qan:Q/Verify current note.md#choice",
+      "qan:Q/Verify current note.md#choice:pick-day",
+      "8f1c2d3e-uuid",
+      "8f1c2d3e-uuid:pick-day",
+      "qan:Q/Copy.md#choice",
+      "qan:Q/Runs verb.md#choice",
+      "qan:Q/Runs cmd.md#choice",
+      "qan:Q/Runs js.md#choice",
+      "qan:Q/Nested.md#choice",
+      "qan:Q/Cond.md#choice",
+      "qan:Q/Fmt.md#choice",
+      "qan:Q/Capture.md#choice",
+      "qan:Q/Dup1.md#choice",
+      "qan:Q/Dup2.md#choice",
+      "qan:Q/AI.md#choice",
+      "qan:Q/SameId.md#choice",
+    ]) assert.ok(runCommandRefusal(cid(id), glob, CHOICES), id);
+    assert.equal(choiceIsOrRunsVerb("qan:Q/New idea.md#choice", CHOICES), false);
+  });
+  test("an exact entry still re-enables one verb (the human naming that one command)", () => {
+    const id = cid("8f1c2d3e-uuid");
+    assert.equal(runCommandRefusal(id, { allowOpaque: [id] }, CHOICES), null);
+  });
+});
+
 describe("runCommandRefusal: command ids", () => {
   test("quickadd:* ids are denied by default; ordinary ids are not", () => {
     assert.ok(runCommandRefusal("quickadd:runQuickAdd", {}));
@@ -122,12 +197,48 @@ describe("runCommandRefusal: command ids", () => {
     assert.equal(runCommandRefusal("daily-notes", {}), null);
   });
 
-  test("allowOpaque is exact-only: one entry re-enables one id, never a family", () => {
+  test("allowOpaque: an exact entry re-enables one id; a trailing-* entry re-enables a family of command ids", () => {
     assert.equal(runCommandRefusal("quickadd:runQuickAdd", { allowOpaque: ["quickadd:runQuickAdd"] }), null);
     assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:runQuickAdd"] }));
-    // A glob in allowOpaque is NOT honored — over-allowing by pattern is the
-    // cross-surface leak this rule exists to close.
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }));
+    // A glob is honoured for QuickAdd choice ids (Nelson, 2026-10-14), resolved through QuickAdd's settings.
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }, CHOICES), "not a choice");
+    assert.equal(runCommandRefusal(cid("qan:Q/New idea.md#choice"), { allowOpaque: ["quickadd:choice:*"] }, CHOICES), null);
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:choice:*"] }, CHOICES), "outside the family");
+  });
+
+  test("a glob never re-enables an accept verb's QuickAdd choice; only an exact entry can", () => {
+    const policy = { allowOpaque: ["quickadd:*", "quickadd:choice:*"] };
+    for (const verb of ["Verify current note", "Reopen current note", "Request revision", "Answer current note", "Reject current note"]) {
+      const id = `quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/${verb}.md#choice`;
+      assert.ok(runCommandRefusal(id, policy), verb);
+      assert.equal(isAcceptVerbCommandId(id), true, verb);
+    }
+    const exact = "quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/Verify current note.md#choice";
+    assert.equal(runCommandRefusal(exact, { allowOpaque: [exact] }), null, "an exact entry is the human naming that one command");
+    assert.equal(isAcceptVerbCommandId("quickadd:choice:qan:Notes/Verify current note draft.md#choice"), false);
+  });
+
+  test("Never re-enable stops a glob, not an exact entry (01.41 pick A)", () => {
+    const priv = cid("qan:Q/Pay the rent.md#choice");
+    const other = cid("qan:Q/New idea.md#choice");
+    const policy = { allowOpaque: ["quickadd:*"], neverOpaque: [priv] };
+    assert.ok(runCommandRefusal(priv, policy, CHOICES), "a never-listed id stays refused under a glob");
+    assert.ok(runCommandRefusal(`${priv}:pick-day`, policy, CHOICES), "and its pick-day variant");
+    assert.equal(runCommandRefusal(other, policy, CHOICES), null, "the glob still opens the others");
+    assert.equal(runCommandRefusal(priv, { allowOpaque: ["quickadd:*", priv], neverOpaque: [priv] }, CHOICES), null, "an exact re-enable is a deliberate act");
+    assert.ok(runCommandRefusal(priv, { allowOpaque: ["quickadd:*"], neverOpaque: ["quickadd:choice:qan:Q/Pay*"] }, CHOICES), "a prefix on the never list");
+    assert.ok(runCommandRefusal(other, { allowOpaque: ["quickadd:*"], neverOpaque: [priv], deny: [other] }, CHOICES), "deny still wins");
+  });
+
+  test("reenabledOpaqueCommandIds lists what the policy opens today, sorted, opaque families only", () => {
+    const ids = [cid("qan:Q/B.md#choice"), cid("qan:Q/A.md#choice"), cid("qan:Q/Verify current note.md#choice"), "js-engine:run", "editor:toggle-bold"];
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: [] }, CHOICES), []);
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["quickadd:*", "js-engine:*"], neverOpaque: [cid("qan:Q/B.md#choice")] }, CHOICES), [cid("qan:Q/A.md#choice")]);
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["js-engine:run"] }, CHOICES), ["js-engine:run"]);
+  });
+
+  test("deny still wins over a glob re-enable", () => {
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"], deny: ["quickadd:toggleMacro"] }));
   });
 
   test("no cross-surface leak: a run_command-shaped allowOpaque entry does not re-enable CLI commands", () => {
@@ -173,10 +284,10 @@ describe("runCommandRefusal: command ids", () => {
     assert.equal(runCommandRefusal("editor:toggle-bold", {}), null);
   });
 
-  test("js-engine re-enable is exact-only, same as quickadd", () => {
+  test("js-engine re-enable: exact entries only; a glob never opens vault-minted code (#552 review 1)", () => {
     assert.equal(runCommandRefusal("js-engine:cmd-unfill-paragraph", { allowOpaque: ["js-engine:cmd-unfill-paragraph"] }), null);
     assert.ok(runCommandRefusal("js-engine:execute-js-file", { allowOpaque: ["js-engine:cmd-unfill-paragraph"] }));
-    assert.ok(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }));
+    assert.ok(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }, CHOICES));
   });
 });
 

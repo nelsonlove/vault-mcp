@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assertCreateName } from "./name-checks.js";
-import { runCommandRefusal } from "./cli-policy.js";
+import { quickAddChoicesFrom, runCommandRefusal } from "./cli-policy.js";
 import { templateContentAcceptRefusal } from "./tools-cli.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type App, TFile, parseYaml} from "obsidian";
@@ -432,7 +432,7 @@ export function registerIntegrationTools(server: McpServer, app: App, ctx: Serve
           //
           // Checked before `openLinkText` for the reason #76 records: opening
           // the file leaks an action for a command that is about to be refused.
-          const policyReason = runCommandRefusal(commandId, ctx.getSettings().cliPolicy);
+          const policyReason = runCommandRefusal(commandId, ctx.getSettings().cliPolicy, quickAddChoicesFrom((app as any).plugins?.plugins?.quickadd?.settings));
           if (policyReason) {
             return codedError("cli_denied", policyReason);
           }
