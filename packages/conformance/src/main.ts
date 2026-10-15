@@ -173,7 +173,16 @@ export default class VaultConformancePlugin extends Plugin {
   /** One-shot adoption of the host's `vaultConventions` and
    *  `modules["conformance-debt"].config` (settings.ts). The host's copy is READ
    *  and never written; every failure path holds the latch open. */
-  private async adoptFromHostOnce(): Promise<void> {
+  private adopting: Promise<void> | null = null;
+
+  /** One adoption at a time (#549 review 2): the host fires its two ready events back to back, and a
+   *  second run started before the first's save resolved would adopt and write twice. */
+  private adoptFromHostOnce(): Promise<void> {
+    if (!this.adopting) this.adopting = this.adoptNow().finally(() => { this.adopting = null; });
+    return this.adopting;
+  }
+
+  private async adoptNow(): Promise<void> {
     if (this.settings.adoptedFromHost) return;
     const { settings, adopted } = await runAdoption(
       this.settings,
