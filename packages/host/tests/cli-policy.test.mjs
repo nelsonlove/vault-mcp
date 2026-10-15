@@ -26,6 +26,7 @@ import {
   matchesCommandPattern,
   runCommandRefusal,
   isAcceptVerbCommandId,
+  reenabledOpaqueCommandIds,
 } from "../src/mcp/cli-policy.ts";
 import { registerCliTools } from "../src/mcp/tools-cli.ts";
 
@@ -143,6 +144,32 @@ describe("runCommandRefusal: command ids", () => {
     const exact = "quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/Verify current note.md#choice";
     assert.equal(runCommandRefusal(exact, { allowOpaque: [exact] }), null, "an exact entry is the human naming that one command");
     assert.equal(isAcceptVerbCommandId("quickadd:choice:qan:Notes/Verify current note draft.md#choice"), false);
+  });
+
+  test("Never re-enable stops a glob, not an exact entry (01.41 pick A)", () => {
+    const priv = "quickadd:choice:qan:Notes/Pay the rent.md#choice";
+    const other = "quickadd:choice:qan:Notes/New note.md#choice";
+    const policy = { allowOpaque: ["quickadd:*"], neverOpaque: [priv] };
+    assert.ok(runCommandRefusal(priv, policy), "a never-listed id stays refused under a glob");
+    assert.equal(runCommandRefusal(other, policy), null, "the glob still opens the others");
+    assert.equal(runCommandRefusal(priv, { allowOpaque: ["quickadd:*", priv], neverOpaque: [priv] }), null, "an exact re-enable is a deliberate act");
+    assert.ok(runCommandRefusal("quickadd:choice:qan:Private/x.md#choice", { allowOpaque: ["quickadd:*"], neverOpaque: ["quickadd:choice:qan:Private/*"] }), "a prefix on the never list");
+    assert.ok(runCommandRefusal(other, { allowOpaque: ["quickadd:*"], neverOpaque: [priv], deny: [other] }), "deny still wins");
+  });
+
+  test("reenabledOpaqueCommandIds lists what the policy opens today, sorted, opaque families only", () => {
+    const ids = [
+      "quickadd:choice:qan:Notes/B.md#choice",
+      "quickadd:choice:qan:Notes/A.md#choice",
+      "quickadd:choice:qan:Notes/Verify current note.md#choice",
+      "js-engine:run",
+      "editor:toggle-bold",
+    ];
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: [] }), []);
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["quickadd:*"], neverOpaque: ["quickadd:choice:qan:Notes/B.md#choice"] }), [
+      "quickadd:choice:qan:Notes/A.md#choice",
+    ]);
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["js-engine:run"] }), ["js-engine:run"]);
   });
 
   test("deny still wins over a glob re-enable", () => {

@@ -12,7 +12,7 @@ import {
   LEGACY_MCP_SERVER_NAME,
 } from "./claude-cli.js";
 import { DANGEROUS_LIST_DESC } from "./mcp/tools-cli.js";
-import { OPAQUE_ACCEPT_CLI_COMMANDS, OPAQUE_ACCEPT_COMMAND_IDS } from "./mcp/cli-policy.js";
+import { OPAQUE_ACCEPT_CLI_COMMANDS, OPAQUE_ACCEPT_COMMAND_IDS, reenabledOpaqueCommandIds } from "./mcp/cli-policy.js";
 import { CommandSuggest } from "./command-suggest.js";
 import { builtinModules } from "./mcp/modules-mount.js";
 import {
@@ -564,6 +564,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             if (allowOpaqueTextarea) {
               allowOpaqueTextarea.value = next.join("\n");
             }
+            showReach();
           }
           // Clear whenever the box holds a real, currently-registered command
           // id — whether that pick just got added OR was already in the list.
@@ -601,8 +602,46 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             allowOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
           };
           await this.plugin.saveSettings();
+          showReach();
         });
       });
+
+    new Setting(containerEl)
+      .setName("Never re-enable")
+      .setDesc(
+        "Command ids that a wildcard above never re-enables, one per line (a trailing * makes a prefix). List " +
+          "here any QuickAdd or JS Engine command that only you should run; quickadd:* then opens every other " +
+          "one. An exact entry above still re-enables the same id, and Denied commands still win."
+      )
+      .addTextArea((ta) => {
+        ta.setValue(this.plugin.settings.cliPolicy.neverOpaque.join("\n"));
+        ta.inputEl.rows = 3;
+        ta.inputEl.style.width = "100%";
+        ta.onChange(async (value) => {
+          this.plugin.settings.cliPolicy = {
+            ...this.plugin.settings.cliPolicy,
+            neverOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
+          };
+          await this.plugin.saveSettings();
+          showReach();
+        });
+      });
+
+    // What the re-enable list opens today (01.41, pick A): the count and the ids, redrawn on every save,
+    // so a wildcard's reach is seen when it is saved.
+    const reachEl = containerEl.createEl("details", { cls: "setting-item-description" });
+    const showReach = () => {
+      // app.commands.commands is not in the public obsidian types (same cast as the picker above).
+      const ids = Object.keys(((this.app as any).commands?.commands ?? {}) as Record<string, unknown>);
+      const open = reenabledOpaqueCommandIds(ids, this.plugin.settings.cliPolicy);
+      reachEl.empty();
+      reachEl.createEl("summary", { text: `Agents can run ${open.length} QuickAdd or JS Engine command${open.length === 1 ? "" : "s"} today.` });
+      if (open.length > 0) {
+        const ul = reachEl.createEl("ul");
+        for (const id of open) ul.createEl("li", { text: id });
+      }
+    };
+    showReach();
 
     new Setting(containerEl)
       .setName("Denied commands")

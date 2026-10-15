@@ -139,7 +139,7 @@ interface VaultMcpSettings {
    * surface writes plugin settings, and the surfaces that could reach one
    * indirectly are what this policy denies. See mcp/cli-policy.ts.
    */
-  cliPolicy: { deny: string[]; allowOpaque: string[] };
+  cliPolicy: { deny: string[]; allowOpaque: string[]; neverOpaque: string[] };
   /**
    * Enforce record immutability (#264): refuse non-append mutation of a note
    * the record identifier marks (`record: true` by default; see
@@ -297,7 +297,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   vocabularies: DEFAULT_VOCABULARIES.map((v) => ({ ...v })),
   schemes: structuredClone(DEFAULT_SCHEMES),
   modules: {},
-  cliPolicy: { deny: [], allowOpaque: [] },
+  cliPolicy: { deny: [], allowOpaque: [], neverOpaque: [] },
   enforceRecordImmutability: true,
   devToolRunner: true,
   captureObservations: false,
@@ -433,6 +433,7 @@ export default class VaultMcpPlugin extends Plugin {
     this.settings.cliPolicy = {
       deny: list(this.settings.cliPolicy?.deny),
       allowOpaque: list(this.settings.cliPolicy?.allowOpaque),
+      neverOpaque: list(this.settings.cliPolicy?.neverOpaque),
     };
     // #224: coerce the declared protected-property rows to the storable shape
     // first (a hand-edited data.json carrying a non-array or junk rows must not

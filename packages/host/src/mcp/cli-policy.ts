@@ -89,6 +89,12 @@ export interface CliCommandPolicy {
    *     off every agent road, and a family entry must not open them by accident.
    * Deny always wins, globs included. */
   allowOpaque?: string[];
+  /** Command ids a trailing-`*` re-enable never reaches (Nelson's pick "A" on 01.41 "Which QuickAdd
+   * choices a wildcard in Re-enabled opaque commands may open", 2026-10-14): the human lists here any
+   * choice only he should run, so `quickadd:*` opens every other one. Exact ids, or `prefix*`. It binds
+   * glob re-enables only: an exact re-enable of the same id is a deliberate act and still opens it, and
+   * "Denied commands" still wins over both. */
+  neverOpaque?: string[];
 }
 
 /** Does `name` match `pattern` — exact, or prefix glob `foo*` (any trailing
@@ -131,6 +137,7 @@ function allowedOpaque(name: string, policy: CliCommandPolicy | undefined, surfa
     if (p === name) return true;
     if (!p.endsWith("*") || surface !== "command-id") return false;
     if (isAcceptVerbCommandId(name)) return false;
+    if (matchesAny(name, policy?.neverOpaque)) return false;
     return matchesCommandPattern(name, p);
   });
 }
@@ -238,4 +245,16 @@ function pathValueRefusal(label: string, value: string): string | null {
 /** The reason an `obsidian_run_command` id is refused by policy, or null. */
 export function runCommandRefusal(commandId: string, policy?: CliCommandPolicy): string | null {
   return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id", "command-id");
+}
+
+/** The registered command ids that the policy re-enables today out of the opaque run_command families
+ *  (`quickadd:*`, `js-engine:*`), sorted. The settings tab shows the count and the list when the human
+ *  saves a re-enable, so a wildcard's reach is seen at save time (01.41, pick A). */
+export function reenabledOpaqueCommandIds(commandIds: Iterable<string>, policy: CliCommandPolicy | undefined): string[] {
+  const out: string[] = [];
+  for (const id of commandIds) {
+    if (!matchesAny(id, OPAQUE_ACCEPT_COMMAND_IDS)) continue;
+    if (runCommandRefusal(id, policy) === null) out.push(id);
+  }
+  return out.sort();
 }
