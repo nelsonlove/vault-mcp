@@ -135,7 +135,13 @@ strip_heredocs() {
 }
 
 # ERE-escape a literal for use inside the op patterns.
-ere_escape() { sed -e 's/[][\.*^$+?(){}|/]/\\&/g' <<<"$1"; }
+ere_escape() { sed -e 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }   # '/' is not special in an ERE (#560 review 2)
+
+# A command name in command position, with an optional directory (/bin/mv) and an
+# optional GNU 'g' prefix (gsed, gcp) (#560 review 2).
+CMD='(^|[|;&()[:space:]])([^[:space:]|;&()]*/)?g?'
+# What may follow the record's literal: so REC.bak is not REC (#560 review 2).
+TAIL='([[:space:]]|$|[|;&)<>])'
 
 # Candidates in a shell command: every '…' and "…" string, and every bare word.
 # Over-collecting is harmless: a candidate counts only if it names an existing
@@ -155,6 +161,10 @@ bash_candidates() {
                 *) path=${path//\\/} ;;   # drop backslash escapes, in this shell (no fork per word)
             esac
             printf '%s\t%s\n' "$lit" "$path"
+            # dd of=PATH, --output=PATH: the value after '=' is a candidate too (#560 review 2).
+            case "$lit" in
+                [!\'\"\$]*=*) v=${path#*=}; [ -n "$v" ] && printf '%s\t%s\n' "${lit#*=}" "$v" ;;
+            esac
         done
 }
 
@@ -178,27 +188,34 @@ case "$tool" in
             lit=$(ere_escape "$rawlit")
             hit=""
             # Truncating stdout redirect (not >>, not a 2>&1 dup).
-            grep -Eq "(^|[^>&])>\|?[[:space:]]*['\"]?$lit" <<<"$stripped" && hit="shell redirect (truncating '>')"
+            grep -Eq "(^|[^>&])>\|?[[:space:]]*['\"]?$lit$TAIL" <<<"$stripped" && hit="shell redirect (truncating '>')"
             # Truncating stdout+stderr redirect: &> but not &>>.
-            [ -z "$hit" ] && grep -Eq "(^|[[:space:]])&>[[:space:]]*['\"]?$lit" <<<"$stripped" && hit="shell redirect (truncating '&>')"
+            [ -z "$hit" ] && grep -Eq "(^|[[:space:]])&>[[:space:]]*['\"]?$lit$TAIL" <<<"$stripped" && hit="shell redirect (truncating '&>')"
             if [ -z "$hit" ]; then
                 noappend=$(sed -E 's/(^|[[:space:]|;&(])tee[[:space:]]+((-[[:alnum:]]*a[[:alnum:]]*|--append)([[:space:]]+|$))+/\1TEE_APPEND /g' <<<"$stripped")
-                grep -Eq "\btee([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^|;&]*$lit" <<<"$noappend" && hit="tee without -a/--append"
+                grep -Eq "${CMD}tee([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^|;&]*$lit$TAIL" <<<"$noappend" && hit="tee without -a/--append"
             fi
             # In-place sed in any form (-i, -i.bak, -Ei, -e … -i, --in-place), anywhere in a sed call.
             if [ -z "$hit" ]; then
                 while IFS= read -r seg; do
-                    if grep -Eq "[[:space:]](-[[:alnum:]]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)" <<<"$seg" && grep -Eq "$lit" <<<"$seg"; then
+                    if grep -Eq "[[:space:]](-[[:alnum:]]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)" <<<"$seg" && grep -Eq "$lit$TAIL" <<<"$seg"; then
                         hit="in-place sed"; break
                     fi
-                done < <(grep -oE "(^|[|;&()[:space:]])sed[[:space:]][^|;&]*" <<<"$stripped")
+                done < <(grep -oE "${CMD}sed[[:space:]][^|;&]*" <<<"$stripped")
             fi
             # Moved or deleted: the record anywhere in the argument list.
-            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])(mv|rm|trash|/usr/bin/trash|truncate)[[:space:]]+[^|;&]*$lit" <<<"$stripped" && hit="destructive file operation (mv/rm/trash/truncate)"
+            [ -z "$hit" ] && grep -Eq "${CMD}(mv|rm|trash|truncate)[[:space:]]+[^|;&]*$lit$TAIL" <<<"$stripped" && hit="destructive file operation (mv/rm/trash/truncate)"
             # Overwritten: the record as the LAST argument of a copy-like command, so copying
             # OUT of a record (a read, a backup) passes (#560 review 1).
-            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])(cp|rsync|install|ditto|ln)[[:space:]][^|;&]*['\"]?$lit['\"]?[[:space:]]*($|[|;&)])" <<<"$stripped" && hit="overwriting copy (cp/rsync/install/ditto/ln)"
-            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])dd[[:space:]][^|;&]*of=['\"]?$lit" <<<"$stripped" && hit="dd of="
+            # Redirects, options and a trailing comment are removed first, so `cp x REC 2>/dev/null`
+            # and `cp x REC -f` still end in the record (#560 review 2).
+            if [ -z "$hit" ]; then
+                while IFS= read -r seg; do
+                    seg2=$(sed -E 's/[[:space:]]#.*$//; s/[0-9]*&?>>?[|&]?[0-9]*[[:space:]]*[^[:space:]]*//g; s/[0-9]*<[[:space:]]*[^[:space:]]*//g; s/[[:space:]]+--?[^[:space:]]*//g' <<<"$seg")
+                    grep -Eq "[[:space:]]$lit[[:space:]]*$" <<<"$seg2" && { hit="overwriting copy (cp/rsync/install/ditto/ln)"; break; }
+                done < <(grep -oE "${CMD}(cp|rsync|install|ditto|ln)[[:space:]][^|;&]*" <<<"$stripped")
+            fi
+            [ -z "$hit" ] && grep -Eq "${CMD}dd[[:space:]][^|;&]*of=['\"]?$lit$TAIL" <<<"$stripped" && hit="dd of="
             if [ -n "$hit" ]; then
                 [ "$state" = unreadable ] && unreadable "$hit" "$cand"
                 corrective "$hit" "$cand"

@@ -85,6 +85,22 @@ describe("Bash: a write to a record: true file is refused, an append passes", ()
     assert.equal(bash(`rsync '${REC}' /tmp/x.md`).code, 0);
     assert.equal(bash(`echo x &>> '${REC}'`).code, 0);
   });
+  test("#560 review 2: trailing redirects and options, command paths and g-prefixes, dd of= bare, REC.bak is not REC", () => {
+    for (const cmd of [
+      `cp /tmp/x '${REC}' 2>/dev/null`,
+      `cp /tmp/x '${REC}' >/dev/null 2>&1`,
+      `cp /tmp/x '${REC}' -f`,
+      `cp /tmp/x '${REC}' # overwrite`,
+      `/usr/bin/sed -i '' s/a/b/ '${REC}'`,
+      `gsed -i s/a/b/ '${REC}'`,
+      `/bin/mv '${REC}' /tmp/x`,
+      `/bin/rm '${REC}'`,
+      `dd if=/dev/null of=${CRLF}`,
+    ]) assert.equal(bash(cmd).code, 2, cmd);
+    assert.equal(bash(`cp '${REC}' '${REC}.bak'; rm '${REC}.bak'`).code, 0, "REC.bak is another file");
+    const r = bash(`echo x > '${REC}'`);
+    assert.doesNotMatch(r.err, /stray/, "no grep warning noise");
+  });
   test("a long command with no record in it stays fast", () => {
     const words = Array.from({ length: 3000 }, (_, i) => `w${i}`).join(" ");
     const t0 = Date.now();
