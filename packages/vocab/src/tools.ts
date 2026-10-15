@@ -19,15 +19,16 @@
 // Everything vocabulary — the providers, the registry, the findings, the
 // entry/finding types — is imported from `@vault-mcp/core`. There is NO
 // `src/kernel/` in this package, deliberately, and adding one would be a bug.
-// The kernel has TWO consumers and always did: these four tools, and the HOST's
-// conformance rail (`conformance/packs/vocab.ts` wraps `noteVocabFindings`,
-// `conformance/cli.ts` builds a `VocabRegistry` per run, and `conformance/
-// snapshot.ts` / `rule-pack.ts` are typed over `VocabNote`).
+// The kernel has TWO consumers and always did: these four tools, and the
+// conformance rail (the host's until 2026-10-14, now packages/conformance:
+// `kernel/packs/vocab.ts` wraps `noteVocabFindings`, `kernel/cli.ts` builds a
+// `VocabRegistry` per run, and `kernel/snapshot.ts` / `rule-pack.ts` are typed
+// over `VocabNote`).
 //
 // Be precise about what that dependency is and is NOT. The rail needs the
 // KERNEL, but it builds its registry from `DEFAULT_VOCABULARIES`: all three
-// `runConformance` call sites — `mcp/obsidian-drift-source.ts`,
-// `mcp/obsidian-debt-source.ts` and `conformance/cli.ts`'s CLI entry — pass the
+// `runConformance` call sites — `obsidian-drift-source.ts`,
+// `obsidian-debt-source.ts` and `kernel/cli.ts`'s CLI entry — pass the
 // shipped defaults unconditionally, and none has ever read the user's
 // configured list. So the kernel's second CONSUMER is real (which is why the
 // kernel is in core), while a second reader of the SETTING is not (which is why

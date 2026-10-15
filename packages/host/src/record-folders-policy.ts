@@ -1,6 +1,6 @@
 // record-folders-policy.ts — the folder indicator's on-load decision (#482),
 // pure and obsidian-free, the same shape as territory-policy.ts and
-// conventions-policy.ts.
+// conventions-policy.ts (the latter in packages/conformance since 2026-10-14).
 //
 // The ruling (Nelson, 2026-10-02 and 2026-10-03): which folders hold records is
 // the operator's setting, and "No folder names are ever in the live code". So

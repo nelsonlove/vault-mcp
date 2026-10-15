@@ -10,7 +10,7 @@ Read-heavy, scope-first, preview-first, with human review. Use this profile unle
 
 ### Advanced governed
 
-Adds configured schemes, vocabulary, Bases evaluation, the health scan, and conformance. (Only schemes and conformance are still the host's own modules — since the host/Governor plugin split, the `acceptance` module has left the host's registry entirely and its settings now live in the Governor plugin's own `data.json` and settings tab. Triage and cross-session coordination ship as the separate `vaultmcp-triage` and `vaultmcp-crosssession` satellite plugins; since the S7 read-tier extraction, vocabulary, health and Bases ship as the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins. Each is installed, enabled and configured on its own, and publishes its tools to the host, Vault MCP, through `vault-mcp-api`.) These remain bounded and observable but require maintenance of their declarations and baselines.
+Adds configured schemes, vocabulary, Bases evaluation, the health scan, and conformance. (Only schemes are still the host's own module — since the host/Governor plugin split, the `acceptance` module has left the host's registry entirely and its settings now live in the Governor plugin's own `data.json` and settings tab. Triage and cross-session coordination ship as the separate `vaultmcp-triage` and `vaultmcp-crosssession` satellite plugins; since the S7 read-tier extraction, vocabulary, health and Bases ship as the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins, and since 2026-10-14 conformance ships as the separate `vaultmcp-conformance` plugin. Each is installed, enabled and configured on its own, and publishes its tools to the host, Vault MCP, through `vault-mcp-api`.) These remain bounded and observable but require maintenance of their declarations and baselines.
 
 ### Private high-authority
 
@@ -125,7 +125,7 @@ Audit duplicates and misfiling before allocation runs.
 
 ## Conformance
 
-Conformance is a rail, not a cleanup bot. It compares current findings with an accepted baseline so new drift alarms while old debt remains visible.
+Conformance is a rail, not a cleanup bot. It compares current findings with an accepted baseline so new drift alarms while old debt remains visible. It is the separate `vaultmcp-conformance` plugin: install it beside Vault MCP to get the debt tools, the Drift pane and the conventions settings. On its first load it copies the conventions and the debt settings from Vault MCP once.
 
 Maintain:
 

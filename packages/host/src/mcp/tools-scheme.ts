@@ -8,7 +8,7 @@
 // `obsidian_validate_name` exposes the provider's per-filename `validateName`
 // (malformed-address-token plus the ported jd-numbering name-hygiene checks)
 // read-only. It is deliberately the ONE-NAME surface, NOT the whole-vault
-// `schemeFindings` rule pack (kernel/scheme/findings.ts), which stays rail
+// `schemeFindings` rule pack (`@vault-mcp/core` scheme/findings.ts), which stays rail
 // material per the Conformance README's "capabilities arrive as rule packs,
 // never as new surface" — same discipline that keeps findings.ts out of this
 // module. Validating a supplied name reads nothing from the vault, so it needs

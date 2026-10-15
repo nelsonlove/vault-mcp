@@ -135,21 +135,16 @@ describe("production reads these predicates — pinned at the source", () => {
     const main = src("main.ts");
     assert.match(main, /const territories = territoriesOnLoad\(own, seed\)/, "the migration must see the plugin's OWN data AND the settings adopted from the pre-split plugin");
     assert.match(main, /this\.settings\.guardedTerritories = territories\.territories/);
-    assert.match(main, /if \(territories\.persist \|\| conventions\.persist \|\| recordFoldersLoad\.persist\) await this\.saveSettings\(\)/, "the key must be written when it was absent, or the seed branch runs again (the conventions key rides the same persist since #403, the record folders since #482)");
+    assert.match(main, /if \(territories\.persist \|\| recordFoldersLoad\.persist\) await this\.saveSettings\(\)/, "the key must be written when it was absent, or the seed branch runs again (the record folders ride the same persist since #482; the conventions key did from #403 until it left with the rail)");
     assert.match(main, /const recordFoldersLoad = recordFoldersOnLoad\(own, seed\)/, "the record-folders seed sees the plugin's own data and the adopted settings, as territories do (#482)");
   });
 
-  test("the two conformance sources FORWARD the territory thunk they are handed (#396 review: both dropped it)", () => {
-    // The #397 defect in miniature, twice: a parameter accepted and never
-    // passed on. `obsidianDebtRenderSource(app, territories)` spread
-    // `obsidianDebtSource(app)`; `wireSchemePanes` received `getTerritories`
-    // and built `obsidianDriftSource(app)`. Both walks ran unguarded.
-    const debt = src("mcp/obsidian-debt-source.ts");
-    assert.match(debt, /\.\.\.obsidianDebtSource\(app, territories, conventions\)/, "the render source must hand BOTH thunks to the inner source (#403 adds the conventions one)");
-    const wiring = src("scheme/wiring.ts");
-    assert.match(wiring, /obsidianDriftSource\(app, opts\.getTerritories, opts\.getConventions\)/, "the drift pane must read the options main.ts populates");
-    const server = src("mcp/server.ts");
-    assert.match(server, /obsidianDebtRenderSource\(\s*app,\s*\(\) => resolveTerritories\(ctx\.getSettings\(\)\.guardedTerritories\),/, "and server.ts must supply it, read per call");
+  // "the two conformance sources FORWARD the territory thunk they are handed"
+  // (#396 review) moved to packages/conformance/tests/conformance-satellite.test.mjs
+  // with the sources, on 2026-10-14. What the host still owes the rail is the
+  // list itself, on the api — pinned here:
+  test("the host publishes its territories on the api for the conformance satellite, resolved and copied", () => {
+    assert.match(src("main.ts"), /guardedTerritories: \(\) => \[\.\.\.resolveTerritories\(this\.settings\.guardedTerritories\)\]/);
   });
 
   test("LEGACY_TERRITORY_SEED has exactly ONE reader in the host: the migration", () => {

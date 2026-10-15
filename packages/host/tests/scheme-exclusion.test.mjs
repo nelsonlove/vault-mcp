@@ -37,7 +37,7 @@ import {
   resolveSchemeArgs,
 } from "../src/kernel/scheme/registry.ts";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.ts";
-import { schemeFindings } from "../src/kernel/scheme/findings.ts";
+import { schemeFindings } from "@vault-mcp/core";
 import { fakeServer } from "./fake-server.mjs";
 import { registerSchemeTools } from "../src/mcp/tools-scheme.ts";
 

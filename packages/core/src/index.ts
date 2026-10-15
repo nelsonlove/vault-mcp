@@ -229,15 +229,16 @@ export type { WriteScope, WriteScopeMode } from "./write-scope.js";
 //
 // Published INTO core rather than moved into the `vaultmcp-vocab` satellite,
 // because it has TWO consumers and always did: the four vocabulary tools (now
-// the satellite's) and the HOST's conformance rail — `conformance/packs/vocab.ts`
-// wraps `noteVocabFindings`, `conformance/cli.ts` builds a `VocabRegistry` per
-// run, `conformance/snapshot.ts` and `rule-pack.ts` are typed over `VocabNote`,
+// the satellite's) and the conformance rail (the HOST's at S7, its own
+// `vaultmcp-conformance` satellite since 2026-10-14) — `kernel/packs/vocab.ts`
+// wraps `noteVocabFindings`, `kernel/cli.ts` builds a `VocabRegistry` per
+// run, `kernel/snapshot.ts` and `rule-pack.ts` are typed over `VocabNote`,
 // and `obsidian-drift-source.ts` / `obsidian-debt-source.ts` fall back to
 // `DEFAULT_VOCABULARIES`. This is exactly the shape of the `queryBaseRows`
 // question the triage extraction answered by leaving the seam behind, and it
 // has the same forbidden answer: two copies of a rule core is how one vault
-// gets two vocabularies. Conformance is itself a planned satellite
-// (suite-split-design.md §6), so core is where both consumers end up meeting.
+// gets two vocabularies. Conformance became a satellite too (2026-10-14), so
+// core is where both consumers meet, as planned (suite-split-design.md §6).
 //
 // It qualifies on the same grounds `isVisible` did: pure, Obsidian-free, no MCP
 // SDK, no host types — it already imported `leadingFrontmatterBlock` from here
