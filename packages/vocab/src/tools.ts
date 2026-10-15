@@ -159,6 +159,8 @@ import {
   VocabRegistry,
   DEFAULT_VOCABULARIES,
   isVisible,
+  isScopeTagsSource,
+  resolveScopeTagsConfig,
   type VocabEntry,
   type VocabFinding,
   type VocabInstance,
@@ -220,8 +222,10 @@ export interface VocabSource {
   paths(): string[];
   /** Frontmatter of a markdown note, from the host's metadata cache. */
   frontmatter(path: string): Record<string, unknown> | null;
-  /** Raw content of any file (for `.fileclass` frontmatter and `## Terms`
-   * sections — the two shapes the metadata cache cannot serve). */
+  /** Raw content of any file (for `.fileclass` frontmatter, `## Terms`
+   * sections and scope notes' `## Tags` tables — the shapes the metadata
+   * cache cannot serve). A leading frontmatter block is fine: the parsers
+   * strip it. */
   body(path: string): Promise<string | null>;
 }
 
@@ -288,8 +292,9 @@ function under(path: string, root: string): boolean {
 /**
  * The notes the configured vocabularies need, visible-filtered BEFORE any
  * content is touched. Body reads are confined to what actually needs one:
- * `.fileclass` files under a blueprint root, and markdown under a glossary's
- * `termsRoot` (the `## Terms` chapters) — never the whole vault.
+ * `.fileclass` files under a blueprint root, markdown under a glossary's
+ * `termsRoot` (the `## Terms` chapters), and the scope notes a scope-tags
+ * vocabulary reads its `## Tags` tables from — never the whole vault.
  *
  * The `visible` filter is the DORMANT seam. In the shipped configuration it is
  * the identity, so this reads the whole vault listing; see the header for the
@@ -323,12 +328,14 @@ async function buildListing(
         if (termsRoot !== null && under(p, termsRoot) && under(p, row.root)) want(p, "body");
       }
     } else if (row.provider === "scope-tags") {
-      // Registry notes (`fileClass: Meta/Tag`) and scope folder-notes are
-      // recognized by FRONTMATTER, which only the provider can inspect — so
-      // every markdown note under the root arrives with its cached
-      // frontmatter. No body is ever read: this provider needs none.
+      // The tags are declared in the `## Tags` tables in the BODIES of scope
+      // notes (vault spec 01.13 rule 6), so this provider reads bodies — but
+      // only of the notes that can declare: folder notes (`A/B/B.md`) and the
+      // configured root scope note, recognized by PATH before anything is
+      // opened. It needs no frontmatter from the listing.
+      const { rootNote } = resolveScopeTagsConfig(row.config);
       for (const p of all) {
-        if (p.endsWith(".md") && under(p, row.root)) want(p, "fm");
+        if (p.endsWith(".md") && under(p, row.root) && isScopeTagsSource(p, rootNote)) want(p, "body");
       }
     }
   }

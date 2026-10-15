@@ -12,10 +12,11 @@
 //   * `vault.getFiles()`, NOT `getMarkdownFiles()`. The blueprint provider's
 //     TYPE entries are `.fileclass` files, which are not markdown; enumerating
 //     only markdown would make every configured type silently vanish.
-//   * `cachedRead`, not `adapter.read`. Bodies are read only for the two shapes
-//     the metadata cache cannot serve — a `.fileclass` file's frontmatter and a
-//     glossary chapter's `## Terms` section — and the tool layer decides which
-//     files those are before anything is opened (see `buildListing`).
+//   * `cachedRead`, not `adapter.read`. Bodies are read only for the shapes the
+//     metadata cache cannot serve — a `.fileclass` file's frontmatter, a
+//     glossary chapter's `## Terms` section, and a scope note's `## Tags`
+//     table — and the tool layer decides which files those are before
+//     anything is opened (see `buildListing`).
 
 import type { VocabSource } from "./tools.js";
 

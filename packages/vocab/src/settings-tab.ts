@@ -117,8 +117,9 @@ export class VocabSettingTab extends PluginSettingTab {
     new Setting(row)
       .setName("Provider")
       .setDesc(
-        "scope-tags = per-scope tag whitelists (the live model); blueprint = the legacy registry grammar " +
-          "(tags / properties / types); glossary = ## Terms definitions.",
+        "scope-tags = the ## Tags tables on scope notes, unioned up the scope chain (the live model); " +
+          "blueprint = the legacy registry grammar (tags / properties / types); " +
+          "glossary = Topic/Term notes and ## Terms definitions.",
       )
       .addDropdown((d) => {
         for (const p of VOCAB_PROVIDERS) d.addOption(p, p);

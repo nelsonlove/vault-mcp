@@ -81,6 +81,7 @@ function fakeFiles() {
       frontmatter: {
         title: "Canonical",
         description: "Holding authority for one specific claim.",
+        type: "Topic/Term",
         tags: ["note/definition"],
       },
     },
@@ -356,6 +357,50 @@ describe("vaultmcp_vocab_validate_terms", () => {
     assert.equal(findings.some((f) => f.code === "unregistered_tag"), false);
     // `description` is not in the fixture's property registry — flagged.
     assert.ok(findings.some((f) => f.code === "undefined_property" && f.token === "description"));
+  });
+});
+
+// ── the scope-tags vocabulary through the tools: bodies reach the provider ──
+
+describe("scope-tags through the tools (the `## Tags` table model, #551)", () => {
+  const ROOT = "00-09 System/00 System management/00 System management.md";
+  const table = (rows) =>
+    "\n## Tags\n\n| Tag | Description |\n| --- | --- |\n" + rows.map(([t, d]) => `| \`${t}\` | ${d} |`).join("\n") + "\n";
+  // raw files, frontmatter included, as `cachedRead` returns them
+  const files = () => ({
+    [ROOT]: { body: "---\ntitle: 00 System management\n---\n# 00 System management\n" + table([["note/*", "What kind of note."], ["person", "One person."]]) },
+    "00-09 System/03 Agents/03 Agents.md": { body: "---\ntitle: 03 Agents\n---\n" + table([["rollup", "A rollup note."]]) },
+    "00-09 System/03 Agents/log.md": { frontmatter: { tags: ["rollup", "note/log", "sprocket"] }, body: "## Tags\n\n| Tag | D |\n| --- | --- |\n| `stray` | not a scope note |\n" },
+    "10-19 Personal/x.md": { frontmatter: { tags: ["rollup", "person"] } },
+  });
+  const ROWS = [{ id: "scope-tags", provider: "scope-tags", root: "" }];
+
+  test("validate_terms reads the tables from the scope notes' bodies: unregistered and out-of-scope fire", async () => {
+    const inAgents = (await build({ files: files(), vocabularies: ROWS }).call("validate_terms", { path: "00-09 System/03 Agents/log.md" })).structuredContent;
+    assert.deepEqual(inAgents.findings.map((f) => [f.code, f.token]), [["tag_unregistered", "sprocket"]]);
+    const outside = (await build({ files: files(), vocabularies: ROWS }).call("validate_terms", { path: "10-19 Personal/x.md" })).structuredContent;
+    assert.deepEqual(outside.findings.map((f) => [f.code, f.token]), [["tag_out_of_scope", "rollup"]]);
+  });
+
+  test("the defaults alone read the live layout: list_vocabulary counts the rows of the folder notes and the root", async () => {
+    const res = await build({ files: files(), vocabularies: [] }).call("list_vocabulary", { kind: "tag", vocabulary: "scope-tags" });
+    assert.deepEqual(res.structuredContent.entries.map((e) => e.canonical), ["note/*", "person", "rollup"]);
+  });
+
+  test("bodies are read only for folder notes and the root note — never an ordinary note", async () => {
+    const read = [];
+    const f = files();
+    const source = {
+      paths: () => Object.keys(f),
+      frontmatter: (p) => f[p]?.frontmatter ?? null,
+      body: async (p) => {
+        read.push(p);
+        return f[p]?.body ?? null;
+      },
+    };
+    const { tools } = publishInto(buildVocabTools(source, { getVocabularies: () => ROWS }));
+    await tools.get(`${OWNER}_vocabularies`).handler({});
+    assert.deepEqual(read.sort(), [ROOT, "00-09 System/03 Agents/03 Agents.md"].sort());
   });
 });
 
