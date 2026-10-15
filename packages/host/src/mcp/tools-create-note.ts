@@ -244,6 +244,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
         "Every note gets a `uid` and `created`/`modified` with the local offset, and a `{{DATE:…}}` whose format ends in a time (`HH:mm` or `HH:mm:ss`) gets the offset too. " +
         "The note lands in the folder the class declares, or in `folder` when you pass it; a class that declares none needs `folder`. " +
         "`destination` picks one of several destinations a class declares. The title is `title`, else `values.title` (no `/`, `\\` or `.md`). " +
+        "For a slot class (`Meta/Slot/<Function>`), a bare address as the title (`00.08`) names the slot from the class's `slot-title`, else the function's name (`00.08 Audits & reports`). " +
         "`frontmatter` adds keys the template does not write (e.g. `session`, `session-id`, `reports-to`); it may not set a key the rendered note already has, nor the class key (`type`). " +
         "The note is rendered, checked, and written once; nothing is written when any check fails. Refused: a note that already exists at the path, " +
         "a name Obsidian Sync refuses or that breaks links, acceptance or a `verified` record anywhere in the result, a path outside your allowlist. " +
