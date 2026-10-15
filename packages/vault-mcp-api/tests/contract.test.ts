@@ -225,8 +225,9 @@ test("a v3 declaration crosses the real host registry intact and is frozen on th
     handler: () => ({}),
   }]);
   const [entry] = registry.entries();
+  // The host keeps the value map without a prototype (#553 review 2), so the expected map has none either.
   assert.deepEqual(entry.declaration, {
-    protection: { arg: "dry_run", values: { true: "exempt" }, otherwise: "key" },
+    protection: { arg: "dry_run", values: Object.assign(Object.create(null), { true: "exempt" }), otherwise: "key" },
     sync: { kind: "structure", strictStatus: true, destinationUnnamed: true },
     paths: ["path"],
   });
