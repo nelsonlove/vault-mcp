@@ -257,8 +257,8 @@ describe("#298 — a dead convention path is a loud finding and an unmeasured pa
     try {
       const res = await runConformance({ root, conventions: SEED, baselineText: "", vocabularies: vocab, schemes: [] });
       const dead = res.findings.filter((f) => f.script === ENGINE_ID && f.check === "dead_convention");
-      assert.deepEqual(dead.map((f) => f.target).sort(), ["registriesRoot", "systemRoot", "ungovernedRoots"]);
-      assert.deepEqual(res.deadConventions.length, 3);
+      assert.deepEqual(dead.map((f) => f.target).sort(), ["fileclassesRoot", "registriesRoot", "systemRoot", "ungovernedRoots"]);
+      assert.deepEqual(res.deadConventions.length, 4);
       assert.ok(res.packIds.includes("drift_audit") && res.packIds.includes("conformance_check"), "the packs still REGISTER");
       assert.ok(!res.coveredPackIds.includes("drift_audit") && !res.coveredPackIds.includes("conformance_check"), "but are NOT covered");
       assert.ok(res.coveredPackIds.includes("port_lint") && res.coveredPackIds.includes("ste_lint"), "packs that read no convention still run");
@@ -282,8 +282,8 @@ describe("#298 — a dead convention path is a loud finding and an unmeasured pa
   test("with the conventions OPTION pointing at live paths, nothing is dead and drift_audit is measured", async () => {
     const root = await vault();
     try {
-      for (const d of ["Sys/Registries", "Sys/Framework"]) await mkdir(path.join(root, d), { recursive: true });
-      const live = { registriesRoot: "Sys/Registries", systemRoot: "Sys", ungovernedRoots: ["Sys/Framework"] };
+      for (const d of ["Sys/Registries", "Sys/Framework", "Sys/Fileclasses"]) await mkdir(path.join(root, d), { recursive: true });
+      const live = { registriesRoot: "Sys/Registries", systemRoot: "Sys", fileclassesRoot: "Sys/Fileclasses", ungovernedRoots: ["Sys/Framework"] };
       const res = await runConformance({ root, conventions: live, baselineText: "", vocabularies: vocab, schemes: [] });
       assert.deepEqual(res.deadConventions, []);
       assert.ok(!res.findings.some((f) => f.check === "dead_convention"));
@@ -298,8 +298,8 @@ describe("#298 — a dead convention path is a loud finding and an unmeasured pa
   test("#412: a baseline key of a RETIRED check clears at pack granularity (drift_audit ran) — the report names it as cleared by retirement, not repair; an E key that clears is an ordinary clear", async () => {
     const root = await vault();
     try {
-      for (const d of ["Sys/Registries", "Sys/Framework"]) await mkdir(path.join(root, d), { recursive: true });
-      const live = { registriesRoot: "Sys/Registries", systemRoot: "Sys", ungovernedRoots: ["Sys/Framework"] };
+      for (const d of ["Sys/Registries", "Sys/Framework", "Sys/Fileclasses"]) await mkdir(path.join(root, d), { recursive: true });
+      const live = { registriesRoot: "Sys/Registries", systemRoot: "Sys", fileclassesRoot: "Sys/Fileclasses", ungovernedRoots: ["Sys/Framework"] };
       const A = "drift_audit|A|choice 'X' is command-enabled but no .action entry names it|", G = "drift_audit|G|x.tag.md title is 'None', the filename says 'x.tag'|", E = "drift_audit|E|01234567-89ab-7cde-8f01-23456789abcd|dup-uid";
       const res = await runConformance({ root, conventions: live, baselineText: "```ratchet-baseline\n" + [A, G, E].join("\n") + "\n```\n", vocabularies: vocab, schemes: [] });
       assert.ok(res.coveredPackIds.includes("drift_audit"), "the pack ran, so the coverage refusal does not fire");
@@ -345,13 +345,13 @@ describe("#298 — a dead convention path is a loud finding and an unmeasured pa
 });
 
 describe("#403 — the plugin ships EMPTY conventions: every scalar key dead, loudly; the list keys empty are 'none'", () => {
-  test("EMPTY conventions: the two scalar keys are dead_convention findings reported as (empty); the list key is not", async () => {
+  test("EMPTY conventions: the three scalar keys are dead_convention findings reported as (empty); the list key is not", async () => {
     const root = await vault();
     try {
       const { EMPTY_VAULT_CONVENTIONS } = await import("../src/kernel/vault-conventions.ts");
       const res = await runConformance({ root, conventions: EMPTY_VAULT_CONVENTIONS, baselineText: "", vocabularies: [{ id: "reg", provider: "blueprint", root: "Reg" }], schemes: [] });
       const dead = res.findings.filter((f) => f.script === ENGINE_ID && f.check === "dead_convention");
-      assert.deepEqual(dead.map((f) => f.target).sort(), ["registriesRoot", "systemRoot"]);
+      assert.deepEqual(dead.map((f) => f.target).sort(), ["fileclassesRoot", "registriesRoot", "systemRoot"]);
       assert.ok(dead.every((f) => f.kind === "" && /is EMPTY/.test(f.detail)), dead.map((f) => f.detail).join("\n"));
       assert.match(res.report, /DEAD CONVENTION: registriesRoot = \(empty\) — 'conformance_check' not measured; set it in the plugin settings \(Conformance\) or VAULT_MCP_CONVENTIONS/);
       assert.match(res.report, /DEAD CONVENTION: systemRoot = \(empty\) — 'drift_audit' not measured/);

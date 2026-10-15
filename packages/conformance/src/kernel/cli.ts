@@ -23,7 +23,7 @@ import { buildSnapshot, DEFAULT_SKIP, type SkippedTerritory } from "./snapshot.j
 import { envAliased } from "@vault-mcp/core";
 import { intendedRealPath, sameFile, isInside } from "./path-identity.js";
 import { runEngine, ENGINE_ID } from "./engine.js";
-import { vocabPack, schemePack, structurePack, portPack, stePack, driftPack } from "./packs/index.js";
+import { vocabPack, schemePack, structurePack, portPack, stePack, driftPack, shapePack } from "./packs/index.js";
 import { conventionsOnLoad, conventionsFromHostData } from "./conventions-policy.js";
 import { conventionsFromEnv, deadConventionPaths, CONVENTION_PACKS, CONVENTIONS_ENV, type DeadConvention, type VaultConventions } from "./vault-conventions.js";
 import { parseBaseline, renderBaseline, ratchet, type RatchetResult } from "./ratchet.js";
@@ -153,7 +153,7 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
       skipDirs: DEFAULT_SKIP,
     });
     const unmeasured = new Set(deadConventions.flatMap((d) => CONVENTION_PACKS[d.key]));
-    const legacy: RulePack[] = [structurePack({ conventions: conv }), portPack(), stePack(conv), driftPack(conv)];
+    const legacy: RulePack[] = [structurePack({ conventions: conv }), portPack(), stePack(conv), driftPack(conv), shapePack(conv)];
     for (const pack of legacy) {
       packs.push(unmeasured.has(pack.id) ? { id: pack.id, run: () => [] } : pack);
       if (unmeasured.has(pack.id)) unmeasuredPackIds.add(pack.id);

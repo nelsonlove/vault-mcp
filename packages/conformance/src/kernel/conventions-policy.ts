@@ -6,7 +6,7 @@
 // Three pure pieces, headless-tested:
 //
 //  1. `conventionsOnLoad` — the reader of `LEGACY_CONVENTIONS_SEED` for a
-//     record that predates the setting. The plugin ships the four keys EMPTY
+//     record that predates the setting. The plugin ships the keys EMPTY
 //     (every scalar convention dead, the legacy packs registered and not
 //     measured until the operator points them; no baseline note). An install
 //     whose data.json predates the setting is seeded ONCE with what it used to
@@ -150,6 +150,7 @@ export interface ConventionField {
 export const CONVENTION_FIELDS: readonly ConventionField[] = [
   { key: "registriesRoot", label: "Registries root", kind: "path", help: "Folder under which the structure check's blueprint registry lives. Feeds conformance_check. Blank = not measured." },
   { key: "systemRoot", label: "System root", kind: "path", help: "The governed system spine's root folder (the drift check's category-number scan). Feeds drift_audit. Blank = not measured." },
+  { key: "fileclassesRoot", label: "Fileclasses folder", kind: "path", help: "The Fileclass class-notes folder. The shape check reads each class's ## Shape or ## Template fence from here and reports typed notes missing a required heading, headings out of order, and a type that names no class. Feeds shape. Blank = not measured." },
   { key: "ungovernedRoots", label: "Ungoverned roots", kind: "paths", help: "One folder per line the structure check never treats as governed content. Empty = everything under the root is governed." },
   { key: "baselineRel", label: "Conformance baseline note", kind: "path", help: "The accepted-debt baseline note (vault-relative path, ending in .md), read by the conformance debt tools and the Drift pane on every run. Blank = no baseline configured (unless the GOVERNOR_BASELINE_REL environment variable names one): the debt tools and the drift pane refuse until it is set." },
 ];

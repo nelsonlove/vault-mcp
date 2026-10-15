@@ -23,7 +23,8 @@
 // predates the setting, by exactly one reader (`conventions-policy.ts`).
 //
 // THREE folder keys since #412 (ruled 2026-09-27), plus `baselineRel` since #493
-// (the baseline note, not a pack convention). The record had six; the other
+// (the baseline note, not a pack convention), and a fourth folder key,
+// `fileclassesRoot`, since the shape pack (2026-10-15). The record had six; the other
 // three (`artifactsRoot`, `pluginStackPath`, `uidExemptPaths`) named a vault
 // shape the rebuilt vault no longer has, and their only readers were the
 // drift checks #412 retired. A key nobody reads is a setting that lies, so
@@ -41,6 +42,10 @@ export interface VaultConventions {
   registriesRoot: string;
   /** The governed system spine's root folder (drift's category-collision scan). */
   systemRoot: string;
+  /** The Fileclass class-notes folder (`00.10 Fileclasses` in the operator's vault): the
+   * shape pack reads each class's `## Shape` or `## Template` fence from here, and the
+   * class list it gives is what an unbound `type` is measured against. Blank = dead. */
+  fileclassesRoot: string;
   /** Roots the structure pack never treats as governed content. */
   ungovernedRoots: string[];
   /**
@@ -52,18 +57,19 @@ export interface VaultConventions {
   baselineRel: string;
 }
 
-/** The four keys, EMPTY: what the plugin ships. Every scalar folder key empty reads
+/** The five keys, EMPTY: what the plugin ships. Every scalar folder key empty reads
  *  as dead (its packs are not measured); the list key empty reads as "none",
  *  a legitimate configuration (nothing ungoverned). */
 export const EMPTY_VAULT_CONVENTIONS: VaultConventions = Object.freeze({
   registriesRoot: "",
   systemRoot: "",
+  fileclassesRoot: "",
   ungovernedRoots: [],
   baselineRel: "",
 }) as VaultConventions;
 
 /** The keys whose value is one path (a blank one is a DEAD convention). */
-export const SCALAR_CONVENTION_KEYS = ["registriesRoot", "systemRoot"] as const;
+export const SCALAR_CONVENTION_KEYS = ["registriesRoot", "systemRoot", "fileclassesRoot"] as const;
 /** The keys whose value is a list of paths (an empty list is "none", not dead). */
 export const LIST_CONVENTION_KEYS = ["ungovernedRoots"] as const;
 
@@ -78,11 +84,12 @@ export function resolveConventions(raw: unknown): VaultConventions {
     const arr = Array.isArray(v) ? v : typeof v === "string" ? v.split("\n") : [];
     return arr.map((x) => (typeof x === "string" ? x.trim() : "")).filter(Boolean);
   };
-  // Only the four live keys are read: a stale key from a pre-#412 data.json
+  // Only the five live keys are read: a stale key from a pre-#412 data.json
   // (`artifactsRoot`, `pluginStackPath`, `uidExemptPaths`) is dropped here.
   return {
     registriesRoot: str(o.registriesRoot),
     systemRoot: str(o.systemRoot),
+    fileclassesRoot: str(o.fileclassesRoot),
     ungovernedRoots: list(o.ungovernedRoots),
     baselineRel: str(o.baselineRel),
   };
@@ -100,6 +107,10 @@ export function resolveConventions(raw: unknown): VaultConventions {
 export const LEGACY_CONVENTIONS_SEED: VaultConventions = {
   registriesRoot: "00-09 System/00 System management/00.05 Registries for the system",
   systemRoot: "00-09 System",
+  // No pre-#403 install measured shapes (the shape pack is new, 2026-10-15), so
+  // the seed carries none: an upgraded install reads the key as dead, loudly,
+  // until the operator names the fileclasses folder.
+  fileclassesRoot: "",
   // The framework corpus, ungoverned since it is written as prose rather than
   // filed as vault content. It was the vault-root `Assent/` tree; it was
   // refiled under 00.89 (2026-08-17) and that folder was then renamed from
@@ -193,6 +204,7 @@ export interface DeadConvention {
 export const CONVENTION_PACKS: Record<ConventionPathKey, readonly string[]> = {
   registriesRoot: ["conformance_check"],
   systemRoot: ["drift_audit"],
+  fileclassesRoot: ["shape"],
   ungovernedRoots: ["conformance_check"],
   // The baseline note is read by the debt and drift sources and the CLI, not by a pack (#493).
   baselineRel: [],

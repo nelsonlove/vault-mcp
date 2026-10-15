@@ -12,3 +12,4 @@ export { structurePack, STRUCTURE_PACK_ID } from "./structure.js";
 export { portPack, PORT_PACK_ID } from "./port.js";
 export { stePack, STE_PACK_ID } from "./ste.js";
 export { driftPack, DRIFT_PACK_ID } from "./drift.js";
+export { shapePack, runShape, shapeClasses, typeNames, SHAPE_PACK_ID, type ShapeCoverage, type ShapeClass } from "./shape.js";
