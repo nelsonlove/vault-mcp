@@ -254,7 +254,7 @@ export { blueprintProvider, scanFrontmatter } from "./vocab/blueprint.js";
 export type { BlueprintConfig, VocabNote } from "./vocab/blueprint.js";
 export { glossaryProvider, parseTermsSection, resolveGlossaryConfig, DEFAULT_GLOSSARY_CONFIG } from "./vocab/glossary.js";
 export type { GlossaryConfig } from "./vocab/glossary.js";
-export { noteVocabFindings } from "./vocab/findings.js";
+export { noteVocabFindings, vocabularyFindings } from "./vocab/findings.js";
 export type { NoteVocabInput } from "./vocab/findings.js";
 export {
   scopeTagsProvider,

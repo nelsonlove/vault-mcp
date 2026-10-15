@@ -13,7 +13,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { vocabPack, schemePack } from "../src/conformance/packs/index.ts";
 import { runEngine } from "../src/conformance/engine.ts";
-import { blueprintProvider } from "@vault-mcp/core";
+import { blueprintProvider, scopeTagsProvider, DEFAULT_SCOPE_TAGS_CONFIG } from "@vault-mcp/core";
 import { makeRegistry } from "../src/kernel/scheme/registry.ts";
 
 // ── vocab pack ────────────────────────────────────────────────────────────────
@@ -56,6 +56,22 @@ describe("vocabPack", () => {
     const snap = snapshot([{ path: "Notes/N.md", frontmatter: { title: "N", tags: ["meta/anything"] } }]);
     // title/tags are registered properties; meta/anything is namespace-permissive under meta
     assert.deepEqual(pack.run(snap).filter((f) => f.check === "unregistered_tag"), []);
+  });
+
+  test("a missing root scope note is loud through the rail: one scope_root_missing per pass, not per note (#551)", () => {
+    // scope notes with tables, but no root scope note: scoping is off, so the
+    // per-note checks are quiet — the pack must still say why
+    const listing = [{ path: "A/A.md", body: "## Tags\n\n| Tag | Description |\n| --- | --- |\n| `keep` | K. |\n" }];
+    const pack = vocabPack([scopeTagsProvider(DEFAULT_SCOPE_TAGS_CONFIG, listing)]);
+    const snap = snapshot([
+      { path: "A/x.md", frontmatter: { tags: ["rogue"] } },
+      { path: "B/y.md", frontmatter: { tags: ["rogue"] } },
+    ]);
+    const findings = pack.run(snap);
+    assert.deepEqual(findings.map((f) => [f.check, f.target]), [["scope_root_missing", DEFAULT_SCOPE_TAGS_CONFIG.rootNote]]);
+    // with the root present, the switch is on and `rogue` is the finding instead
+    const on = vocabPack([scopeTagsProvider(DEFAULT_SCOPE_TAGS_CONFIG, [...listing, { path: DEFAULT_SCOPE_TAGS_CONFIG.rootNote, body: "# root\n" }])]);
+    assert.deepEqual(on.run(snap).map((f) => [f.check, f.target]), [["tag_unregistered", "A/x.md"], ["tag_unregistered", "B/y.md"]]);
   });
 });
 

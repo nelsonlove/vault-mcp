@@ -30,7 +30,7 @@ import {
   isScopeTagsSource,
   DEFAULT_SCOPE_TAGS_CONFIG,
 } from "../src/vocab/scope-tags.ts";
-import { noteVocabFindings } from "../src/vocab/findings.ts";
+import { noteVocabFindings, vocabularyFindings } from "../src/vocab/findings.ts";
 import { VocabAmbiguousError } from "../src/vocab/provider.ts";
 import { VocabRegistry } from "../src/vocab/registry.ts";
 
@@ -410,5 +410,20 @@ describe("noteVocabFindings integration", () => {
     const p = provider([scope("10-19 Personal/10-19 Personal.md", [["spec", "Another sense."]])]);
     const findings = noteVocabFindings(noteAt(CAT, ["spec"]), [p]);
     assert.deepEqual(findings.map((f) => f.code), ["ambiguous"]);
+  });
+});
+
+describe("vocabularyFindings — the source-level seam, once per pass", () => {
+  test("collects registryFindings from providers that have them, and skips the rest", () => {
+    const off = provider([], { withRoot: false });
+    const plain = { kinds: ["term"], normalize: (t) => t, validateToken: () => [], resolve: () => null, list: () => [] };
+    assert.deepEqual(vocabularyFindings([off, plain]).map((f) => f.code), ["scope_root_missing"]);
+    assert.deepEqual(vocabularyFindings([provider(), plain]), []);
+  });
+
+  test("a root outside the instance's root is reported too, through the registry (review item 5)", () => {
+    const reg = new VocabRegistry([{ id: "st", provider: "scope-tags", root: "00-09 System/01 System architecture" }]);
+    const [inst] = reg.build(fixture());
+    assert.deepEqual(vocabularyFindings([inst.provider]).map((f) => f.code), ["scope_root_missing"]);
   });
 });

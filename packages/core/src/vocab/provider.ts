@@ -139,4 +139,10 @@ export interface VocabularyProvider {
    * by `noteVocabFindings` for every provider that implements it; findings
    * carry the note's path. */
   noteFindings?(note: { path: string; frontmatter: Record<string, unknown> | null }): VocabFinding[];
+  /** Optional: findings about the vocabulary SOURCE itself, independent of
+   * any note (the scope-tags provider's table lint and its
+   * `scope_root_missing` switch report). Run ONCE per pass, not per note —
+   * `vocabularyFindings` collects them; the host rail and the vocab
+   * satellite's tools call it so a dead root is loud where it is used. */
+  registryFindings?(): VocabFinding[];
 }

@@ -387,6 +387,20 @@ describe("scope-tags through the tools (the `## Tags` table model, #551)", () =>
     assert.deepEqual(res.structuredContent.entries.map((e) => e.canonical), ["note/*", "person", "rollup"]);
   });
 
+  test("a missing root scope note is loud: validate_terms reports scope_root_missing once, vocabularies lists it as a problem", async () => {
+    const f = files();
+    delete f[ROOT];
+    const b = build({ files: f, vocabularies: ROWS });
+    const v = (await b.call("validate_terms", { path: "00-09 System/03 Agents/log.md" })).structuredContent;
+    assert.deepEqual(v.findings.map((x) => x.code), ["scope_root_missing"]);
+    assert.equal(v.clean, false);
+    const problems = (await b.call("vocabularies")).structuredContent.problems;
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /vocabulary 'scope-tags': the root scope note/);
+    // with the root present there is no such problem
+    assert.deepEqual((await build({ files: files(), vocabularies: ROWS }).call("vocabularies")).structuredContent.problems, []);
+  });
+
   test("bodies are read only for folder notes and the root note — never an ordinary note", async () => {
     const read = [];
     const f = files();
