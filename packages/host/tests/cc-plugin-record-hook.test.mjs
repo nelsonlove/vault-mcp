@@ -17,6 +17,8 @@ const REC = "Notes/A record.md";
 const PLAIN = "Notes/Plain.md";
 const LOCKED = "Notes/Locked.md";
 const MENTIONS = "Notes/Machinery record notes.md";
+const CRLF = "Notes/Crlf.md";
+const CAPS = "Notes/Caps.md";
 
 before(() => {
   tmp = mkdtempSync(join(tmpdir(), "record-hook-"));
@@ -28,6 +30,8 @@ before(() => {
   writeFileSync(join(vault, PLAIN), "---\ntitle: Plain\n---\n\nrecord: true is only body text here\n");
   writeFileSync(join(vault, MENTIONS), "---\ntitle: x\n---\n\nThe Machinery record folder is gone.\n");
   writeFileSync(join(vault, LOCKED), "---\nrecord: true\n---\n");
+  writeFileSync(join(vault, CRLF), "\ufeff---\r\ntitle: c\r\nrecord: true\r\n---\r\nbody\r\n");
+  writeFileSync(join(vault, CAPS), '---\nrecord: "TRUE"\n---\n');
   chmodSync(join(vault, LOCKED), 0o000);
   writeFileSync(join(disc, "scratch.json"), JSON.stringify({ vault_path: vault, vault_name: "scratch" }));
 });
@@ -59,6 +63,33 @@ describe("Bash: a write to a record: true file is refused, an append passes", ()
       assert.equal(r.code, 2, cmd);
       assert.match(r.err, /record: true/, cmd);
     }
+  });
+  test("#560 review 1: CRLF and BOM, capital spellings, escaped and $'' paths, every sed in-place form, other overwrites", () => {
+    for (const cmd of [
+      `echo x > ${CRLF}`,
+      `echo x > ${CAPS}`,
+      `echo x > Notes/A\\ record.md`,
+      `echo x > $'Notes/A record.md'`,
+      `echo x >| '${REC}'`,
+      `sed -Ei 's/a/b/' '${REC}'`,
+      `sed -e 's/a/b/' -i '${REC}'`,
+      `sed --in-place 's/a/b/' '${REC}'`,
+      `truncate -s0 '${REC}'`,
+      `dd if=/dev/null of='${REC}'`,
+      `rsync Notes/Plain.md '${REC}'`,
+      `ln -sf Notes/Plain.md '${REC}'`,
+    ]) assert.equal(bash(cmd).code, 2, cmd);
+  });
+  test("#560 review 1: copying OUT of a record is a read, and passes; &>> is an append", () => {
+    assert.equal(bash(`cp '${REC}' /tmp/backup-of-record.md`).code, 0);
+    assert.equal(bash(`rsync '${REC}' /tmp/x.md`).code, 0);
+    assert.equal(bash(`echo x &>> '${REC}'`).code, 0);
+  });
+  test("a long command with no record in it stays fast", () => {
+    const words = Array.from({ length: 3000 }, (_, i) => `w${i}`).join(" ");
+    const t0 = Date.now();
+    assert.equal(bash(`echo ${words} > Notes/New.md`).code, 0);
+    assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
   });
   test("an append to a record passes, and a heredoc body may name it", () => {
     assert.equal(bash(`echo entry >> '${REC}'`).code, 0);

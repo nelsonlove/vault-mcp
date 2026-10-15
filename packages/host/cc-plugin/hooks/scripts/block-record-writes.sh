@@ -96,10 +96,12 @@ record_state() {
     [ -f "$f" ] || { echo plain; return; }   # a folder or device is not a note
     [ -r "$f" ] || { echo unreadable; return; }
     local fm
-    if ! fm=$(awk 'NR==1 { if ($0 != "---") exit; next } $0 == "---" { exit } { print }' "$f" 2>/dev/null); then
+    # CRLF and a leading BOM are read as Obsidian reads them (#560 review 1).
+    if ! fm=$(awk '{ sub(/\r$/, "") } NR==1 { sub(/^\xef\xbb\xbf/, ""); if ($0 != "---") exit; next } $0 == "---" { exit } { print }' "$f" 2>/dev/null); then
         echo unreadable; return
     fi
-    if grep -Eq '^record:[[:space:]]*("true"|'"'"'true'"'"'|true)[[:space:]]*(#.*)?$' <<<"$fm"; then
+    # Any case (`True`, `"TRUE"`): YAML and the host's record guard read those as true too.
+    if grep -Eiq '^record:[[:space:]]*("true"|'"'"'true'"'"'|true)[[:space:]]*(#.*)?$' <<<"$fm"; then
         echo record
     else
         echo plain
@@ -138,9 +140,22 @@ ere_escape() { sed -e 's/[][\.*^$+?(){}|/]/\\&/g' <<<"$1"; }
 # Candidates in a shell command: every '…' and "…" string, and every bare word.
 # Over-collecting is harmless: a candidate counts only if it names an existing
 # record file (or an existing file that cannot be read).
+# A candidate is printed as two tab-separated fields: the literal as written in
+# the command (what the op patterns must reach) and the path it names (backslash
+# escapes and quotes removed, so `Notes/A\ record.md` and $'Notes/A record.md'
+# are seen; #560 review 1).
 bash_candidates() {
-    grep -oE "'[^']+'|\"[^\"]+\"|[^[:space:]'\"|;&<>()]+" <<<"$1" |
-        sed -E "s/^['\"]//; s/['\"]$//"
+    grep -oE "\\$'[^']*'|'[^']+'|\"[^\"]+\"|(\\\\.|[^[:space:]'\"|;&<>()\\\\])+" <<<"$1" |
+        while IFS= read -r lit; do
+            path=$lit
+            case "$path" in
+                "\$'"*"'") path=${path#\$\'}; path=${path%\'} ;;
+                "'"*"'") path=${path#\'}; path=${path%\'} ;;
+                '"'*'"') path=${path#\"}; path=${path%\"} ;;
+                *) path=${path//\\/} ;;   # drop backslash escapes, in this shell (no fork per word)
+            esac
+            printf '%s\t%s\n' "$lit" "$path"
+        done
 }
 
 case "$tool" in
@@ -148,17 +163,19 @@ case "$tool" in
         cmd=$(jq -r '.tool_input.command // empty' <<<"$input")
         [ -n "$cmd" ] || exit 0
         stripped=$(strip_heredocs <<<"$cmd")
-        while IFS= read -r cand; do
+        while IFS=$'\t' read -r rawlit cand; do
             [ -n "$cand" ] || continue
             case "$cand" in
                 "~/"*) abs="$HOME/${cand#\~/}" ;;
                 /*) abs=$cand ;;
                 *) abs="$cwd/$cand" ;;
             esac
+            # Most words name no file: test that in this shell before any fork (#560 review 1).
+            [ -e "$abs" ] || continue
             state=$(record_state "$abs")
             [ "$state" = record ] || [ "$state" = unreadable ] || continue
             # The op patterns must reach the literal as it is written in the command.
-            lit=$(ere_escape "$cand")
+            lit=$(ere_escape "$rawlit")
             hit=""
             # Truncating stdout redirect (not >>, not a 2>&1 dup).
             grep -Eq "(^|[^>&])>\|?[[:space:]]*['\"]?$lit" <<<"$stripped" && hit="shell redirect (truncating '>')"
@@ -168,8 +185,20 @@ case "$tool" in
                 noappend=$(sed -E 's/(^|[[:space:]|;&(])tee[[:space:]]+((-[[:alnum:]]*a[[:alnum:]]*|--append)([[:space:]]+|$))+/\1TEE_APPEND /g' <<<"$stripped")
                 grep -Eq "\btee([[:space:]]+-[^[:space:]]+)*[[:space:]]+[^|;&]*$lit" <<<"$noappend" && hit="tee without -a/--append"
             fi
-            [ -z "$hit" ] && grep -Eq "\bsed[[:space:]]+(-[[:alnum:]]+[[:space:]]+)*-i[^[:space:]]*[[:space:]][^|;]*$lit" <<<"$stripped" && hit="in-place sed"
-            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])(mv|cp|rm|trash|/usr/bin/trash)[[:space:]]+[^|;&]*$lit" <<<"$stripped" && hit="destructive file operation (mv/cp/rm/trash)"
+            # In-place sed in any form (-i, -i.bak, -Ei, -e … -i, --in-place), anywhere in a sed call.
+            if [ -z "$hit" ]; then
+                while IFS= read -r seg; do
+                    if grep -Eq "[[:space:]](-[[:alnum:]]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)" <<<"$seg" && grep -Eq "$lit" <<<"$seg"; then
+                        hit="in-place sed"; break
+                    fi
+                done < <(grep -oE "(^|[|;&()[:space:]])sed[[:space:]][^|;&]*" <<<"$stripped")
+            fi
+            # Moved or deleted: the record anywhere in the argument list.
+            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])(mv|rm|trash|/usr/bin/trash|truncate)[[:space:]]+[^|;&]*$lit" <<<"$stripped" && hit="destructive file operation (mv/rm/trash/truncate)"
+            # Overwritten: the record as the LAST argument of a copy-like command, so copying
+            # OUT of a record (a read, a backup) passes (#560 review 1).
+            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])(cp|rsync|install|ditto|ln)[[:space:]][^|;&]*['\"]?$lit['\"]?[[:space:]]*($|[|;&)])" <<<"$stripped" && hit="overwriting copy (cp/rsync/install/ditto/ln)"
+            [ -z "$hit" ] && grep -Eq "(^|[|;&()[:space:]])dd[[:space:]][^|;&]*of=['\"]?$lit" <<<"$stripped" && hit="dd of="
             if [ -n "$hit" ]; then
                 [ "$state" = unreadable ] && unreadable "$hit" "$cand"
                 corrective "$hit" "$cand"
