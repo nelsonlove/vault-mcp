@@ -76,18 +76,14 @@ export interface CliCommandPolicy {
   /** Additional denied entries, checked first — deny beats allow. Exact
    * names or `prefix*` globs. */
   deny?: string[];
-  /** Opaque-accept entries the human re-enabled. An exact entry re-enables one
-   * CLI command or one run_command id. A trailing `*` (`quickadd:choice:*`)
-   * re-enables a family of RUN_COMMAND IDS only (Nelson, 2026-10-14: "can we get
-   * a PR to permit wildcards in the 'Re-enabled opaque commands' setting?"),
-   * with two limits that keep a glob from reaching further than meant:
-   *   - it never re-enables a CLI command (`quickadd:*` meant for command ids
-   *     must not re-enable the CLI's `quickadd:run`, which runs any choice by
-   *     name) — a CLI command is re-enabled only by its exact name;
-   *   - it never re-enables an accept verb's QuickAdd choice
-   *     (`isAcceptVerbCommandId`) — the accept perimeter (01.41) keeps those
-   *     off every agent road, and a family entry must not open them by accident.
-   * Deny always wins, globs included. */
+  /** Opaque-accept entries the human re-enabled. An exact entry re-enables one CLI command or one
+   * run_command id. A trailing `*` (`quickadd:choice:*`) re-enables a family of QuickAdd CHOICE
+   * command ids only (Nelson, 2026-10-14: "can we get a PR to permit wildcards in the 'Re-enabled
+   * opaque commands' setting?"; his pick A on 01.41), and only a choice that resolves in QuickAdd's
+   * settings, is not an accept verb, does not run one (by its script or through another choice) and
+   * is not on `neverOpaque` (`globMayOpen`). A glob never re-enables a CLI command (`quickadd:*` must
+   * not reach the CLI's `quickadd:run`), a `js-engine:` id (vault-minted code, the #105 class) or any
+   * other `quickadd:` command: those take exact entries. Deny always wins, globs included. */
   allowOpaque?: string[];
   /** Command ids a trailing-`*` re-enable never reaches (Nelson's pick "A" on 01.41 "Which QuickAdd
    * choices a wildcard in Re-enabled opaque commands may open", 2026-10-14): the human lists here any
@@ -130,16 +126,121 @@ export function isAcceptVerbCommandId(commandId: string): boolean {
 /** Does the allowOpaque list re-enable `name` on this surface? An exact entry on
  *  either surface; a trailing-`*` entry for a run_command id only, and never for
  *  an accept verb (see CliCommandPolicy). */
-function allowedOpaque(name: string, policy: CliCommandPolicy | undefined, surface: "cli" | "command-id"): boolean {
+function allowedOpaque(name: string, policy: CliCommandPolicy | undefined, surface: "cli" | "command-id", choices?: QuickAddChoices | null): boolean {
   return (policy?.allowOpaque ?? []).some((raw) => {
     const p = raw.trim();
     if (!p) return false;
     if (p === name) return true;
     if (!p.endsWith("*") || surface !== "command-id") return false;
-    if (isAcceptVerbCommandId(name)) return false;
-    if (matchesAny(name, policy?.neverOpaque)) return false;
-    return matchesCommandPattern(name, p);
+    if (!matchesCommandPattern(name, p)) return false;
+    return globMayOpen(name, policy, choices);
   });
+}
+
+/** The prefix QuickAdd gives a choice's command id. */
+export const QUICKADD_CHOICE_PREFIX = "quickadd:choice:";
+
+/** What a QuickAdd choice is and runs, read from QuickAdd's own settings (`choices`). */
+export interface QuickAddChoiceInfo {
+  id: string;
+  name: string;
+  /** Vault paths of the UserScript steps, at any depth (Conditional branches included). */
+  scripts: string[];
+  /** Choice ids this choice runs (a Choice step, a NestedChoice, or an Obsidian step naming `quickadd:choice:<id>`). */
+  choiceRefs: string[];
+  /** True when a step runs an Obsidian command that is opaque but not a choice (a `js-engine:` id, `quickadd:runQuickAdd`…). */
+  runsOtherOpaque: boolean;
+}
+
+/** A lookup over the QuickAdd choices that are registered now. */
+export interface QuickAddChoices {
+  get(choiceId: string): QuickAddChoiceInfo | null;
+  all(): QuickAddChoiceInfo[];
+}
+
+/**
+ * May a trailing-`*` re-enable open this run_command id? (#552 review 1.) Only a `quickadd:choice:<id>`
+ * id (with QuickAdd's `:pick-day` variant) that resolves to a registered choice which is not an accept
+ * verb, does not run one, and is not on the "Never re-enable" list. Fail closed in every other case:
+ * a `js-engine:` id or any other `quickadd:` command (exact entries only), an id that does not resolve,
+ * or no choice lookup at all.
+ */
+function globMayOpen(name: string, policy: CliCommandPolicy | undefined, choices: QuickAddChoices | null | undefined): boolean {
+  if (!name.startsWith(QUICKADD_CHOICE_PREFIX)) return false;
+  const base = name.endsWith(":pick-day") ? name.slice(0, -":pick-day".length) : name;
+  if (isAcceptVerbCommandId(base)) return false;
+  if (matchesAny(name, policy?.neverOpaque) || matchesAny(base, policy?.neverOpaque)) return false;
+  if (!choices) return false;
+  return !choiceIsOrRunsVerb(base.slice(QUICKADD_CHOICE_PREFIX.length), choices);
+}
+
+function normPath(p: string): string {
+  return p.trim().replace(/^\/+/, "").replace(/\.md$/i, "").toLowerCase();
+}
+
+/** Is this choice an accept verb, or does it run one (by name, by a verb's script, or through another
+ *  choice)? An id that does not resolve counts as a verb: fail closed. */
+export function choiceIsOrRunsVerb(choiceId: string, choices: QuickAddChoices): boolean {
+  const verbNames = new Set<string>(ACCEPT_VERB_CHOICES.map((n) => n.toLowerCase()));
+  const verbScripts = new Set<string>();
+  for (const c of choices.all()) {
+    if (verbNames.has(c.name.trim().toLowerCase())) for (const sc of c.scripts) verbScripts.add(normPath(sc));
+  }
+  const seen = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    const c = choices.get(id);
+    if (!c) return true;
+    if (verbNames.has(c.name.trim().toLowerCase())) return true;
+    if (c.runsOtherOpaque) return true;
+    if (c.scripts.some((sc) => verbScripts.has(normPath(sc)))) return true;
+    return c.choiceRefs.some(visit);
+  };
+  return visit(choiceId);
+}
+
+/** Build the lookup from QuickAdd's settings object (`app.plugins.plugins.quickadd.settings`). Null when
+ *  QuickAdd is absent or its settings are not the expected shape, which makes every glob refuse. */
+export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
+  const roots = (settings as { choices?: unknown } | null | undefined)?.choices;
+  if (!Array.isArray(roots)) return null;
+  const byId = new Map<string, QuickAddChoiceInfo>();
+  const walkChoices = (list: unknown[]): void => {
+    for (const raw of list) {
+      if (!raw || typeof raw !== "object") continue;
+      const c = raw as Record<string, unknown>;
+      if (typeof c.id === "string" && typeof c.name === "string") {
+        const info: QuickAddChoiceInfo = { id: c.id, name: c.name, scripts: [], choiceRefs: [], runsOtherOpaque: false };
+        collectSteps(c.macro, info, 0);
+        byId.set(c.id, info);
+      }
+      if (Array.isArray(c.choices)) walkChoices(c.choices);
+    }
+  };
+  const collectSteps = (node: unknown, info: QuickAddChoiceInfo, depth: number): void => {
+    if (depth > 50 || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const n of node) collectSteps(n, info, depth + 1); return; }
+    const o = node as Record<string, unknown>;
+    if (o.type === "UserScript" && typeof o.path === "string") info.scripts.push(o.path);
+    if (o.type === "Choice" && typeof o.choiceId === "string") info.choiceRefs.push(o.choiceId);
+    if (o.type === "NestedChoice" && o.choice && typeof o.choice === "object") {
+      const nested = o.choice as Record<string, unknown>;
+      if (typeof nested.id === "string") info.choiceRefs.push(nested.id);
+      walkChoices([nested]);
+    }
+    if (typeof o.commandId === "string") {
+      const cmd = o.commandId.trim();
+      if (cmd.startsWith(QUICKADD_CHOICE_PREFIX)) info.choiceRefs.push(cmd.slice(QUICKADD_CHOICE_PREFIX.length).replace(/:pick-day$/, ""));
+      else if (matchesAny(cmd, OPAQUE_ACCEPT_COMMAND_IDS)) info.runsOtherOpaque = true;
+    }
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "choice" && o.type === "NestedChoice") continue;
+      if (v && typeof v === "object") collectSteps(v, info, depth + 1);
+    }
+  };
+  walkChoices(roots);
+  return { get: (id) => byId.get(id) ?? null, all: () => [...byId.values()] };
 }
 
 /** A built-in default-deny set plus the phrasing for WHY its members are denied
@@ -167,15 +268,17 @@ function refusal(
   denySets: readonly DefaultDenySet[],
   surface: string,
   kind: "cli" | "command-id",
+  choices?: QuickAddChoices | null,
 ): string | null {
   if (matchesAny(name, policy?.deny)) {
     return `${surface} '${name}' is denied by the Vault MCP command policy (settings › Security › "Denied commands").`;
   }
   for (const set of denySets) {
-    if (matchesAny(name, set.patterns) && !allowedOpaque(name, policy, kind)) {
+    if (matchesAny(name, set.patterns) && !allowedOpaque(name, policy, kind, choices)) {
       return (
         `${surface} '${name}' ${set.reason}, and is denied by default (fail closed). A human can re-enable ` +
-        `this specific command in the Vault MCP settings (Security › "Re-enabled opaque commands") — there ` +
+        `this command in the Vault MCP settings (Security › "Re-enabled opaque commands"; an exact entry, or a ` +
+        `trailing * for QuickAdd choices) — there ` +
         `is no agent-writable path to that setting.`
       );
     }
@@ -243,18 +346,18 @@ function pathValueRefusal(label: string, value: string): string | null {
 }
 
 /** The reason an `obsidian_run_command` id is refused by policy, or null. */
-export function runCommandRefusal(commandId: string, policy?: CliCommandPolicy): string | null {
-  return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id", "command-id");
+export function runCommandRefusal(commandId: string, policy?: CliCommandPolicy, choices?: QuickAddChoices | null): string | null {
+  return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id", "command-id", choices);
 }
 
 /** The registered command ids that the policy re-enables today out of the opaque run_command families
  *  (`quickadd:*`, `js-engine:*`), sorted. The settings tab shows the count and the list when the human
  *  saves a re-enable, so a wildcard's reach is seen at save time (01.41, pick A). */
-export function reenabledOpaqueCommandIds(commandIds: Iterable<string>, policy: CliCommandPolicy | undefined): string[] {
+export function reenabledOpaqueCommandIds(commandIds: Iterable<string>, policy: CliCommandPolicy | undefined, choices?: QuickAddChoices | null): string[] {
   const out: string[] = [];
   for (const id of commandIds) {
     if (!matchesAny(id, OPAQUE_ACCEPT_COMMAND_IDS)) continue;
-    if (runCommandRefusal(id, policy) === null) out.push(id);
+    if (runCommandRefusal(id, policy, choices) === null) out.push(id);
   }
   return out.sort();
 }
