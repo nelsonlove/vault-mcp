@@ -49,8 +49,11 @@ export class ConformanceSettingTab extends PluginSettingTab {
       const shown = Array.isArray(current) ? current.join("\n") : current;
       // Commit only a real edit (#549 review 1): leaving a field unchanged must not store a record,
       // or an empty one written before the host's settings were adopted would block that adoption.
+      // Compare with the value stored NOW, not the one first rendered (#549 review 2): the tab is not
+      // redrawn after a commit, so an edit back to the first value must still be saved.
       const commit = (raw: string) => {
-        if (raw === shown) return;
+        const live = resolveConventions(this.host.getConventions())[field.key];
+        if (raw === (Array.isArray(live) ? live.join("\n") : live)) return;
         void this.host.setConventions(commitConvention(this.host.getConventions(), field, raw));
       };
       const setting = new Setting(containerEl).setName(field.label).setDesc(field.help);
