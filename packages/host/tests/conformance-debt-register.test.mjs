@@ -402,11 +402,15 @@ async function vault() {
   const root = await mkdtemp(path.join(tmpdir(), "conf-reg-"));
   await mkdir(path.join(root, "Notes"), { recursive: true });
   await writeFile(path.join(root, "Notes", "A.md"), "---\ntitle: A\ntags:\n  - rogue\n---\nbody\n");
-  // Seed one live-shape registry note (fileClass: Meta/Tag) so the default
-  // scope-tags vocabulary is SEEDED and `rogue` is carried debt — an unseeded
-  // registry deliberately forces no per-tag findings (#251).
-  await mkdir(path.join(root, "Registry"), { recursive: true });
-  await writeFile(path.join(root, "Registry", "keep.md"), "---\nfileClass: Meta/Tag\ntag: keep\n---\n");
+  // Seed the live-shape root scope note (its `## Tags` table declares `keep`)
+  // so the default scope-tags vocabulary is ON and `rogue` is carried debt —
+  // with no root scope note scoping is off and no per-tag finding fires (#551).
+  const scopeDir = path.join(root, "00-09 System", "00 System management");
+  await mkdir(scopeDir, { recursive: true });
+  await writeFile(
+    path.join(scopeDir, "00 System management.md"),
+    "---\ntitle: 00 System management\ntype: Meta/Scope/Category\n---\n# 00 System management\n\n## Tags\n\n| Tag | Description |\n| --- | --- |\n| `keep` | A tag the fixture declares. |\n"
+  );
   return root;
 }
 

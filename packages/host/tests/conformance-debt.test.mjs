@@ -341,11 +341,16 @@ describe("obsidian_conformance_debt tool", () => {
 async function vault() {
   const root = await mkdtemp(path.join(tmpdir(), "conf-debt-"));
   await mkdir(path.join(root, "Notes"), { recursive: true });
-  // an unregistered tag → a vocab finding (a SEEDED registry that doesn't
-  // declare it ⇒ `rogue` unregistered; unseeded would force no findings, #251)
+  // an unregistered tag → a vocab finding (a root scope note whose `## Tags`
+  // table doesn't declare it ⇒ `rogue` unregistered; with no root scope note
+  // scoping is off and no finding fires, #551)
   await writeFile(path.join(root, "Notes", "A.md"), "---\ntitle: A\ntags:\n  - rogue\n---\nbody\n");
-  await mkdir(path.join(root, "Registry"), { recursive: true });
-  await writeFile(path.join(root, "Registry", "keep.md"), "---\nfileClass: Meta/Tag\ntag: keep\n---\n");
+  const scopeDir = path.join(root, "00-09 System", "00 System management");
+  await mkdir(scopeDir, { recursive: true });
+  await writeFile(
+    path.join(scopeDir, "00 System management.md"),
+    "---\ntitle: 00 System management\ntype: Meta/Scope/Category\n---\n# 00 System management\n\n## Tags\n\n| Tag | Description |\n| --- | --- |\n| `keep` | A tag the fixture declares. |\n"
+  );
   return root;
 }
 
