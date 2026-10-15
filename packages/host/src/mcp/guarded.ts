@@ -20,6 +20,7 @@
 
 import { protectionRefusal, requirementNote } from "../kernel/write-protection.js";
 import type { SyncDecision } from "../kernel/sync-guard.js";
+import { declarationOf, type DeclaredSync } from "../kernel/tool-declaration.js";
 import { z } from "zod";
 import { guardCall, collectPaths, type GuardSettings } from "../guard.js";
 import {
@@ -182,7 +183,7 @@ const INTENT = z
  * declaration keeps the SCHEMA honest, but the value still never reaches the
  * handler. A mutating tool (built-in or external) must not name an argument
  * after one of these. */
-export const KERNEL_ARG_KEYS = ["if_rev", "idempotency_key", "intent"] as const;
+export { KERNEL_ARG_KEYS } from "../kernel/tool-declaration.js";
 
 /**
  * Declare the kernel arguments on a MUTATING tool's input schema. Read-only
@@ -202,7 +203,7 @@ export function withKernelArgs(def: any, name?: string): any {
   const shape = inputShapeOf(def.inputSchema);
   const extra: Record<string, z.ZodTypeAny> = {};
   const noted = (schema: z.ZodTypeAny, which: "if_rev" | "idempotency_key") => {
-    const note = name ? requirementNote(name, which) : null;
+    const note = name ? requirementNote(name, which, declarationOf(def)?.protection) : null;
     return note ? schema.describe(`${note} ${schema.description ?? ""}`) : schema;
   };
   if (!("if_rev" in shape)) extra.if_rev = noted(IF_REV, "if_rev");
@@ -323,7 +324,7 @@ export interface GuardedOpts {
    * (`syncWarning`) and on the result. Absent ⇒ no check (tests, bare embeds,
    * a host without Sync).
    */
-  syncGuard?: (tool: string, args: Record<string, unknown>) => Promise<SyncDecision>;
+  syncGuard?: (tool: string, args: Record<string, unknown>, declared?: DeclaredSync) => Promise<SyncDecision>;
 }
 
 // ── uid addressing ───────────────────────────────────────────────────────────
@@ -628,7 +629,10 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // without one neither argument can be honored, and the if_rev refusal above
   // already covers that case. The requirement is the inventory row's
   // `protection` (kernel/write-protection.ts), read over the RESOLVED args.
-  const missing = protectionRefusal(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, { ifRev, idempotencyKey });
+  // A satellite tool on apiVersion 3 carries its own declaration on its definition (#550, tool-declaration.ts);
+  // it is read for a tool the inventory does not know, so it rules exactly where a host row would.
+  const declared = declarationOf(def);
+  const missing = protectionRefusal(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, { ifRev, idempotencyKey }, declared?.protection);
   if (missing) return codedError(missing.code, missing.message);
   // The Sync guard: wait for this Mac's Obsidian Sync, then refuse a
   // structure write that is still behind, or warn. Here, before the queue.
@@ -636,7 +640,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // replay (or join, or refuse as a mismatch) with no new write, so it is not
   // made to wait for Sync or refused for it: the guard steps aside for it.
   const keyKnown = idempotencyKey !== undefined && opts.kernel.idempotency.has(idempotencyKey);
-  const sync = opts.syncGuard && !keyKnown ? await opts.syncGuard(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>) : null;
+  const sync = opts.syncGuard && !keyKnown ? await opts.syncGuard(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, declared?.sync) : null;
   if (sync && "refuse" in sync) return codedError(sync.refuse.code, sync.refuse.message);
   const syncWarning = sync && "warn" in sync ? { text: sync.warn, code: sync.code } : undefined;
   // The operation reaches the write queue here. Marked rather than assumed:

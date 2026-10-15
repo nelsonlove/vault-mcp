@@ -332,9 +332,11 @@ export default class VaultMcpPlugin extends Plugin {
   private schemePanesReconcile: Promise<void> = Promise.resolve();
   // Public plugin-to-plugin API: app.plugins.plugins['vault-mcp'].api.
   //
-  // apiVersion is 2 since #402 step B: the v1 surface (registerTools plus the
-  // additive governance seam and guardedTerritories) plus the partial-result
-  // envelope and the per-call CallContext. The SDK reads the number as a FLOOR
+  // apiVersion is 3 since #550: the v1 surface (registerTools plus the
+  // additive governance seam and guardedTerritories), the partial-result
+  // envelope and the per-call CallContext (2, #402 step B), and the write
+  // declarations a spec may carry (`protection`, `sync`, `paths`), which the
+  // host enforces exactly as a host tool's inventory row. The SDK reads the number as a FLOOR
   // since 1.1.0 (step A), so a satellite rebuilt against that SDK keeps
   // registering; a satellite still bundling an older SDK refuses to register,
   // loudly, in the console — the one ordering constraint the design names.
@@ -343,7 +345,7 @@ export default class VaultMcpPlugin extends Plugin {
   // else's tools; the disposer `registerTools` returns is now the only way to
   // revoke, and it can only revoke what its holder registered.
   api: VaultMcpApi & GovernanceSeam = {
-    apiVersion: 2,
+    apiVersion: 3,
     registerTools: (owner, tools) => externalRegistryOf(this).registerTools(owner, tools),
     registerWriteObserver: (id, observe) => seamOf(this).seam.registerWriteObserver(id, observe),
     registerSessionRefusal: (id, refuse) => seamOf(this).seam.registerSessionRefusal(id, refuse),
