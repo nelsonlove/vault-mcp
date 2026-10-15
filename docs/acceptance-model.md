@@ -393,8 +393,7 @@ OPAQUE_ACCEPT_COMMAND_IDS  = ["quickadd:*", "js-engine:*"]   // obsidian_run_com
 
 These are now **denied by default — fail closed** — by the settings-driven command policy
 (`mcp/cli-policy.ts`), on both surfaces (`obsidian_cli` commands and `obsidian_run_command`
-ids), with a typed `Error [cli_denied]` before anything executes. Re-enabling is per-command,
-exact-match only, through the human-only settings (`Security › "Re-enabled opaque commands"`);
+ids), with a typed `Error [cli_denied]` before anything executes. Re-enabling goes through the human-only settings (`Security › "Re-enabled opaque commands"`): an exact entry re-enables one command or command id, and a trailing-`*` entry re-enables a family of `obsidian_run_command` ids, never a CLI command and never an accept verb's QuickAdd choice (Nelson, 2026-10-14);
 a settings deny list always wins, including over a re-enable. The policy **composes** with the
 older gates rather than replacing them: a re-enabled `eval`/`command` still needs the
 **"Allow dangerous CLI commands"** toggle, and the accept guard on inspectable writes is

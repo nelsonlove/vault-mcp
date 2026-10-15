@@ -6,7 +6,8 @@
  * Load-bearing properties:
  *   • the opaque-accept set is DENIED BY DEFAULT (fail closed) on both
  *     surfaces — obsidian_cli commands and obsidian_run_command ids;
- *   • re-enable is per-command (allowOpaque names exactly one entry);
+ *   • re-enable is per-command by an exact entry, or per family of command ids by a
+ *     trailing-* entry, which never reaches a CLI command or an accept verb;
  *   • deny ALWAYS wins — over allowOpaque, over defaults;
  *   • the policy composes with the danger gate: a re-enabled `eval` still
  *     needs allowDangerousCli;
@@ -24,6 +25,7 @@ import {
   configPathRefusal,
   matchesCommandPattern,
   runCommandRefusal,
+  isAcceptVerbCommandId,
 } from "../src/mcp/cli-policy.ts";
 import { registerCliTools } from "../src/mcp/tools-cli.ts";
 
@@ -122,12 +124,29 @@ describe("runCommandRefusal: command ids", () => {
     assert.equal(runCommandRefusal("daily-notes", {}), null);
   });
 
-  test("allowOpaque is exact-only: one entry re-enables one id, never a family", () => {
+  test("allowOpaque: an exact entry re-enables one id; a trailing-* entry re-enables a family of command ids", () => {
     assert.equal(runCommandRefusal("quickadd:runQuickAdd", { allowOpaque: ["quickadd:runQuickAdd"] }), null);
     assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:runQuickAdd"] }));
-    // A glob in allowOpaque is NOT honored — over-allowing by pattern is the
-    // cross-surface leak this rule exists to close.
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }));
+    // A glob is honoured for command ids (Nelson, 2026-10-14).
+    assert.equal(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }), null);
+    assert.equal(runCommandRefusal("quickadd:choice:qan:Notes/New idea.md#choice", { allowOpaque: ["quickadd:choice:*"] }), null);
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:choice:*"] }), "outside the family");
+  });
+
+  test("a glob never re-enables an accept verb's QuickAdd choice; only an exact entry can", () => {
+    const policy = { allowOpaque: ["quickadd:*", "quickadd:choice:*"] };
+    for (const verb of ["Verify current note", "Reopen current note", "Request revision", "Answer current note", "Reject current note"]) {
+      const id = `quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/${verb}.md#choice`;
+      assert.ok(runCommandRefusal(id, policy), verb);
+      assert.equal(isAcceptVerbCommandId(id), true, verb);
+    }
+    const exact = "quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/Verify current note.md#choice";
+    assert.equal(runCommandRefusal(exact, { allowOpaque: [exact] }), null, "an exact entry is the human naming that one command");
+    assert.equal(isAcceptVerbCommandId("quickadd:choice:qan:Notes/Verify current note draft.md#choice"), false);
+  });
+
+  test("deny still wins over a glob re-enable", () => {
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"], deny: ["quickadd:toggleMacro"] }));
   });
 
   test("no cross-surface leak: a run_command-shaped allowOpaque entry does not re-enable CLI commands", () => {
@@ -173,10 +192,10 @@ describe("runCommandRefusal: command ids", () => {
     assert.equal(runCommandRefusal("editor:toggle-bold", {}), null);
   });
 
-  test("js-engine re-enable is exact-only, same as quickadd", () => {
+  test("js-engine re-enable: exact for one id, a glob for a family, same as quickadd", () => {
     assert.equal(runCommandRefusal("js-engine:cmd-unfill-paragraph", { allowOpaque: ["js-engine:cmd-unfill-paragraph"] }), null);
     assert.ok(runCommandRefusal("js-engine:execute-js-file", { allowOpaque: ["js-engine:cmd-unfill-paragraph"] }));
-    assert.ok(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }));
+    assert.equal(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }), null);
   });
 });
 

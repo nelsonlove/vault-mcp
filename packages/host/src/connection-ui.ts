@@ -584,9 +584,11 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .setDesc(
         `Opaque macro/code commands (${[...OPAQUE_ACCEPT_CLI_COMMANDS].join(", ")}; ${[...OPAQUE_ACCEPT_COMMAND_IDS].join(", ")} ` +
           "command ids) are denied by default — the acceptance guard cannot inspect what they execute. List a " +
-          "specific command or exact command id here (one per line; no wildcards — each entry re-enables exactly " +
-          "one) to re-enable it, or use the picker above for a registered command id. eval/command additionally " +
-          "require the dangerous-CLI toggle above. Takes effect immediately."
+          "command or command id here, one per line, to re-enable it, or use the picker above. A trailing * " +
+          "re-enables a family of command ids (for example quickadd:choice:*); it never re-enables a CLI command " +
+          "(name those exactly) or an accept verb (Verify, Reopen, Request revision, Answer, Reject). Denied " +
+          "commands below still win. eval/command additionally require the dangerous-CLI toggle above. Takes " +
+          "effect immediately."
       )
       .addTextArea((ta) => {
         allowOpaqueTextarea = ta.inputEl;

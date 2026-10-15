@@ -76,12 +76,18 @@ export interface CliCommandPolicy {
   /** Additional denied entries, checked first — deny beats allow. Exact
    * names or `prefix*` globs. */
   deny?: string[];
-  /** Opaque-accept entries the human re-enabled. EXACT MATCH ONLY — globs
-   * are deliberately not honored here, in either direction: an entry
-   * re-enables one command or one run_command id, never a family. (A glob
-   * would also leak across surfaces — `quickadd:*` meant for run_command ids
-   * would silently re-enable the CLI's `quickadd:run`/`quickadd:run-template`
-   * too.) Deny globs stay: over-denying is safe, over-allowing is not. */
+  /** Opaque-accept entries the human re-enabled. An exact entry re-enables one
+   * CLI command or one run_command id. A trailing `*` (`quickadd:choice:*`)
+   * re-enables a family of RUN_COMMAND IDS only (Nelson, 2026-10-14: "can we get
+   * a PR to permit wildcards in the 'Re-enabled opaque commands' setting?"),
+   * with two limits that keep a glob from reaching further than meant:
+   *   - it never re-enables a CLI command (`quickadd:*` meant for command ids
+   *     must not re-enable the CLI's `quickadd:run`, which runs any choice by
+   *     name) — a CLI command is re-enabled only by its exact name;
+   *   - it never re-enables an accept verb's QuickAdd choice
+   *     (`isAcceptVerbCommandId`) — the accept perimeter (01.41) keeps those
+   *     off every agent road, and a family entry must not open them by accident.
+   * Deny always wins, globs included. */
   allowOpaque?: string[];
 }
 
@@ -98,9 +104,35 @@ function matchesAny(name: string, patterns: readonly string[] | undefined): bool
   return (patterns ?? []).some((p) => matchesCommandPattern(name, p));
 }
 
-/** allowOpaque is exact-only (see CliCommandPolicy) — no pattern semantics. */
-function allowedOpaque(name: string, policy: CliCommandPolicy | undefined): boolean {
-  return (policy?.allowOpaque ?? []).some((p) => p.trim() === name);
+/** The QuickAdd choices that are accept verbs (01.41): a run_command id for one
+ *  of them is never re-enabled by a glob. QuickAdd registers a choice's command as
+ *  `quickadd:choice:<choice id>`, and in this vault the id ends `/<name>.md#choice`. */
+export const ACCEPT_VERB_CHOICES = [
+  "Verify current note",
+  "Reopen current note",
+  "Request revision",
+  "Answer current note",
+  "Reject current note",
+] as const;
+
+/** Is `commandId` an accept verb's QuickAdd command? Matched on the choice's name. */
+export function isAcceptVerbCommandId(commandId: string): boolean {
+  const id = commandId.trim();
+  return ACCEPT_VERB_CHOICES.some((n) => id.endsWith(`/${n}.md#choice`) || id.endsWith(`:${n}`) || id === `quickadd:choice:${n}`);
+}
+
+/** Does the allowOpaque list re-enable `name` on this surface? An exact entry on
+ *  either surface; a trailing-`*` entry for a run_command id only, and never for
+ *  an accept verb (see CliCommandPolicy). */
+function allowedOpaque(name: string, policy: CliCommandPolicy | undefined, surface: "cli" | "command-id"): boolean {
+  return (policy?.allowOpaque ?? []).some((raw) => {
+    const p = raw.trim();
+    if (!p) return false;
+    if (p === name) return true;
+    if (!p.endsWith("*") || surface !== "command-id") return false;
+    if (isAcceptVerbCommandId(name)) return false;
+    return matchesCommandPattern(name, p);
+  });
 }
 
 /** A built-in default-deny set plus the phrasing for WHY its members are denied
@@ -127,12 +159,13 @@ function refusal(
   policy: CliCommandPolicy | undefined,
   denySets: readonly DefaultDenySet[],
   surface: string,
+  kind: "cli" | "command-id",
 ): string | null {
   if (matchesAny(name, policy?.deny)) {
     return `${surface} '${name}' is denied by the Vault MCP command policy (settings › Security › "Denied commands").`;
   }
   for (const set of denySets) {
-    if (matchesAny(name, set.patterns) && !allowedOpaque(name, policy)) {
+    if (matchesAny(name, set.patterns) && !allowedOpaque(name, policy, kind)) {
       return (
         `${surface} '${name}' ${set.reason}, and is denied by default (fail closed). A human can re-enable ` +
         `this specific command in the Vault MCP settings (Security › "Re-enabled opaque commands") — there ` +
@@ -145,7 +178,7 @@ function refusal(
 
 /** The reason an `obsidian_cli` command is refused by policy, or null. */
 export function cliCommandRefusal(command: string, policy?: CliCommandPolicy): string | null {
-  return refusal(command.trim(), policy, [OPAQUE_ACCEPT_DENY, UNINSPECTABLE_WRITE_DENY], "CLI command");
+  return refusal(command.trim(), policy, [OPAQUE_ACCEPT_DENY, UNINSPECTABLE_WRITE_DENY], "CLI command", "cli");
 }
 
 /**
@@ -204,5 +237,5 @@ function pathValueRefusal(label: string, value: string): string | null {
 
 /** The reason an `obsidian_run_command` id is refused by policy, or null. */
 export function runCommandRefusal(commandId: string, policy?: CliCommandPolicy): string | null {
-  return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id");
+  return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id", "command-id");
 }
