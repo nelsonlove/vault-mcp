@@ -162,6 +162,11 @@ describe("cap 2: the full finding set, outside the vault", () => {
       assert.match(fullFindingsPathRefusal(path.join(tmp, "alias", "new", "x.json"), vault), /inside the vault/, "a symlink into the vault is the vault");
       assert.equal(fullFindingsPathRefusal(path.join(tmp, "out", "x.json"), vault), null);
       assert.equal(fullFindingsPathRefusal(path.join(tmp, "vault-sibling", "x.json"), vault), null, "a sibling whose name starts like the vault is outside it");
+      if (process.platform === "darwin") {
+        // APFS ignores case: the vault typed in other case is still the vault (#555 review 1).
+        assert.match(fullFindingsPathRefusal(path.join(tmp, "VAULT", "Notes", "x.json"), vault), /inside the vault/);
+        assert.match(fullFindingsPathRefusal(path.join(tmp, "Vault", "new", "x.json"), vault), /inside the vault/);
+      }
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

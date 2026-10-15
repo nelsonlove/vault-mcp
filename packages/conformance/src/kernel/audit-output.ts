@@ -25,7 +25,9 @@ function realish(p: string): string {
   }
   let real = cur;
   try {
-    real = realpathSync(cur);
+    // The native call returns the case stored on disk; the JS one keeps the case typed, and APFS ignores
+    // case, so "/Users/x/OBSIDIAN" would not compare inside "/Users/x/obsidian" (#555 review 1).
+    real = realpathSync.native(cur);
   } catch {
     /* keep the resolved path */
   }
@@ -34,8 +36,10 @@ function realish(p: string): string {
 
 /** Cap 2's refusal: the full finding set must never land inside the vault (an indexed folder), whatever path is asked for. Null when `outPath` is outside `vaultRoot`. */
 export function fullFindingsPathRefusal(outPath: string, vaultRoot: string): string | null {
-  const out = realish(outPath);
-  const root = realish(vaultRoot);
+  // macOS and Windows file systems ignore case by default: compare case-folded there, too.
+  const fold = (p: string) => (process.platform === "darwin" || process.platform === "win32" ? p.toLowerCase() : p);
+  const out = fold(realish(outPath));
+  const root = fold(realish(vaultRoot));
   const rel = relative(root, out);
   if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
     return `refusing to write the full finding set to '${outPath}': it is inside the vault (${vaultRoot}), where Obsidian would index it. Write it under ${auditsDir()} (the default) or another folder outside the vault.`;
