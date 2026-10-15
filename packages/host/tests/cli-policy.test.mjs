@@ -135,6 +135,11 @@ const QA_SETTINGS = {
     qa("qan:Q/Runs verb.md#choice", "Runs verb", [{ type: "Choice", choiceId: "qan:Q/Verify current note.md#choice" }]),
     qa("qan:Q/Runs cmd.md#choice", "Runs cmd", [{ type: "Conditional", thenCommands: [{ type: "Obsidian", commandId: "quickadd:choice:qan:Q/Verify current note.md#choice" }] }]),
     qa("qan:Q/Runs js.md#choice", "Runs js", [{ type: "Obsidian", commandId: "js-engine:execute-js-file" }]),
+    qa("qan:Q/Cond.md#choice", "Check note", [{ type: "Conditional", condition: { mode: "script", scriptPath: VERB_SCRIPT, exportName: "default" }, thenCommands: [] }]),
+    qa("qan:Q/Fmt.md#choice", "Format macro", [{ type: "Wait", note: "{{MACRO:Verify current note}}" }]),
+    { id: "qan:Q/Capture.md#choice", name: "Capture idea", type: "Capture", command: true, format: { enabled: true, format: "{{VALUE}}" } },
+    qa("qan:Q/Dup1.md#choice", "Same name"),
+    qa("qan:Q/Dup2.md#choice", "Same name"),
     { id: "multi", name: "Folder", type: "Multi", choices: [qa("qan:Q/Nested.md#choice", "Nested", [{ type: "NestedChoice", choice: qa("inner-1", "Reject current note") }])] },
   ],
 };
@@ -166,6 +171,11 @@ describe("runCommandRefusal: a glob reaches resolvable, non-verb QuickAdd choice
       "qan:Q/Runs cmd.md#choice",
       "qan:Q/Runs js.md#choice",
       "qan:Q/Nested.md#choice",
+      "qan:Q/Cond.md#choice",
+      "qan:Q/Fmt.md#choice",
+      "qan:Q/Capture.md#choice",
+      "qan:Q/Dup1.md#choice",
+      "qan:Q/Dup2.md#choice",
     ]) assert.ok(runCommandRefusal(cid(id), glob, CHOICES), id);
     assert.equal(choiceIsOrRunsVerb("qan:Q/New idea.md#choice", CHOICES), false);
   });

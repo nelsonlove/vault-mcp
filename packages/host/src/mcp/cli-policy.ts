@@ -144,11 +144,15 @@ export const QUICKADD_CHOICE_PREFIX = "quickadd:choice:";
 export interface QuickAddChoiceInfo {
   id: string;
   name: string;
+  /** QuickAdd's choice type: Macro, Template, Capture or Multi. */
+  type: string;
   /** Vault paths of the UserScript steps, at any depth (Conditional branches included). */
   scripts: string[];
   /** Choice ids this choice runs (a Choice step, a NestedChoice, or an Obsidian step naming `quickadd:choice:<id>`). */
   choiceRefs: string[];
-  /** True when a step runs an Obsidian command that is opaque but not a choice (a `js-engine:` id, `quickadd:runQuickAdd`…). */
+  /** True when a step runs an Obsidian command that is opaque but not a choice (a `js-engine:` id,
+   *  `quickadd:runQuickAdd`…), or any text in the choice calls a macro or inline code through QuickAdd's
+   *  format engine (`{{MACRO:…}}`, a ```js quickadd block). */
   runsOtherOpaque: boolean;
 }
 
@@ -192,7 +196,14 @@ export function choiceIsOrRunsVerb(choiceId: string, choices: QuickAddChoices): 
     seen.add(id);
     const c = choices.get(id);
     if (!c) return true;
+    // Only a Macro choice is read step by step. A Template or Capture choice can run code from a template
+    // note or a format string the gate cannot read here (#552 review 2), so it counts as unsafe.
+    if (c.type !== "Macro") return true;
     if (verbNames.has(c.name.trim().toLowerCase())) return true;
+    // QuickAdd runs a choice BY NAME (the first match in its tree), so a shared name could run another
+    // choice than the one checked (#552 review 2): a name used twice is unsafe.
+    const nm = c.name.trim().toLowerCase();
+    if (choices.all().filter((o) => o.name.trim().toLowerCase() === nm).length > 1) return true;
     if (c.runsOtherOpaque) return true;
     if (c.scripts.some((sc) => verbScripts.has(normPath(sc)))) return true;
     return c.choiceRefs.some(visit);
@@ -211,8 +222,9 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
       if (!raw || typeof raw !== "object") continue;
       const c = raw as Record<string, unknown>;
       if (typeof c.id === "string" && typeof c.name === "string") {
-        const info: QuickAddChoiceInfo = { id: c.id, name: c.name, scripts: [], choiceRefs: [], runsOtherOpaque: false };
+        const info: QuickAddChoiceInfo = { id: c.id, name: c.name, type: typeof c.type === "string" ? c.type : "", scripts: [], choiceRefs: [], runsOtherOpaque: false };
         collectSteps(c.macro, info, 0);
+        if (mentionsFormatCode(c)) info.runsOtherOpaque = true;
         byId.set(c.id, info);
       }
       if (Array.isArray(c.choices)) walkChoices(c.choices);
@@ -223,6 +235,8 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
     if (Array.isArray(node)) { for (const n of node) collectSteps(n, info, depth + 1); return; }
     const o = node as Record<string, unknown>;
     if (o.type === "UserScript" && typeof o.path === "string") info.scripts.push(o.path);
+    // A Conditional step's condition may be a script (`{ mode: "script", scriptPath }`): it runs too.
+    if (typeof o.scriptPath === "string") info.scripts.push(o.scriptPath);
     if (o.type === "Choice" && typeof o.choiceId === "string") info.choiceRefs.push(o.choiceId);
     if (o.type === "NestedChoice" && o.choice && typeof o.choice === "object") {
       const nested = o.choice as Record<string, unknown>;
@@ -241,6 +255,21 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
   };
   walkChoices(roots);
   return { get: (id) => byId.get(id) ?? null, all: () => [...byId.values()] };
+}
+
+/** Does any string in this choice (its own settings, not nested choices) call a macro or inline code
+ *  through QuickAdd's format engine? */
+function mentionsFormatCode(choice: Record<string, unknown>): boolean {
+  const seen = new Set<unknown>();
+  const scan = (v: unknown, depth: number): boolean => {
+    if (depth > 50 || v === null || v === undefined) return false;
+    if (typeof v === "string") return /\{\{\s*macro\s*:/i.test(v) || /```\s*js\s+quickadd/i.test(v);
+    if (typeof v !== "object" || seen.has(v)) return false;
+    seen.add(v);
+    if (Array.isArray(v)) return v.some((x) => scan(x, depth + 1));
+    return Object.entries(v as Record<string, unknown>).some(([k, x]) => k !== "choices" && scan(x, depth + 1));
+  };
+  return scan(choice, 0);
 }
 
 /** A built-in default-deny set plus the phrasing for WHY its members are denied
