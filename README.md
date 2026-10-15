@@ -160,12 +160,12 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_trash` | `if_rev` and `idempotency_key` |  |
 | `obsidian_write_note` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_notes` | per item: `if_rev` to overwrite an existing note; nothing to create one |  |
-| satellite tools (`vaultmcp_*`) | not enforced yet: the SDK cannot declare protection until apiVersion 3 | The known gap: every satellite is off today. |
+| satellite tools (`vaultmcp_*`) | what the tool declares (`protection`, satellite apiVersion 3); a tool that declares nothing (apiVersion 2): not enforced | Enforced like a host tool's row once declared (#550); the gap that remains is a satellite still on apiVersion 2. |
 <!-- protection-table:end -->
 
 **Three temporary exemptions.** `obsidian_repoint_link`, `obsidian_snippet_write` and `obsidian_conformance_debt_render` are ruled `if_rev` tools, but the host cannot check an `if_rev` for them honestly yet: it checks the revision of the first path a call names, and these name no path, or only the note links point at. Nelson ruled on 2026-09-29 that they are exempt until [#427](https://github.com/nelsonlove/vault-mcp/issues/427) gives the host a revision it can check, a snippet revision and one per note found in a scan. Then they go back to requiring `if_rev`.
 
-**The satellite gap.** Tools published by the satellite plugins (`vaultmcp_*`) are not checked. The `vault-mcp-api` SDK has no way to declare a tool's protection until apiVersion 3. Every satellite is off today.
+**Satellite tools declare their own (apiVersion 3, [#550](https://github.com/nelsonlove/vault-mcp/issues/550)).** A tool published by a satellite plugin (`vaultmcp_*`) has no row in the host's table, so from host apiVersion 3 its spec declares `protection` (the same classes as the table, argument-dependent too), its place in the Sync guard (`sync`: its kind, and whether it is on the strict list or the destination-unnamed list) and its path arguments (`paths`), and the host enforces them exactly as for its own tools. A malformed declaration is refused at registration. A satellite tool that declares nothing (an apiVersion-2 spec) is still not checked; that is the gap that remains. The fields are documented in `packages/vault-mcp-api/README.md`, "Write declarations".
 
 **The file-system fallback.** The server in `packages/server` can serve the vault from disk when Obsidian is closed. It has no kernel, so it checks neither argument: with writes turned on (`VAULT_MCP_FS_ALLOW_WRITES`), an overwrite needs no `if_rev`. Its own deliberate differences are listed in `packages/server/src/fs-write-kernel.ts`.
 

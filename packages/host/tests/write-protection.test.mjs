@@ -225,7 +225,7 @@ describe("makeGuarded refuses a call missing its protection, before the queue", 
     const g = makeGuarded({ getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR });
     const ok = async () => ({ content: [{ type: "text", text: "ok" }] });
     assert.equal((await g(RW, ok, "obsidian_claim_scope")({ scope: "A" }, {})).content[0].text, "ok");
-    assert.equal((await g(RW, ok, "vaultmcp_skills_export")({}, {})).content[0].text, "ok", "the satellite gap: not enforced until apiVersion 3");
+    assert.equal((await g(RW, ok, "vaultmcp_skills_export")({}, {})).content[0].text, "ok", "a satellite tool that declares nothing (apiVersion 2) is not enforced; tests/satellite-api-v3.test.mjs pins the declared case");
     const bare = makeGuarded({ getSettings: () => ({ readOnly: false, allowlist: [] }), actor: () => ACTOR });
     assert.equal((await bare(RW, ok, "obsidian_append_note")({ path: "A.md", content: "x" }, {})).content[0].text, "ok", "no kernel: neither argument could be honored");
   });
@@ -269,7 +269,7 @@ describe("the README's per-tool table is the inventory's (Nelson: 'core host is 
     for (const r of MCP_SURFACE_INVENTORY.filter((r) => !r.readOnly)) assert.equal(t.split(`| \`${r.tool}\` |`).length - 1, 1, r.tool);
     assert.match(t, /\| `obsidian_repoint_link` \| nothing \| Temporarily exempt .*#427\. \|/);
     assert.match(t, /\| `obsidian_write_note` \| overwrite true: `if_rev`; any other overwrite, or none: nothing \|/);
-    assert.match(t, /\| satellite tools \(`vaultmcp_\*`\) \| not enforced yet: the SDK cannot declare protection until apiVersion 3 \|/);
+    assert.match(t, /\| satellite tools \(`vaultmcp_\*`\) \| what the tool declares \(`protection`, satellite apiVersion 3\); a tool that declares nothing \(apiVersion 2\): not enforced \|/);
     assert.doesNotMatch(t, /obsidian_read_note`/, "read-only tools are not listed");
   });
   test("the README explains both arguments, every refusal a caller can see, the exemptions and the gap", () => {

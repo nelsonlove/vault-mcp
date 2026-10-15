@@ -6,6 +6,7 @@ import { ok, okError, fail } from "./helpers.js";
 import { jsonSchemaToZodShape, type JsonSchemaObject } from "./json-schema-to-zod.js";
 import { collectPaths } from "../guard.js";
 import type { ServerCtx } from "./tools-core.js";
+import { KERNEL_ARG_KEYS, TOOL_DECLARATION, type ToolDeclaration, type DeclaredProtection, type DeclaredSync } from "../kernel/tool-declaration.js";
 
 // ── Public boundary types (mirrored in the vault-mcp-api SDK — keep in sync) ──
 
@@ -20,6 +21,41 @@ export interface ExternalToolSpec {
   /** Called with the tool's arguments and, since apiVersion 2 (#402 step B), a
    *  per-call `CallContext` as the second argument. A handler may ignore it. */
   handler: (args: Record<string, unknown>, ctx?: CallContext) => Promise<unknown> | unknown;
+  /** apiVersion 3 (#550): the write protection a call must carry, exactly as a
+   *  host tool's inventory row states it. A class (`token` ⇒ `if_rev`, `key` ⇒
+   *  `idempotency_key`, `both`, `exempt`) or argument-dependent. REQUIRED on a
+   *  mutating tool that declares anything else of apiVersion 3. */
+  protection?: ProtectionDeclaration;
+  /** apiVersion 3 (#550): how the host's Sync guard treats the tool. */
+  sync?: SyncDeclaration;
+  /** apiVersion 3 (#550): the argument names that carry vault paths, each a
+   *  key the host's path walk recognizes (`path`, `from`, `to`, `paths`,
+   *  `note_path`, …). Under a path allowlist a call is then checked per path,
+   *  and refused when no declared argument carries one. */
+  paths?: string[];
+}
+
+/** One class of write protection (01.33 rule 6f). */
+export type ProtectionClassDeclaration = "token" | "key" | "both" | "exempt";
+
+/** A satellite tool's declared protection: a class, or a class chosen by one argument's value
+ *  (booleans as "true"/"false"; `otherwise` covers every other value and the argument's absence). */
+export type ProtectionDeclaration =
+  | ProtectionClassDeclaration
+  | { arg: string; values: Record<string, ProtectionClassDeclaration>; otherwise: ProtectionClassDeclaration };
+
+/** A satellite tool's Sync-guard membership (the host's `syncKind`, `STATUS_STRICT` and destination-unnamed list). */
+export interface SyncDeclaration {
+  /** `structure` (rename, move, delete, create: waits, then refused while Sync is behind) or
+   *  `content` (edit, append: waits, then goes on with a warning); or chosen by one argument's value. */
+  kind:
+    | "structure"
+    | "content"
+    | { arg: string; values: Record<string, "structure" | "content">; otherwise: "structure" | "content" };
+  /** A rename, move or delete: also waits for "Fully synced" (the strict list). Structure only. */
+  strictStatus?: boolean;
+  /** The tool does not name where it writes: a server change waiting anywhere in the vault counts. Structure only. */
+  destinationUnnamed?: boolean;
 }
 
 // ── apiVersion 2 members (#402 step B; the SDK carried them since 1.1.0) ─────
@@ -105,6 +141,9 @@ export interface ExternalToolEntry {
   ownerId: string;   // raw plugin id as passed by the publisher
   toolName: string;  // namespaced published name
   spec: ExternalToolSpec;
+  /** The spec's apiVersion-3 declaration, validated and frozen at registration;
+   *  absent for a v2 spec. A later edit of the publisher's spec object changes nothing. */
+  declaration?: ToolDeclaration;
 }
 
 /**
@@ -130,8 +169,10 @@ export interface ExternalToolEntry {
 export interface VaultMcpApi {
   /** The level of members this host carries; a LITERAL on purpose (the SDK's
    *  contract test requires the host to declare one). 2 = the v1 surface plus
-   *  the partial-result envelope and the per-call `CallContext`. */
-  apiVersion: 2;
+   *  the partial-result envelope and the per-call `CallContext`. 3 (#550) = 2
+   *  plus the write declarations a spec may carry (`protection`, `sync`,
+   *  `paths`), enforced exactly as for a host tool. */
+  apiVersion: 3;
   registerTools(ownerPluginId: string, tools: ExternalToolSpec[]): () => void;
   /**
    * The operator's configured guarded territories, already resolved (trimmed,
@@ -246,6 +287,129 @@ export function publishedToolName(ownerPluginId: string, bareName: string): stri
   return `${sanitizeOwnerId(ownerPluginId)}_${bareName}`;
 }
 
+// ── apiVersion 3: the write declarations (#550) ──────────────────────────────
+
+const PROTECTION_CLASSES: ReadonlySet<string> = new Set(["token", "key", "both", "exempt"]);
+const SYNC_KINDS: ReadonlySet<string> = new Set(["structure", "content"]);
+
+/** Whether the guard's path walk (core's collectPaths, the one every kernel check reads) treats `key` as a path key.
+ *  Asked of the walk itself, so this cannot drift from it. */
+function isPathKey(key: string): boolean {
+  return collectPaths({ [key]: "probe" }).length > 0;
+}
+
+function plainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Validate a spec's apiVersion-3 declaration and return it normalized and
+ * frozen, or undefined for a v2 spec (none of `protection`, `sync`, `paths`
+ * present). FAIL CLOSED: anything malformed or contradictory throws a
+ * TypeError naming the tool, so a typo can never register as a weaker tool.
+ *
+ * Refused: an unknown key in a declaration object (a misspelt `strictStatus`
+ * would otherwise be silently off); a class or kind not in the closed set; an
+ * argument (a path, or the one a protection or kind depends on) that the tool's
+ * `inputSchema` does not declare (the host's validation would strip it, so the
+ * rule would never see it) or that is a kernel argument; a path argument the
+ * host's path walk does not recognize (the record guard, the lock consult, the
+ * journal target, the Sync guard's targets and the allowlist all read paths by
+ * that walk, so an unrecognized name would escape every one of them); the
+ * strict or destination-unnamed list on a content-only tool; protection or
+ * Sync declared on a tool that claims to be read-only; and a mutating tool
+ * that declares `sync` or `paths` but no `protection`.
+ */
+export function validateDeclaration(spec: ExternalToolSpec): ToolDeclaration | undefined {
+  const raw = spec as unknown as Record<string, unknown>;
+  const has = (k: string) => raw[k] !== undefined;
+  if (!has("protection") && !has("sync") && !has("paths")) return undefined;
+  const bad = (why: string): never => {
+    throw new TypeError(`vault-mcp: tool '${spec.name}' has a malformed apiVersion-3 declaration: ${why}`);
+  };
+  const props = plainObject(spec.inputSchema?.properties) ? (spec.inputSchema!.properties as Record<string, unknown>) : {};
+  const argOk = (arg: unknown, what: string): string => {
+    if (typeof arg !== "string" || arg === "") return bad(`${what} must be a non-empty string`);
+    if ((KERNEL_ARG_KEYS as readonly string[]).includes(arg)) return bad(`${what} '${arg}' is a kernel argument`);
+    if (!Object.prototype.hasOwnProperty.call(props, arg)) return bad(`${what} '${arg}' is not a property of the tool's inputSchema`);
+    return arg;
+  };
+  const onlyKeys = (o: Record<string, unknown>, allowed: string[], what: string) => {
+    for (const k of Object.keys(o)) if (!allowed.includes(k)) bad(`${what} has an unknown key '${k}' (allowed: ${allowed.join(", ")})`);
+  };
+  const byArg = <C extends string>(v: Record<string, unknown>, set: ReadonlySet<string>, what: string) => {
+    onlyKeys(v, ["arg", "values", "otherwise"], what);
+    const arg = argOk(v.arg, `${what}.arg`);
+    if (!plainObject(v.values)) return bad(`${what}.values must be an object of value → class`);
+    const values: Record<string, C> = {};
+    for (const [k, c] of Object.entries(v.values)) {
+      if (typeof c !== "string" || !set.has(c)) return bad(`${what}.values['${k}'] must be one of ${[...set].join(", ")}`);
+      values[k] = c as C;
+    }
+    if (typeof v.otherwise !== "string" || !set.has(v.otherwise)) return bad(`${what}.otherwise must be one of ${[...set].join(", ")}`);
+    return Object.freeze({ arg, values: Object.freeze(values), otherwise: v.otherwise as C });
+  };
+
+  const claimsReadOnly = spec.annotations?.readOnlyHint === true;
+  const out: ToolDeclaration = {};
+
+  if (has("protection")) {
+    if (claimsReadOnly) bad("a tool that claims readOnlyHint cannot declare protection (a read carries no write protection)");
+    const p = raw.protection;
+    if (typeof p === "string") {
+      if (!PROTECTION_CLASSES.has(p)) bad(`protection must be one of ${[...PROTECTION_CLASSES].join(", ")}, or { arg, values, otherwise }`);
+      out.protection = p as DeclaredProtection;
+    } else if (plainObject(p)) {
+      out.protection = byArg<ProtectionClassDeclaration>(p, PROTECTION_CLASSES, "protection");
+    } else {
+      bad("protection must be a class string or { arg, values, otherwise }");
+    }
+  }
+
+  if (has("sync")) {
+    if (claimsReadOnly) bad("a tool that claims readOnlyHint cannot declare sync (the Sync guard checks writes)");
+    const sy = raw.sync;
+    if (!plainObject(sy)) return bad("sync must be { kind, strictStatus?, destinationUnnamed? }");
+    onlyKeys(sy, ["kind", "strictStatus", "destinationUnnamed"], "sync");
+    let kind: DeclaredSync["kind"];
+    if (typeof sy.kind === "string") {
+      if (!SYNC_KINDS.has(sy.kind)) bad("sync.kind must be structure, content, or { arg, values, otherwise }");
+      kind = sy.kind as "structure" | "content";
+    } else if (plainObject(sy.kind)) {
+      kind = byArg<"structure" | "content">(sy.kind, SYNC_KINDS, "sync.kind");
+    } else {
+      return bad("sync.kind is required: structure, content, or { arg, values, otherwise }");
+    }
+    for (const f of ["strictStatus", "destinationUnnamed"] as const) {
+      if (sy[f] !== undefined && typeof sy[f] !== "boolean") bad(`sync.${f} must be a boolean`);
+    }
+    const strictStatus = sy.strictStatus === true;
+    const destinationUnnamed = sy.destinationUnnamed === true;
+    if (kind === "content" && (strictStatus || destinationUnnamed)) {
+      bad("sync.strictStatus and sync.destinationUnnamed apply to a structure write; this tool's kind is content");
+    }
+    out.sync = Object.freeze({ kind, strictStatus, destinationUnnamed });
+  }
+
+  if (has("paths")) {
+    const ps = raw.paths;
+    if (!Array.isArray(ps)) return bad("paths must be an array of argument names");
+    const seen = new Set<string>();
+    for (const a of ps) {
+      const arg = argOk(a, "paths entry");
+      if (!isPathKey(arg)) bad(`paths entry '${arg}' is not a path key the host recognizes (path, from, to, paths, note_path, …); the kernel's checks could not see it`);
+      if (seen.has(arg)) bad(`paths entry '${arg}' is listed twice`);
+      seen.add(arg);
+    }
+    out.paths = Object.freeze([...seen]);
+  }
+
+  if (!claimsReadOnly && out.protection === undefined) {
+    bad("a mutating tool that declares sync or paths must also declare protection (token, key, both or exempt)");
+  }
+  return Object.freeze(out);
+}
+
 export class ExternalToolRegistry {
   private byName = new Map<string, ExternalToolEntry>();
 
@@ -254,6 +418,7 @@ export class ExternalToolRegistry {
     if (!owner) throw new TypeError(`vault-mcp: unusable owner plugin id '${ownerPluginId}'`);
     // Validate everything before inserting anything — a mid-array failure
     // must not leave earlier specs registered with no disposer.
+    const declarations = new Map<ExternalToolSpec, ToolDeclaration | undefined>();
     for (const spec of tools) {
       if (!NAME_RE.test(spec.name))
         throw new TypeError(`vault-mcp: invalid tool name '${spec.name}' (must match ${NAME_RE})`);
@@ -272,6 +437,7 @@ export class ExternalToolRegistry {
       if (existing && existing.ownerId !== ownerPluginId)
         throw new TypeError(`vault-mcp: tool '${toolName}' is already published by plugin '${existing.ownerId}'`);
       // F8: reject zod schemas and other non-JSON-Schema values.
+      // (The apiVersion-3 declaration is validated after F8, below, because it reads the schema's properties.)
       if (spec.inputSchema !== undefined) {
         const s = spec.inputSchema as unknown;
         if (
@@ -287,10 +453,18 @@ export class ExternalToolRegistry {
           );
         }
       }
+      // F9 (apiVersion 3, #550): a malformed write declaration is refused here, fail closed.
+      declarations.set(spec, validateDeclaration(spec));
     }
     const added: ExternalToolEntry[] = [];
     for (const spec of tools) {
-      const entry: ExternalToolEntry = { ownerId: ownerPluginId, toolName: publishedToolName(ownerPluginId, spec.name), spec };
+      const declaration = declarations.get(spec);
+      const entry: ExternalToolEntry = {
+        ownerId: ownerPluginId,
+        toolName: publishedToolName(ownerPluginId, spec.name),
+        spec,
+        ...(declaration ? { declaration } : {}),
+      };
       this.byName.set(entry.toolName, entry); // replace-on-re-register, by design
       added.push(entry);
     }
@@ -362,7 +536,18 @@ export function externalToolSnapshot(ctx: ServerCtx): Array<{ name: string; owne
 export function registerExternalTools(server: McpServer, app: App, ctx: ServerCtx): void {
   const entries = ctx.getExternalTools?.() ?? [];
   const trusted = new Set(ctx.getSettings().trustedReadOnlyPlugins ?? []);
-  for (const { ownerId, toolName, spec } of entries) {
+  for (const entry of entries) {
+    const { ownerId, toolName, spec } = entry;
+    // apiVersion 3 (#550): the validated declaration. An entry built by the
+    // registry carries it; any other entry is validated here, and a malformed
+    // one is skipped (fail closed) by the backstop below.
+    let declaration: ToolDeclaration | undefined;
+    try {
+      declaration = entry.declaration ?? validateDeclaration(spec);
+    } catch (e) {
+      console.error("[vault-mcp] skipping external tool", toolName, e);
+      continue;
+    }
     // The publisher's claim, and whether this host believes it.
     const claimsReadOnly = spec.annotations?.readOnlyHint === true;
     const isReadOnly = claimsReadOnly && trusted.has(ownerId);
@@ -379,6 +564,12 @@ export function registerExternalTools(server: McpServer, app: App, ctx: ServerCt
     if (spec.annotations?.destructiveHint !== undefined) base.destructiveHint = spec.annotations.destructiveHint;
     if (spec.annotations?.idempotentHint  !== undefined) base.idempotentHint  = spec.annotations.idempotentHint;
     const annotations = base;
+    // The declaration rides on the definition, under a symbol the MCP wire never
+    // sees, to the guard (mcp/guarded.ts), which enforces it as it enforces a host
+    // tool's inventory row: protection before the queue, then the Sync guard. Only
+    // on a tool this host treats as MUTATING: a trusted read-only tool never
+    // reaches either check, and declaring protection on one is refused above.
+    const declared = declaration && !isReadOnly ? { [TOOL_DECLARATION]: declaration } : {};
 
     // F6: snapshot the owner plugin instance at connection-build time.
     // Any change (reload or unload) detected at call time → stale-session error.
@@ -393,6 +584,7 @@ export function registerExternalTools(server: McpServer, app: App, ctx: ServerCt
           description: spec.description,
           inputSchema: jsonSchemaToZodShape(spec.inputSchema),
           annotations,
+          ...declared,
         },
         async (args: Record<string, unknown>) => {
           // F6: require exact same plugin instance as at build time.
@@ -415,12 +607,26 @@ export function registerExternalTools(server: McpServer, app: App, ctx: ServerCt
           // so the host must refuse what it cannot scope. Fail closed; the cost
           // is that trusted pathless read tools are unavailable under an
           // allowlist, which is the documented posture, not a bug.
+          //
+          // apiVersion 3 (#550): a tool that declares `paths` is judged by THOSE
+          // arguments. A call none of whose declared path arguments carries a path
+          // is refused; one that does goes on, and the guard (which wraps this
+          // handler) has already checked every path it names against the allowlist,
+          // one by one, through the same guardCall/collectPaths a host tool meets.
           {
             const settings = ctx.getSettings();
-            if (settings.allowlist.length > 0 && collectPaths(args ?? {}).length === 0)
-              return fail(new Error(
-                `'${toolName}' is blocked: a path allowlist is configured but this tool's arguments carry no recognized path field (path, from, to, paths, …), so the call cannot be scoped. Use recognized path argument names or clear the allowlist.`
-              ));
+            if (settings.allowlist.length > 0) {
+              const a = (args ?? {}) as Record<string, unknown>;
+              const named = declaration?.paths
+                ? collectPaths(Object.fromEntries(declaration.paths.filter((k) => k in a).map((k) => [k, a[k]])))
+                : collectPaths(a);
+              if (named.length === 0)
+                return fail(new Error(
+                  declaration?.paths
+                    ? `'${toolName}' is blocked: a path allowlist is configured but none of this tool's declared path arguments (${declaration.paths.join(", ") || "none"}) carries a path, so the call cannot be scoped. Name the path or clear the allowlist.`
+                    : `'${toolName}' is blocked: a path allowlist is configured but this tool's arguments carry no recognized path field (path, from, to, paths, …), so the call cannot be scoped. Use recognized path argument names or clear the allowlist.`
+                ));
+            }
           }
           // F5: normalize handler return value to a plain object so ok() emits
           // valid structuredContent (undefined, primitives, and arrays all wrapped).
