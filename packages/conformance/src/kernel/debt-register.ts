@@ -34,6 +34,7 @@
 import { AcceptForbiddenError, acceptForbiddenReason, parseGuardFrontmatter } from "@vault-mcp/core";
 import { findingKey } from "./finding.js";
 import { buildDebtReport, type DebtItem, type DebtReport, type DebtReportOpts } from "./debt.js";
+import { capRows, coverageLine, utf8Bytes, REPORT_MAX_FINDINGS, REPORT_NOTE_MAX_BYTES, type RunCoverage } from "./report-caps.js";
 
 /** The register note's basename — sibling of the sidecar (`Conformance
  * debt.json`), living in the register dir (default: the baseline's folder). */
@@ -45,8 +46,12 @@ export const REGISTER_BASENAME = "Conformance debt.md";
  * user knob. */
 export const REGISTER_GENERATOR = "conformance-debt-register";
 
-/** Carried-debt rows shown in the table before the "+N more" cap. */
-export const DEFAULT_REGISTER_MAX_ROWS = 300;
+/** Carried-debt rows shown in the table before the "+N more" cap. It is
+ * report cap 1 (report-caps.ts): the register is a report note in the vault,
+ * so it lists at most 200 findings in all, carried rows and cleared keys
+ * together, and a larger `registerMaxRows` is clamped to it. Was 300 until the
+ * caps landed (2026-10-15). */
+export const DEFAULT_REGISTER_MAX_ROWS = REPORT_MAX_FINDINGS;
 
 /** The register note's vault-relative path for a register dir ("" = vault root). */
 export function registerNotePathFor(registerDir: string): string {
@@ -131,8 +136,20 @@ export interface RegisterRenderOpts {
   clearedKeys: string[];
   /** ISO timestamp stamped into `generated:`. Passed in, never sampled here. */
   generatedAt: string;
-  /** Cap on table rows; the remainder collapses to a "+N more" line. */
+  /** Cap on listed findings (table rows first, then cleared keys); the
+   * remainder collapses to a "+N more" line. Clamped to report cap 1 (200). */
   maxRows?: number;
+  /** What the run checked (report cap 4); stated in the summary when given. */
+  coverage?: RunCoverage;
+}
+
+/** The rows a render actually listed, so a caller can report them truthfully. */
+export interface RegisterRenderResult {
+  text: string;
+  /** Carried rows listed in the table. */
+  rows: number;
+  /** Cleared keys listed. */
+  clearedListed: number;
 }
 
 const TABLE_HEADER = [
@@ -158,10 +175,27 @@ function row(it: DebtItem): string {
 }
 
 /** Render the full register note text (frontmatter + body). Deterministic —
- * a function of its inputs. */
+ * a function of its inputs. Obeys report cap 1: at most 200 findings listed
+ * (carried rows, then cleared keys, in one budget) and under 256 KB — when the
+ * listed rows would pass the byte cap, the budget is halved until the note
+ * fits, and the "+N more" lines say how many were left out. */
 export function renderDebtRegister(opts: RegisterRenderOpts): string {
+  return renderDebtRegisterCapped(opts).text;
+}
+
+/** {@link renderDebtRegister}, with the counts it listed. */
+export function renderDebtRegisterCapped(opts: RegisterRenderOpts): RegisterRenderResult {
+  let budget = capRows(opts.maxRows ?? DEFAULT_REGISTER_MAX_ROWS);
+  for (;;) {
+    const r = renderWithBudget(opts, budget);
+    if (utf8Bytes(r.text) < REPORT_NOTE_MAX_BYTES || budget === 0) return r;
+    budget = Math.floor(budget / 2);
+  }
+}
+
+function renderWithBudget(opts: RegisterRenderOpts, listBudget: number): RegisterRenderResult {
   const { report, clearedKeys, generatedAt } = opts;
-  const maxRows = opts.maxRows ?? DEFAULT_REGISTER_MAX_ROWS;
+  const maxRows = listBudget;
   const { summary, budget, staleAfterDays } = report;
 
   const budgetLine =
@@ -199,16 +233,20 @@ export function renderDebtRegister(opts: RegisterRenderOpts): string {
             .join(", ")} — listed in guarded territories`,
         ]
       : []),
+    ...(opts.coverage ? [`- ${coverageLine(opts.coverage)}`] : []),
     "",
     "## Carried debt",
     "",
   ];
 
+  let rows = 0;
+  let clearedListed = 0;
   if (report.items.length === 0) {
     lines.push("No carried debt.");
   } else {
     const ordered = orderDebtItems(report.items);
     const shown = ordered.slice(0, maxRows);
+    rows = shown.length;
     lines.push(...TABLE_HEADER);
     for (const it of shown) lines.push(row(it));
     if (ordered.length > shown.length) {
@@ -230,30 +268,41 @@ export function renderDebtRegister(opts: RegisterRenderOpts): string {
     );
     // Raw keys inside code spans: a list bullet is not a table, so a `|` needs
     // no escaping — and an escape inside a code span would DISPLAY literally,
-    // corrupting the key a human is meant to copy out.
-    for (const k of clearedKeys) lines.push(`- \`${k}\``);
+    // corrupting the key a human is meant to copy out. The cleared keys share
+    // the listing budget with the table rows (report cap 1).
+    const room = Math.max(0, maxRows - rows);
+    const listed = clearedKeys.slice(0, room);
+    clearedListed = listed.length;
+    for (const k of listed) lines.push(`- \`${k}\``);
+    if (clearedKeys.length > listed.length) {
+      lines.push(
+        "",
+        `+${clearedKeys.length - listed.length} more cleared key(s) not shown — the conformance CLI lists them all (\`--findings-json\` writes the full set outside the vault).`,
+      );
+    }
   }
   lines.push("");
-  return lines.join("\n");
+  return { text: lines.join("\n"), rows, clearedListed };
 }
 
 /** Build the register text straight from a run's raw inputs: the debt report
  * plus the cleared keyset (baseline − live), which the report only counts. */
 export function buildRegisterFromRun(
-  opts: DebtReportOpts & { maxRows?: number },
-): { text: string; report: DebtReport; clearedKeys: string[] } {
+  opts: DebtReportOpts & { maxRows?: number; coverage?: RunCoverage },
+): { text: string; report: DebtReport; clearedKeys: string[]; rows: number; clearedListed: number } {
   const report = buildDebtReport(opts);
   // cleared = baseline − live, sorted. Recomputed here (the report carries only
   // the count) with the same findingKey identity buildDebtReport uses.
   const live = new Set(opts.live.map((f) => findingKey(f)));
   const clearedKeys = [...opts.baselineKeys].filter((k) => !live.has(k)).sort();
-  const text = renderDebtRegister({
+  const { text, rows, clearedListed } = renderDebtRegisterCapped({
     report,
     clearedKeys,
     generatedAt: opts.now.toISOString(),
     maxRows: opts.maxRows,
+    coverage: opts.coverage,
   });
-  return { text, report, clearedKeys };
+  return { text, report, clearedKeys, rows, clearedListed };
 }
 
 /**

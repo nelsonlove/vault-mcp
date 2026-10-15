@@ -45,7 +45,7 @@ describe("conventionsOnLoad — seed once, fresh empty, present kept", () => {
   });
   test("#493: stored conventions that LACK baselineRel take the former constant's path ONCE (and persist); only that key is seeded", () => {
     const r = conventionsOnLoad({ vaultConventions: { registriesRoot: " R ", systemRoot: "", ungovernedRoots: ["U"] } });
-    assert.deepEqual(r, { conventions: { registriesRoot: "R", systemRoot: "", ungovernedRoots: ["U"], baselineRel: LEGACY_CONVENTIONS_SEED.baselineRel }, persist: true }, "the other keys are kept as stored, not re-seeded");
+    assert.deepEqual(r, { conventions: { registriesRoot: "R", systemRoot: "", fileclassesRoot: "", ungovernedRoots: ["U"], baselineRel: LEGACY_CONVENTIONS_SEED.baselineRel }, persist: true }, "the other keys are kept as stored, not re-seeded");
     assert.deepEqual(conventionsOnLoad({ vaultConventions: {} }), { conventions: EMPTY_VAULT_CONVENTIONS, persist: true }, "an all-blank record lacking the key stays blank (nothing says it was the seeded vault); the key is still persisted");
     // Once persisted, the next load has the key and keeps it: seeded once, not every load.
     assert.deepEqual(conventionsOnLoad({ vaultConventions: r.conventions }), { conventions: r.conventions, persist: false });
@@ -56,7 +56,7 @@ describe("conventionsOnLoad — seed once, fresh empty, present kept", () => {
     assert.equal(seedNoEnv({ registriesRoot: "R" }).baselineRel, seed, "registriesRoot set");
     assert.equal(seedNoEnv({ systemRoot: "S" }).baselineRel, seed, "systemRoot set");
     assert.equal(seedNoEnv({ ungovernedRoots: ["U"] }).baselineRel, seed, "a non-empty ungovernedRoots");
-    assert.deepEqual(seedNoEnv({ registriesRoot: " R ", ungovernedRoots: ["U", " "] }), { registriesRoot: "R", systemRoot: "", ungovernedRoots: ["U"], baselineRel: seed }, "only baselineRel is added; the rest is coerced as stored");
+    assert.deepEqual(seedNoEnv({ registriesRoot: " R ", ungovernedRoots: ["U", " "] }), { registriesRoot: "R", systemRoot: "", fileclassesRoot: "", ungovernedRoots: ["U"], baselineRel: seed }, "only baselineRel is added; the rest is coerced as stored");
     for (const blank of [{}, { registriesRoot: "  ", systemRoot: "", ungovernedRoots: [] }, { ungovernedRoots: ["", " "] }]) {
       assert.deepEqual(seedNoEnv(blank), EMPTY_VAULT_CONVENTIONS, JSON.stringify(blank));
     }
@@ -152,9 +152,10 @@ describe("the settings fields — one per key of the record", () => {
     assert.equal(blanked.registriesRoot, "");
     assert.deepEqual(blanked.systemRoot, LEGACY_CONVENTIONS_SEED.systemRoot, "the other keys are untouched");
     const walk = { dirs: [LEGACY_CONVENTIONS_SEED.systemRoot, ...LEGACY_CONVENTIONS_SEED.ungovernedRoots], files: [] };
-    assert.deepEqual(deadConventionPaths(blanked, walk), [{ key: "registriesRoot", path: "" }], "the blank field is the one dead convention of the next run");
+    // The seed carries fileclassesRoot blank (no pre-#403 install measured shapes), so it is dead on every run of the seed; the field under test is the OTHER dead one.
+    assert.deepEqual(deadConventionPaths(blanked, walk), [{ key: "registriesRoot", path: "" }, { key: "fileclassesRoot", path: "" }], "the blank field is a dead convention of the next run");
     const pointed = commitConvention(blanked, reg, ` ${LEGACY_CONVENTIONS_SEED.registriesRoot} `);
-    assert.deepEqual(deadConventionPaths(pointed, { ...walk, dirs: [...walk.dirs, LEGACY_CONVENTIONS_SEED.registriesRoot] }), [], "pointing it at a live folder revives it");
+    assert.deepEqual(deadConventionPaths(pointed, { ...walk, dirs: [...walk.dirs, LEGACY_CONVENTIONS_SEED.registriesRoot] }), [{ key: "fileclassesRoot", path: "" }], "pointing it at a live folder revives it");
     assert.deepEqual(commitConvention({}, ung, " A \n\nB/ ").ungovernedRoots, ["A", "B/"]);
     assert.deepEqual(commitConvention("garbage", reg, "R"), { ...EMPTY_VAULT_CONVENTIONS, registriesRoot: "R" }, "a corrupt current value cannot crash the tab");
   });
@@ -182,8 +183,8 @@ describe("#493: baselineRel is a setting, not a pack convention", () => {
     for (const [name, conv, walk] of cases) {
       assert.ok(!deadConventionPaths(conv, walk).some((d) => d.key === "baselineRel"), name);
     }
-    assert.deepEqual(deadConventionPaths(LEGACY_CONVENTIONS_SEED, { dirs, files: [rel] }), [], "seed folders live: nothing dead at all");
-    assert.deepEqual(deadConventionPaths({ ...EMPTY_VAULT_CONVENTIONS, baselineRel: "" }, { dirs: [], files: [] }).map((d) => d.key), ["registriesRoot", "systemRoot"], "the blank SCALAR keys are still dead");
+    assert.deepEqual(deadConventionPaths({ ...LEGACY_CONVENTIONS_SEED, fileclassesRoot: "F" }, { dirs: [...dirs, "F"], files: [rel] }), [], "seed folders live (and a fileclasses folder named): nothing dead at all");
+    assert.deepEqual(deadConventionPaths({ ...EMPTY_VAULT_CONVENTIONS, baselineRel: "" }, { dirs: [], files: [] }).map((d) => d.key), ["registriesRoot", "systemRoot", "fileclassesRoot"], "the blank SCALAR keys are still dead");
   });
 
   test("no file under src names 'Conformance baseline.md' in code, except LEGACY_CONVENTIONS_SEED in vault-conventions.ts (comments excluded)", () => {

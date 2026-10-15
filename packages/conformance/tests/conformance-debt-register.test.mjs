@@ -366,9 +366,10 @@ describe("vaultmcp_conformance_debt_render tool", () => {
   });
 
   test("debtRenderConfigOf defaults + coercion; registerNotePathFor shapes", () => {
-    assert.deepEqual(debtRenderConfigOf(undefined), { registerDir: null, maxRows: 300 });
+    // The default is report cap 1's 200 since the Forge-only checks landed (was 300); a larger setting is clamped at render.
+    assert.deepEqual(debtRenderConfigOf(undefined), { registerDir: null, maxRows: 200 });
     assert.deepEqual(debtRenderConfigOf({ registerDir: "X/Y/", registerMaxRows: 5 }), { registerDir: "X/Y", maxRows: 5 });
-    assert.deepEqual(debtRenderConfigOf({ registerDir: 7, registerMaxRows: 0 }), { registerDir: null, maxRows: 300 });
+    assert.deepEqual(debtRenderConfigOf({ registerDir: 7, registerMaxRows: 0 }), { registerDir: null, maxRows: 200 });
     assert.equal(registerNotePathFor(""), REGISTER_BASENAME);
     assert.equal(registerNotePathFor("A/B"), `A/B/${REGISTER_BASENAME}`);
     assert.equal(registerNotePathFor("A/B/"), `A/B/${REGISTER_BASENAME}`);

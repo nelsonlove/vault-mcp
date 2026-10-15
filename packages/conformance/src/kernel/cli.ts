@@ -23,12 +23,15 @@ import { buildSnapshot, DEFAULT_SKIP, type SkippedTerritory } from "./snapshot.j
 import { envAliased } from "@vault-mcp/core";
 import { intendedRealPath, sameFile, isInside } from "./path-identity.js";
 import { runEngine, ENGINE_ID } from "./engine.js";
-import { vocabPack, schemePack, structurePack, portPack, stePack, driftPack } from "./packs/index.js";
+import { vocabPack, schemePack, structurePack, portPack, stePack, driftPack, shapePack } from "./packs/index.js";
 import { conventionsOnLoad, conventionsFromHostData } from "./conventions-policy.js";
 import { conventionsFromEnv, deadConventionPaths, CONVENTION_PACKS, CONVENTIONS_ENV, type DeadConvention, type VaultConventions } from "./vault-conventions.js";
 import { parseBaseline, renderBaseline, ratchet, type RatchetResult } from "./ratchet.js";
 import { parseKey, findingKey, type Finding } from "./finding.js";
 import type { RulePack } from "./rule-pack.js";
+import { coverageLine, overFullOutputCap, FULL_OUTPUT_MAX_BYTES, type RunCoverage } from "./report-caps.js";
+import { auditsDir, fullFindingsPathRefusal } from "./audit-output.js";
+import { mkdir } from "node:fs/promises";
 import { budgetStatus, DEFAULT_STALE_AFTER_DAYS, type DebtBudgetStatus } from "./debt.js";
 import { buildRegisterFromRun, registerAcceptRefusal, REGISTER_BASENAME } from "./debt-register.js";
 import { parseSidecar, parseSidecarStrict, reconcileSidecar, serializeSidecar, sidecarPathFor, type DebtSidecar } from "./debt-sidecar.js";
@@ -105,6 +108,8 @@ export interface RunResult {
   /** Debt-budget tooth status (issue #211): the carried count vs the configured
    * budget, and whether it is over (and whether that is a hard failure). */
   budget: DebtBudgetStatus;
+  /** What this run checked (report cap 4): notes read, packs measured and not, and the shape pack's classes. */
+  coverage: RunCoverage;
 }
 
 export async function runConformance(opts: RunOpts): Promise<RunResult> {
@@ -127,6 +132,7 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
   const packs: RulePack[] = [];
   let deadConventions: DeadConvention[] = [];
   const unmeasuredPackIds = new Set<string>();
+  let shape: ReturnType<typeof shapePack> | null = null;
   // vocab providers: built from settings over the snapshot listing (the registry
   // confines each instance to its own root).
   const vocabInstances = new VocabRegistry(opts.vocabularies).build(snapshot.notes);
@@ -153,7 +159,8 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
       skipDirs: DEFAULT_SKIP,
     });
     const unmeasured = new Set(deadConventions.flatMap((d) => CONVENTION_PACKS[d.key]));
-    const legacy: RulePack[] = [structurePack({ conventions: conv }), portPack(), stePack(conv), driftPack(conv)];
+    shape = shapePack(conv);
+    const legacy: RulePack[] = [structurePack({ conventions: conv }), portPack(), stePack(conv), driftPack(conv), shape];
     for (const pack of legacy) {
       packs.push(unmeasured.has(pack.id) ? { id: pack.id, run: () => [] } : pack);
       if (unmeasured.has(pack.id)) unmeasuredPackIds.add(pack.id);
@@ -196,6 +203,13 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
     findings.filter((f) => f.script === ENGINE_ID && f.check === "pack_error").map((f) => f.target),
   );
   const coveredPackIds = packIds.filter((id) => !errored.has(id) && !unmeasuredPackIds.has(id));
+  const shapeCoverage = coveredPackIds.includes("shape") ? shape?.coverage() ?? null : null;
+  const coverage: RunCoverage = {
+    notes: snapshot.sources?.length ?? snapshot.paths.length,
+    measuredPacks: coveredPackIds,
+    unmeasuredPacks: packIds.filter((id) => !coveredPackIds.includes(id)),
+    ...(shapeCoverage ? { shape: shapeCoverage } : {}),
+  };
   // Debt-budget tooth (#211): warn when carried debt exceeds the configured
   // ceiling. Warn-only unless `strictBudget` — then an over-budget run also
   // fails, alongside the ordinary NEW-findings gate. A NEW-findings failure
@@ -210,7 +224,8 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
     skippedTerritories: snapshot.skippedTerritories ?? [],
     ratchet: result,
     budget,
-    report: renderReport(result, packIds, baselinePackIds(baselineKeys), findings, opts.excludedRoots ?? [], budget, snapshot.skippedTerritories ?? [], deadConventions),
+    coverage,
+    report: renderReport(result, packIds, baselinePackIds(baselineKeys), findings, opts.excludedRoots ?? [], budget, snapshot.skippedTerritories ?? [], deadConventions, coverage),
     // An ENGINE finding — `dead_convention`, `pack_error` — is never accepted
     // debt: it describes the RUN, not the vault, and `conformance_engine` is
     // not a pack id, so a baseline naming it would make every later run refuse
@@ -695,9 +710,13 @@ function renderReport(
   budget?: DebtBudgetStatus,
   skippedTerritories: readonly SkippedTerritory[] = [],
   deadConventions: readonly DeadConvention[] = [],
+  coverage?: RunCoverage,
 ): string {
   const lines: string[] = [];
   lines.push(`conformance: ${r.carried} carried, ${r.newKeys.length} NEW, ${r.clearedKeys.length} cleared`);
+  // Report cap 4: what the run checked, beside what it found, so a run that
+  // checked nothing cannot read as clean.
+  if (coverage) lines.push(coverageLine(coverage));
   // Debt-budget tooth (#211): a WARNING line when carried debt is over the
   // configured ceiling, so slow-leaking debt is visible in the plain report.
   // Warn-only unless --strict-budget, which also fails the run (see exitCode).
@@ -742,13 +761,25 @@ function renderReport(
       "  These are unmeasured, not newly broken. Accepting a baseline for them is a human act; no run can grant it.",
     );
   }
+  // Report cap 3: a listing that would pass 5 MB is replaced by its counts.
+  // The key lists are the only unbounded part of this report.
+  const listing: string[] = [];
   if (r.newKeys.length) {
-    lines.push("", "NEW (regressions — run fails):");
-    for (const k of r.newKeys) lines.push(`  + ${k}`);
+    listing.push("", "NEW (regressions — run fails):");
+    for (const k of r.newKeys) listing.push(`  + ${k}`);
   }
   if (r.clearedKeys.length) {
-    lines.push("", "CLEARED (rebaseline to drop):");
-    for (const k of r.clearedKeys) lines.push(`  - ${k}`);
+    listing.push("", "CLEARED (rebaseline to drop):");
+    for (const k of r.clearedKeys) listing.push(`  - ${k}`);
+  }
+  if (overFullOutputCap(listing.join("\n"))) {
+    lines.push(
+      "",
+      `OUTPUT CAP: the NEW and CLEARED key lists (${r.newKeys.length} NEW, ${r.clearedKeys.length} cleared) would pass ${FULL_OUTPUT_MAX_BYTES / (1024 * 1024)} MB, so they are not printed. ` +
+        "Narrow the run (--exclude=<root>), or write the full finding set outside the vault with --findings-json.",
+    );
+  } else {
+    lines.push(...listing);
   }
   lines.push("", r.failed ? "NONCONFORMING: new findings present" : "CONFORMING within the accepted baseline");
   return lines.join("\n");
@@ -975,6 +1006,55 @@ export function baselineMissingRefusal(baselinePath: string, exists: boolean, no
   );
 }
 
+/**
+ * Report cap 2: where `--findings-json` writes the run's FULL finding set, or
+ * null when the flag is absent. `--findings-json` alone writes
+ * `<auditsDir>/conformance-<stamp>.json` (`~/.local/share/vault-audits/`);
+ * `--findings-json=<path>` names the file. Either way the path is refused when
+ * it is inside the vault (`fullFindingsPathRefusal`), so the full set can
+ * never land in an indexed folder.
+ */
+export function findingsJsonPathFrom(argv: string[], env: Record<string, string | undefined>, now: Date): string | null {
+  const flag = argv.find((a) => a === "--findings-json" || a.startsWith("--findings-json="));
+  if (flag === undefined) return null;
+  const given = flag.startsWith("--findings-json=") ? flag.slice("--findings-json=".length).trim() : "";
+  if (given) return resolve(given);
+  return join(auditsDir(env), `conformance-${now.toISOString().replace(/[:.]/g, "-")}.json`);
+}
+
+/** Report cap 2's payload: every finding with its key and ratchet status, plus the counts and what was checked (cap 4). */
+export function fullFindingsJson(res: RunResult, root: string, now: Date): string {
+  const newKeys = new Set(res.ratchet.newKeys);
+  return JSON.stringify(
+    {
+      generated: now.toISOString(),
+      root,
+      summary: { carried: res.ratchet.carried, new: res.ratchet.newKeys.length, cleared: res.ratchet.clearedKeys.length, findings: res.findings.length },
+      coverage: res.coverage,
+      findings: res.findings.map((f) => {
+        const key = findingKey(f);
+        return { key, status: newKeys.has(key) ? "new" : "carried", ...f };
+      }),
+      cleared: res.ratchet.clearedKeys,
+    },
+    null,
+    1,
+  );
+}
+
+/** Write cap 2's file, or say why not. Refuses a path inside the vault; a payload over 5 MB (cap 3) is not written, and the count is reported instead. Returns the stdout line. */
+export async function writeFullFindings(res: RunResult, root: string, outPath: string, now: Date): Promise<string> {
+  const refusal = fullFindingsPathRefusal(outPath, root);
+  if (refusal) throw new Error(refusal);
+  const text = fullFindingsJson(res, root, now);
+  if (overFullOutputCap(text)) {
+    return `findings JSON NOT written: the full set (${res.findings.length} finding(s)) would pass ${FULL_OUTPUT_MAX_BYTES / (1024 * 1024)} MB — narrow the run with --exclude=<root>`;
+  }
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, text + "\n");
+  return `wrote the full finding set (${res.findings.length} finding(s)) to ${outPath}`;
+}
+
 export async function runCli(argv: string[]): Promise<void> {
   const rebaseline = argv.includes("--rebaseline");
   // The run's clock, sampled ONCE at entry. Threaded into the sidecar stamp and
@@ -1118,6 +1198,7 @@ export async function runCli(argv: string[]): Promise<void> {
       staleAfterDays,
       debtBudget,
       strictBudget,
+      coverage: res.coverage,
     });
     // The shared accept-guard over the text that will land — same invariant as
     // the MCP render tool: the register can never carry an acceptance field.
@@ -1125,6 +1206,10 @@ export async function runCli(argv: string[]): Promise<void> {
     await writeFile(registerPath, text);
     process.stdout.write(`rendered register ${registerPath}\n`);
   };
+
+  // Report cap 2: the full finding set, outside the vault, when asked.
+  const findingsJsonPath = findingsJsonPathFrom(argv, process.env, now);
+  if (findingsJsonPath) process.stdout.write((await writeFullFindings(res, root, findingsJsonPath, now)) + "\n");
 
   if (rebaseline) {
     // Computed from the run that just happened, not a hardcoded constant, and

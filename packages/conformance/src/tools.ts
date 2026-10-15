@@ -96,6 +96,7 @@ import {
   type DebtGroupKey,
 } from "./kernel/debt.js";
 import { buildRegisterFromRun, registerAcceptRefusal, registerNotePathFor, DEFAULT_REGISTER_MAX_ROWS } from "./kernel/debt-register.js";
+import { capList, overFullOutputCap, FULL_OUTPUT_MAX_BYTES, REPORT_MAX_FINDINGS, type RunCoverage } from "./kernel/report-caps.js";
 
 /** The report's SDK flags. `readOnly: true` is a CLAIM the host distrusts
  * unless `vaultmcp-conformance` is in `trustedReadOnlyPlugins`. */
@@ -142,6 +143,9 @@ export interface DebtSource {
    * so a hand-built source (tests) still satisfies the type; absent ⇒ none.
    * Read only after `liveFindings()` has resolved. */
   skippedTerritories?(): readonly SkippedTerritory[];
+  /** What the LAST `liveFindings()` run checked (report cap 4). Optional like
+   * `skippedTerritories`; absent ⇒ the report says nothing about coverage. */
+  coverage?(): RunCoverage | null;
 }
 
 /** The extra seams the render tool needs on top of the read-only DebtSource.
@@ -231,7 +235,8 @@ export function buildDebtTool(source: DebtSource, ctx: ConformanceToolsCtx): Sdk
       "each { script, check, target, kind, acceptedOn?, acceptedBy?, reason?, priority?, fixBy?, ageDays? } — plus " +
       "summary counts { carried, cleared, new }, a `stale` list (items older than the configured threshold), and a " +
       "`budget` status (warns when carried exceeds the configured max). Optional args narrow by folder prefix / pack " +
-      "/ check / kind and group the counts. Never writes; acceptance is a human act (via --rebaseline), never this " +
+      "/ check / kind and group the counts. At most 200 items (and 200 stale) are returned, with a `truncated` count of the rest; " +
+      "an answer that would pass 5 MB returns its counts only. Never writes; acceptance is a human act (via --rebaseline), never this " +
       "tool. Runs over the whole vault, so the Vault MCP host refuses it while a path allowlist is active " +
       "(no argument is a path the host can scope).",
     inputSchema: {
@@ -274,19 +279,45 @@ export function buildDebtTool(source: DebtSource, ctx: ConformanceToolsCtx): Sdk
       const items = filterDebtItems(report.items, filter);
       const stale = filterDebtItems(report.stale, filter);
       const groups = groupBy ? groupDebtItems(items, groupBy as DebtGroupKey) : undefined;
-      return {
+      // Report cap 1: at most 200 items (and 200 stale) are returned, with the
+      // count left out; the filters narrow to the rest. Counts and groups are
+      // computed over the WHOLE filtered set, before the cap.
+      const shownItems = capList(items);
+      const shownStale = capList(stale);
+      const coverage = source.coverage?.() ?? null;
+      const result = {
         // Summary is the WHOLE-vault burn-down (never filtered — it must agree
         // with the ratchet's own carried/cleared/new).
         summary: report.summary,
         staleAfterDays: report.staleAfterDays,
         budget: report.budget,
         skipped_territories: report.skippedTerritories,
-        // `filtered` counts describe the returned, narrowed item set.
+        // `filtered` counts describe the narrowed item set, before the cap.
         filtered: { carried: items.length, stale: stale.length },
-        items,
-        stale,
+        ...(coverage ? { checked: coverage } : {}),
+        items: shownItems.shown,
+        stale: shownStale.shown,
+        ...(shownItems.more || shownStale.more
+          ? {
+              truncated: {
+                items_more: shownItems.more,
+                stale_more: shownStale.more,
+                note: `+${shownItems.more} more item(s) and +${shownStale.more} more stale item(s) not returned (cap ${REPORT_MAX_FINDINGS}); narrow with folder / pack / check / kind, or run the conformance CLI with --findings-json for the full set outside the vault.`,
+              },
+            }
+          : {}),
         ...(groups ? { groups } : {}),
       };
+      // Report cap 3: an answer that would still pass 5 MB returns its counts only.
+      if (overFullOutputCap(JSON.stringify(result))) {
+        return {
+          summary: result.summary,
+          budget: result.budget,
+          filtered: result.filtered,
+          output_capped: `the report would pass ${FULL_OUTPUT_MAX_BYTES / (1024 * 1024)} MB, so only its counts are returned; narrow with folder / pack / check / kind.`,
+        };
+      }
+      return result;
     },
   };
 }
@@ -361,7 +392,7 @@ export function buildDebtRenderTool(source: DebtRegisterSource, ctx: Conformance
         source.baselineText(),
         source.sidecar(),
       ]);
-      const { text, report, clearedKeys } = buildRegisterFromRun({
+      const { text, report, clearedKeys, rows } = buildRegisterFromRun({
         baselineKeys: parseBaseline(baselineText),
         live,
         sidecar,
@@ -373,6 +404,7 @@ export function buildDebtRenderTool(source: DebtRegisterSource, ctx: Conformance
         debtBudget: cfg.debtBudget,
         strictBudget: cfg.strictBudget,
         maxRows: renderCfg.maxRows,
+        coverage: source.coverage?.() ?? undefined,
       });
       // The accept-guard over the text that will land — load-bearing
       // invariant, not a filter the renderer expects to trip.
@@ -385,8 +417,10 @@ export function buildDebtRenderTool(source: DebtRegisterSource, ctx: Conformance
         skipped_territories: report.skippedTerritories,
         staleAfterDays: report.staleAfterDays,
         stale: report.stale.length,
-        rows: Math.min(report.items.length, renderCfg.maxRows),
-        truncated: report.items.length > renderCfg.maxRows,
+        // What the note actually lists: report cap 1 clamps `registerMaxRows`
+        // to 200 and keeps the note under 256 KB.
+        rows,
+        truncated: report.items.length > rows,
         cleared: clearedKeys.length,
       };
     },

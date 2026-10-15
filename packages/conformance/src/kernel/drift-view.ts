@@ -25,6 +25,7 @@
 import { findingKey, type Finding } from "./finding.js";
 import type { RatchetResult } from "./ratchet.js";
 import { SCHEME_PACK_ID } from "./packs/scheme.js";
+import { REPORT_MAX_FINDINGS } from "./report-caps.js";
 
 export interface DriftGroup {
   /** The scheme pack's check code, e.g. "misfiled", "duplicate_address". */
@@ -59,4 +60,27 @@ export function newSchemeDrift(findings: Finding[], result: RatchetResult): Drif
   return [...byCheck.entries()]
     .map(([check, list]) => ({ check, findings: [...list].sort((a, b) => a.target.localeCompare(b.target)) }))
     .sort((a, b) => b.findings.length - a.findings.length || a.check.localeCompare(b.check));
+}
+
+/** A drift group as the pane lists it: the findings shown, and how many of the group's were left out. */
+export interface ShownDriftGroup {
+  check: string;
+  total: number;
+  shown: Finding[];
+  more: number;
+}
+
+/**
+ * Report cap 1 for the Drift pane: at most `limit` (200) findings are listed
+ * in all, the groups taking the budget in their order; each group says how
+ * many of its findings were left out. A pane of thousands of rows is the
+ * renderer freeze the cap exists for. Pure.
+ */
+export function capDriftGroups(groups: DriftGroup[], limit: number = REPORT_MAX_FINDINGS): ShownDriftGroup[] {
+  let room = Math.max(0, limit);
+  return groups.map((g) => {
+    const shown = g.findings.slice(0, room);
+    room -= shown.length;
+    return { check: g.check, total: g.findings.length, shown, more: g.findings.length - shown.length };
+  });
 }

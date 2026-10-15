@@ -8,7 +8,9 @@ The conformance rail for an Obsidian vault: rule packs run over the vault, the f
 - **`vaultmcp_conformance_debt_render`** — writes the debt register note (`Conformance debt.md`, by default beside the baseline). It writes only that note.
 - **The Drift pane** — the scheme pack's new findings, grouped by check, with a ribbon icon and the command "Open conformance drift". Refresh is a button.
 - **The settings tab** — the vault conventions (the folders the legacy packs measure and the baseline note) and the debt register settings.
-- **The CLI** — `npm run conformance -- --root=<vault> …` from this folder, or `node --import tsx src/kernel/main.ts …`.
+- **The CLI** — `npm run conformance -- --root=<vault> …` from this folder, or `node --import tsx src/kernel/main.ts …`. `--findings-json` writes the run's full finding set to `~/.local/share/vault-audits/conformance-<stamp>.json` (or `--findings-json=<path>`), never inside the vault.
+- **The rule packs** — vocab, scheme, the four ported legacy packs (structure, port, ste, drift) and, since 2026-10-15, `shape`: the replacements for Forge's checks (the shape of each typed note from its Fileclass class note, and the drift pack's K and L for `uid`, `created` and `modified`). `shape` reads the `fileclassesRoot` convention and is not measured while it is blank.
+- **A size cap on every report** — a report note lists at most 200 findings and stays under 256 KB, an output over 5 MB is replaced by its counts, and every report says what it checked (`src/kernel/report-caps.ts`).
 
 Both MCP tools are published to the Vault MCP host (plugin id `vault-mcp`) through `vault-mcp-api`, so they need the host. The Drift pane and the tools also need the host's guarded territories, which the plugin reads from the host on each run; with no host answering they refuse to run.
 
@@ -26,7 +28,8 @@ packages/conformance/
 │   ├── host-lookup.ts     finds the host; its territories, settings and headless flag
 │   ├── obsidian-debt-source.ts / obsidian-drift-source.ts   the live sources (run the engine over the vault on disk)
 │   ├── drift-pane.ts      the Drift pane view
-│   └── kernel/            the rail: engine, packs, snapshot, ratchet, debt, register, CLI (moved from the host's src/conformance/)
+│   └── kernel/            the rail: engine, packs, snapshot, ratchet, debt, register, CLI (moved from the host's src/conformance/);
+│                          report-caps.ts / audit-output.ts (the size caps); shapes/ (Forge's shape matcher, MIT, see shapes/LICENSE)
 └── tests/                 headless tests; tests/host-shim.mjs stands in for the host's publication
 ```
 

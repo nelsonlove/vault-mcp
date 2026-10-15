@@ -145,7 +145,8 @@ describe("settings adoption from the host (one shot)", () => {
   test("adopts the conventions and every debt config key, never an unknown key, and latches", () => {
     const next = adoptHostSettings({ ...DEFAULT_PLUGIN_SETTINGS, config: {} }, hostSettings, {});
     assert.equal(next.adoptedFromHost, true);
-    assert.deepEqual(next.vaultConventions, hostSettings.vaultConventions);
+    // The host's record predates the shape pack's key, which adopts blank (dead until the operator names the folder).
+    assert.deepEqual(next.vaultConventions, { ...hostSettings.vaultConventions, fileclassesRoot: "" });
     assert.deepEqual(next.config, { staleAfterDays: 30, debtBudget: 5, strictBudget: true, registerDir: "Out", registerMaxRows: 10 });
     assert.deepEqual([...ADOPTABLE_CONFIG_KEYS].sort(), ["debtBudget", "registerDir", "registerMaxRows", "staleAfterDays", "strictBudget"]);
     assert.equal(adoptHostSettings(next, hostSettings, {}), null, "latched: never again");

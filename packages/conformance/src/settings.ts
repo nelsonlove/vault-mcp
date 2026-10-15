@@ -205,6 +205,6 @@ export const DEBT_FIELDS: DebtField[] = [
     key: "registerMaxRows",
     label: "Register row limit",
     type: "number",
-    help: `The most carried-debt rows the register table shows. Blank = the default (${DEFAULT_REGISTER_MAX_ROWS}).`,
+    help: `The most carried-debt rows the register table shows. Blank = the default (${DEFAULT_REGISTER_MAX_ROWS}). A larger value is clamped to ${DEFAULT_REGISTER_MAX_ROWS}.`,
   },
 ];

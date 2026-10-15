@@ -38,7 +38,7 @@
 // checking for drift can click Refresh.
 
 import { ItemView, type WorkspaceLeaf } from "obsidian";
-import type { DriftGroup } from "./kernel/drift-view.js";
+import { capDriftGroups, type DriftGroup } from "./kernel/drift-view.js";
 
 export const DRIFT_VIEW_TYPE = "vaultmcp-conformance-drift";
 
@@ -101,22 +101,27 @@ export class DriftPaneView extends ItemView {
       root.createEl("p", { text: "All clear — no new drift." }).style.color = "var(--text-muted)";
     } else if (!this.loading) {
       const controller = viewCtl.get(this)!;
-      for (const group of this.groups) {
+      // Report cap 1: at most 200 rows in all, each group saying how many it left out.
+      for (const group of capDriftGroups(this.groups)) {
         const section = root.createEl("details");
         section.setAttr("open", "");
         section.style.marginTop = "8px";
         const summary = section.createEl("summary");
         summary.style.cssText = "cursor: pointer; font-size: var(--font-ui-smaller); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint);";
-        summary.setText(`${group.check} (${group.findings.length})`);
+        summary.setText(`${group.check} (${group.total})`);
 
         const list = section.createEl("ul");
         list.style.cssText = "list-style: none; margin: 2px 0; padding: 0;";
-        for (const finding of group.findings) {
+        for (const finding of group.shown) {
           const li = list.createEl("li");
           li.style.cssText = "padding: 2px 4px; cursor: pointer; border-radius: 4px;";
           li.createEl("div", { text: finding.target }).style.fontWeight = "500";
           li.createEl("div", { text: finding.detail }).style.cssText = "color: var(--text-muted); font-size: var(--font-ui-smaller);";
           li.addEventListener("click", () => controller.openNote(finding.target));
+        }
+        if (group.more > 0) {
+          list.createEl("li", { text: `+${group.more} more not shown (run the conformance CLI for the full set)` }).style.cssText =
+            "padding: 2px 4px; color: var(--text-faint); font-size: var(--font-ui-smaller);";
         }
       }
     }
