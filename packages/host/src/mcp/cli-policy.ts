@@ -217,6 +217,9 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
   const roots = (settings as { choices?: unknown } | null | undefined)?.choices;
   if (!Array.isArray(roots)) return null;
   const byId = new Map<string, QuickAddChoiceInfo>();
+  // QuickAdd resolves a shared id to the first match; the gate cannot know it checked that one, so an id
+  // seen twice resolves to nothing (#552 review 3), which fails closed.
+  const dupIds = new Set<string>();
   const walkChoices = (list: unknown[]): void => {
     for (const raw of list) {
       if (!raw || typeof raw !== "object") continue;
@@ -225,6 +228,7 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
         const info: QuickAddChoiceInfo = { id: c.id, name: c.name, type: typeof c.type === "string" ? c.type : "", scripts: [], choiceRefs: [], runsOtherOpaque: false };
         collectSteps(c.macro, info, 0);
         if (mentionsFormatCode(c)) info.runsOtherOpaque = true;
+        if (byId.has(c.id)) dupIds.add(c.id);
         byId.set(c.id, info);
       }
       if (Array.isArray(c.choices)) walkChoices(c.choices);
@@ -234,6 +238,10 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
     if (depth > 50 || !node || typeof node !== "object") return;
     if (Array.isArray(node)) { for (const n of node) collectSteps(n, info, depth + 1); return; }
     const o = node as Record<string, unknown>;
+    // Fail closed on a step type the gate does not know (#552 review 3): an AIAssistant step formats a
+    // prompt-template note through QuickAdd's formatter, which runs macros and inline code the gate cannot
+    // read, and a future step type may do the same.
+    if (depth > 0 && typeof o.type === "string" && !KNOWN_STEP_TYPES.has(o.type)) info.runsOtherOpaque = true;
     if (o.type === "UserScript" && typeof o.path === "string") info.scripts.push(o.path);
     // A Conditional step's condition may be a script (`{ mode: "script", scriptPath }`): it runs too.
     if (typeof o.scriptPath === "string") info.scripts.push(o.scriptPath);
@@ -254,8 +262,11 @@ export function quickAddChoicesFrom(settings: unknown): QuickAddChoices | null {
     }
   };
   walkChoices(roots);
-  return { get: (id) => byId.get(id) ?? null, all: () => [...byId.values()] };
+  return { get: (id) => (dupIds.has(id) ? null : byId.get(id) ?? null), all: () => [...byId.values()] };
 }
+
+/** Macro step types the gate reads (#552 review 3). Any other type marks its choice as unsafe. */
+const KNOWN_STEP_TYPES = new Set(["UserScript", "Obsidian", "Choice", "NestedChoice", "Wait", "EditorCommand", "Conditional", "OpenFile"]);
 
 /** Does any string in this choice (its own settings, not nested choices) call a macro or inline code
  *  through QuickAdd's format engine? */

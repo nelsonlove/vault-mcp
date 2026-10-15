@@ -138,6 +138,9 @@ const QA_SETTINGS = {
     qa("qan:Q/Cond.md#choice", "Check note", [{ type: "Conditional", condition: { mode: "script", scriptPath: VERB_SCRIPT, exportName: "default" }, thenCommands: [] }]),
     qa("qan:Q/Fmt.md#choice", "Format macro", [{ type: "Wait", note: "{{MACRO:Verify current note}}" }]),
     { id: "qan:Q/Capture.md#choice", name: "Capture idea", type: "Capture", command: true, format: { enabled: true, format: "{{VALUE}}" } },
+    qa("qan:Q/AI.md#choice", "Ask AI", [{ type: "AIAssistant", promptTemplate: { enable: true, name: "Prompt" } }]),
+    qa("qan:Q/SameId.md#choice", "Safe one"),
+    qa("qan:Q/SameId.md#choice", "Other one"),
     qa("qan:Q/Dup1.md#choice", "Same name"),
     qa("qan:Q/Dup2.md#choice", "Same name"),
     { id: "multi", name: "Folder", type: "Multi", choices: [qa("qan:Q/Nested.md#choice", "Nested", [{ type: "NestedChoice", choice: qa("inner-1", "Reject current note") }])] },
@@ -176,6 +179,8 @@ describe("runCommandRefusal: a glob reaches resolvable, non-verb QuickAdd choice
       "qan:Q/Capture.md#choice",
       "qan:Q/Dup1.md#choice",
       "qan:Q/Dup2.md#choice",
+      "qan:Q/AI.md#choice",
+      "qan:Q/SameId.md#choice",
     ]) assert.ok(runCommandRefusal(cid(id), glob, CHOICES), id);
     assert.equal(choiceIsOrRunsVerb("qan:Q/New idea.md#choice", CHOICES), false);
   });
