@@ -18,8 +18,13 @@
 // ratchet key and could mask a genuinely-new violation (a ratchet must never
 // silently drop a regression — false-NEW churn is safer than false-CARRIED).
 // The finding logic is NOT re-implemented here — this only re-homes the output.
+//
+// Source-level findings (`vocabularyFindings`: the scope-tags table lint and
+// `scope_root_missing`) run ONCE per pass, before the per-note ones, so a dead
+// root scope note is loud here rather than silently switching scoping off
+// (#551 review). A finding with no path targets its token (the root path).
 
-import { noteVocabFindings, type VocabularyProvider } from "@vault-mcp/core";
+import { noteVocabFindings, vocabularyFindings, type VocabFinding, type VocabularyProvider } from "@vault-mcp/core";
 import type { Finding } from "../finding.js";
 import type { RulePack, VaultSnapshot } from "../rule-pack.js";
 
@@ -29,16 +34,17 @@ export function vocabPack(providers: VocabularyProvider[]): RulePack {
   return {
     id: VOCAB_PACK_ID,
     run(snapshot: VaultSnapshot): Finding[] {
-      const out: Finding[] = [];
+      const toFinding = (f: VocabFinding): Finding => ({
+        script: VOCAB_PACK_ID,
+        check: f.code,
+        target: f.path ?? f.token,
+        kind: f.token,
+        detail: f.detail,
+      });
+      const out: Finding[] = vocabularyFindings(providers).map(toFinding);
       for (const note of snapshot.notes) {
         for (const f of noteVocabFindings({ path: note.path, frontmatter: note.frontmatter ?? null }, providers)) {
-          out.push({
-            script: VOCAB_PACK_ID,
-            check: f.code,
-            target: f.path ?? f.token,
-            kind: f.token,
-            detail: f.detail,
-          });
+          out.push(toFinding(f));
         }
       }
       return out;

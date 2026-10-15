@@ -31,7 +31,7 @@ ruling — the engine replaced the loose Python rail scripts, whose retirement i
 
 - **Native** — `scheme.ts` (the scope module's `schemeFindings`: addressing/structure drift)
   and `vocab.ts` (unregistered tags, undefined properties, unknown types, deprecated terms).
-  `vocab.ts` wraps `noteVocabFindings`, which lives in **`@vault-mcp/core`** since the S7
+  `vocab.ts` wraps `noteVocabFindings` per note and runs `vocabularyFindings` once per pass (the `## Tags` table lint and `scope_root_missing`). Both live in **`@vault-mcp/core`** since the S7
   read-tier extraction: this rail and the `vaultmcp-vocab` satellite are its two consumers, and
   a second copy of a vocabulary rule core is how one vault gets two vocabularies. Note that
   this rail builds its registry from `DEFAULT_VOCABULARIES` rather than from the configured

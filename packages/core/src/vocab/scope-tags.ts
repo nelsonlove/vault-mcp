@@ -1,36 +1,42 @@
-// scope-tags.ts — the scope-tags VocabularyProvider: per-scope tag whitelists
-// with chain inheritance, the vocab module's first live-generation provider
-// (#251). Two independent gates, one inheritance rule, read straight off the
-// vault's own declarations:
+// scope-tags.ts — the scope-tags VocabularyProvider: the vault's tags as the
+// `## Tags` tables on its scope notes declare them, with chain inheritance.
 //
-//   1. EXISTENCE — a tag exists iff a registry note declares it: a note whose
-//      `fileClass` is the registry class (live default `Meta/Tag`), carrying
-//      the canonical token in its `tag` field. Exact-match, deliberately NOT
-//      prefix-permissive like the gen-old blueprint grammar — placement gets
-//      the subtree semantics instead, which is safe precisely because
-//      existence is gated separately.
-//   2. PLACEMENT — each scope folder-note declares what it admits via
-//      `allowedTags`; a note's effective set is the UNION of `allowedTags`
-//      walking up its folder chain (band ← category ← area ← system root, the
-//      root being a configured vault-root note, live default `The system.md`).
-//      Subtree semantics: allowing `note` admits `note/task`,
-//      `note/clipping/web`, … (Obsidian nested-tag behavior).
+// The model is the vault spec's (01.13 Tags & vocabulary, rules 2, 5a, 6 and
+// 6a; 01.21 Scopes & scope notes, rule 3 as amended 2026-10-14). It replaced the
+// #251 model this file first served (`Meta/Tag` registry notes plus an
+// `allowedTags` frontmatter key on each scope note, under a vault-root
+// `The system.md`), which the vault retired: measured 2026-10-14, zero
+// `Meta/Tag` notes, zero live `allowedTags` keys, no `The system.md` (#551).
 //
-// Two deliberate live-model gates (2026-08-19, registry seeding deferred per
-// Nelson — audit against the live model, never force it):
-//   - UNSEEDED REGISTRY: zero registry notes ⇒ existence findings do not fire
-//     (vacuously valid, the module's "no provider serving a kind" convention).
-//     An unseeded registry is a reportable state — counts of 0 through
-//     `obsidian_vocabularies` — not per-tag drift.
-//   - UNDECLARED CHAIN: a note whose whole chain declares no `allowedTags` key
-//     has the whitelist machinery not yet engaged — no placement findings. A
-//     chain that declares the key (even as `[]`) is authoritative.
+//   1. DECLARATION — each scope or slot note (a folder note, `A/B/B.md`)
+//      declares the tags it owns in a `## Tags` section holding a two-column
+//      table: tag and description. The tables are the ONLY place a tag is
+//      declared (rule 6a: a hand-kept allowed set is a second authority and
+//      loses). A row is EXACT: `person` declares `person`, nothing below it. A
+//      row written `head/*` declares the family: every token under `head/`,
+//      but not the bare head (rule 5c: a head is never assigned on its own).
+//   2. EXISTENCE — a tag exists iff some row anywhere in the listing declares
+//      it, exactly or through a family row.
+//   3. PLACEMENT — a note's allowed set is the UNION of the tables met walking
+//      its folder chain to the root (its own folder's note, each ancestor's,
+//      then the root scope note). The root scope note is the folder note of
+//      category 00 (`00 System management`), which claims the whole vault by
+//      declaration rather than by folder (01.21 rule 3, the one exception to
+//      "a scope note claims its folder"), so its table — the families every
+//      note may carry — joins every chain.
+//
+// THE ROOT IS THE SWITCH (01.21 rule 3): a vault with no root scope note has
+// no scoping. So with `rootNote` configured and absent from the listing, no
+// per-note finding fires — and `registryFindings` reports `scope_root_missing`
+// instead, so a dead root path is LOUD (the glossary `termsRoot` went dead
+// silently three times; this must not).
 //
 // Every vault-semantic value is CONFIG (ScopeTagsConfig) with today's live
-// shapes as defaults — no hardwired vault constants. Kernel-module rules:
-// pure, no `obsidian` imports, no I/O; the tool layer feeds the listing
-// (visible-filtered before anything is read) and the provider never reads the
-// vault itself. Report-first: findings are data; curation stays human.
+// shapes as defaults. Kernel-module rules: pure, no `obsidian` imports, no
+// I/O; the tool layer feeds the listing (visible-filtered before anything is
+// read, scope-note BODIES included — see `isScopeTagsSource`) and the provider
+// never reads the vault itself. Report-first: findings are data; curation
+// stays human.
 
 import {
   VocabAmbiguousError,
@@ -42,32 +48,29 @@ import {
   type VocabularyProvider,
 } from "./provider.js";
 import type { VocabNote } from "./blueprint.js";
+import { stripLeadingFrontmatter } from "../accept-guard.js";
 
 export interface ScopeTagsConfig {
-  /** The `fileClass` value that marks a tag-registry note. */
-  registryClass: string;
-  /** The frontmatter key on a registry note carrying the canonical token. */
-  tagKey: string;
-  /** The frontmatter key on a scope note carrying its whitelist. */
-  allowedTagsKey: string;
-  /** Vault-relative path of the root scope note (the vault-root "folder
-   * note"); "" = no root scope note. */
+  /** Vault-relative path of the root scope note, whose table joins every
+   * chain; "" = no root scope note (scoping is then on whenever any table is
+   * declared, and no table is vault-wide). */
   rootNote: string;
+  /** The H2 heading text whose first table declares a scope's tags. */
+  tagsHeading: string;
 }
 
-/** Today's live shapes (read from the vault 2026-08-19): `Meta/Tag` registry
- * notes with a `tag` field; `allowedTags` on `Scope/*` folder notes; the root
- * scope note `The system.md` at the vault root. */
+/** Today's live shapes (read from the vault 2026-10-14, #551): the root scope
+ * note is the folder note of category 00; the tables sit under `## Tags`. */
 export const DEFAULT_SCOPE_TAGS_CONFIG: ScopeTagsConfig = {
-  registryClass: "Meta/Tag",
-  tagKey: "tag",
-  allowedTagsKey: "allowedTags",
-  rootNote: "The system.md",
+  rootNote: "00-09 System/00 System management/00 System management.md",
+  tagsHeading: "Tags",
 };
 
 /** Settings hygiene, the scheme registry's pattern (`validateJdConfig`): a
  * problems list, empty when the config is usable. Unknown keys are ignored —
- * partial overrides deep-merge over the defaults. */
+ * partial overrides merge over the defaults. The retired #251 keys
+ * (`registryClass`, `tagKey`, `allowedTagsKey`) are unknown keys now: ignored,
+ * not refused, so an old row keeps working on the new model. */
 export function validateScopeTagsConfig(config: unknown): string[] {
   if (config === undefined) return [];
   if (config === null || typeof config !== "object" || Array.isArray(config)) {
@@ -75,10 +78,8 @@ export function validateScopeTagsConfig(config: unknown): string[] {
   }
   const problems: string[] = [];
   const c = config as Record<string, unknown>;
-  for (const key of ["registryClass", "tagKey", "allowedTagsKey"] as const) {
-    if (key in c && c[key] !== undefined && (typeof c[key] !== "string" || (c[key] as string).trim() === "")) {
-      problems.push(`${key} must be a non-empty string`);
-    }
+  if ("tagsHeading" in c && c.tagsHeading !== undefined && (typeof c.tagsHeading !== "string" || c.tagsHeading.trim() === "")) {
+    problems.push("tagsHeading must be a non-empty string");
   }
   if ("rootNote" in c && c.rootNote !== undefined && typeof c.rootNote !== "string") {
     problems.push(`rootNote must be a string ("" for no root scope note)`);
@@ -86,20 +87,41 @@ export function validateScopeTagsConfig(config: unknown): string[] {
   return problems;
 }
 
-/** The provider plus the registry-level findings the whole-vault rule pack
+/** The effective config of one instance: its `config` over the defaults. The
+ * tool layer uses it too, to decide which bodies to read. */
+export function resolveScopeTagsConfig(config: Record<string, unknown> | undefined): ScopeTagsConfig {
+  const c = config ?? {};
+  return {
+    rootNote: typeof c.rootNote === "string" ? c.rootNote : DEFAULT_SCOPE_TAGS_CONFIG.rootNote,
+    tagsHeading:
+      typeof c.tagsHeading === "string" && c.tagsHeading.trim() !== ""
+        ? c.tagsHeading.trim()
+        : DEFAULT_SCOPE_TAGS_CONFIG.tagsHeading,
+  };
+}
+
+/** The provider plus the declaration-level findings the whole-vault rule pack
  * needs (per-note findings ride the optional `noteFindings` seam every
  * provider may implement). */
 export interface ScopeTagsProvider extends VocabularyProvider {
-  /** `registry_entry_untagged` + `registry_duplicate` — findings about the
-   * registry itself, independent of any note's use. */
+  /** `scope_root_missing`, `tag_declared_twice_on_chain`,
+   * `tag_declared_on_two_branches` — findings about the tables themselves,
+   * independent of any note's use. */
   registryFindings(): VocabFinding[];
 }
 
-/** The type-bearing frontmatter key (an Obsidian/Fileclass convention, the
- * same constant findings.ts pins as TYPE_KEY — not a vault-semantic value). */
-const CLASS_KEY = "fileClass";
-
-const SUPERSEDED = /^\[superseded\]/i;
+/** One table row as declared. */
+interface Declaration {
+  /** The token as written, `#` and backticks stripped: `note/task`, `note/*`. */
+  token: string;
+  /** For a family row (`head/*`), the head (`head`); null for an exact row. */
+  family: string | null;
+  description: string;
+  /** The scope note declaring it. */
+  path: string;
+  /** The folder it speaks for ("" for the root scope note). */
+  folder: string;
+}
 
 function basename(path: string): string {
   const i = path.lastIndexOf("/");
@@ -110,24 +132,79 @@ function underRoot(path: string, root: string): boolean {
   return root === "" || path === root || path.startsWith(root + "/");
 }
 
-/** `[[A/B/Meta/Tag.md|alias]]` → `A/B/Meta/Tag`; plain values pass through
- * with any `.md` / `.fileclass` suffix dropped. */
-function classInner(v: string): string {
-  const inner = v.replace(/^\[\[/, "").replace(/\]\]$/, "").split("|")[0];
-  return inner.replace(/\.fileclass$/, "").replace(/\.md$/, "");
+/** `` `#note/task` `` → `note/task`. */
+function cleanTag(cell: string): string {
+  return cell.trim().replace(/^`+|`+$/g, "").trim().replace(/^#/, "").trim();
 }
 
-/** Does this note's `fileClass` name the registry class? Live notes write the
- * plain class path (`Meta/Tag`); a wikilinked full path matches by suffix. */
-function isRegistryNote(fm: Record<string, unknown>, registryClass: string): boolean {
-  return asStrings(fm[CLASS_KEY]).some((v) => {
-    const inner = classInner(v);
-    return inner === registryClass || inner.endsWith("/" + registryClass);
-  });
+const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The rows of the first table under the `## <heading>` H2: `[{ tag,
+ * description }]`. The same reading as the vault's own `scope-tags.js`
+ * (00.13 Scripts), so the satellite and the vault's renderer cannot disagree
+ * about a table: the section ends at the next H1/H2, the table at its first
+ * non-table line; the header row and the `---` separator are skipped; fenced
+ * code is ignored; an empty tag cell is no row. A leading frontmatter block is
+ * stripped first, so a raw file and a bare body parse alike.
+ */
+export function parseTagsTable(body: string, heading: string = DEFAULT_SCOPE_TAGS_CONFIG.tagsHeading): Array<{ tag: string; description: string }> {
+  const lines = stripLeadingFrontmatter(String(body)).split(/\r?\n/);
+  const head = new RegExp(`^##[ \\t]+${escapeRegExp(heading)}[ \\t]*$`);
+  const start = lines.findIndex((l) => head.test(l));
+  if (start < 0) return [];
+  const rows: Array<{ tag: string; description: string }> = [];
+  let inFence = false;
+  let inTable = false;
+  let header = true;
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (/^(```|~~~)/.test(line)) {
+      inFence = !inFence;
+      if (inTable) break;
+      continue;
+    }
+    if (inFence) continue;
+    if (/^#{1,2}[ \t]/.test(line)) break;
+    if (!/^\s*\|/.test(line)) {
+      if (inTable) break;
+      continue;
+    }
+    inTable = true;
+    const cells = line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+    if (header) {
+      header = false;
+      continue;
+    }
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+    const tag = cleanTag(cells[0] ?? "");
+    if (!tag) continue;
+    rows.push({ tag, description: (cells[1] ?? "").trim() });
+  }
+  return rows;
 }
 
-/** Every folder above `path`, nearest first, ending with "" (the vault root):
- * `a/b/c.md` → ["a/b", "a", ""]. */
+/** The folder a note is the scope note OF: the configured root note speaks
+ * for "" (the whole vault), a folder note (`A/B/B.md`) for its folder. Null
+ * for every other note — a `## Tags` table on a non-folder-note declares
+ * nothing. */
+function scopeFolderOf(path: string, rootNote: string): string | null {
+  if (rootNote !== "" && path === rootNote) return "";
+  const i = path.lastIndexOf("/");
+  if (i === -1) return null;
+  const folder = path.slice(0, i);
+  return path.slice(i + 1) === basename(folder) + ".md" ? folder : null;
+}
+
+/** Is `path` a note whose BODY the scope-tags provider reads — the root scope
+ * note or a folder note? The tool layer reads exactly these bodies, never the
+ * whole vault. */
+export function isScopeTagsSource(path: string, rootNote: string): boolean {
+  return scopeFolderOf(path, rootNote) !== null;
+}
+
+/** Every folder above `path`, nearest first, ending with "" (the vault root,
+ * which the root scope note speaks for): `a/b/c.md` → ["a/b", "a", ""]. */
 function chainFolders(path: string): string[] {
   const segs = path.split("/");
   segs.pop();
@@ -137,30 +214,27 @@ function chainFolders(path: string): string[] {
   return out;
 }
 
-/** The folder a note is the scope note OF: the configured root note speaks
- * for "" (the vault root), a folder note (`A/B/B.md`) for its folder. Null
- * for every other note — a stray `allowedTags` on a non-folder-note is not a
- * scope declaration. */
-function scopeFolderOf(path: string, rootNote: string): string | null {
-  if (rootNote !== "" && path === rootNote) return "";
-  const i = path.lastIndexOf("/");
-  if (i === -1) return null;
-  const folder = path.slice(0, i);
-  return path.slice(i + 1) === basename(folder) + ".md" ? folder : null;
+/** `a` is `b` or an ancestor of it ("" is everyone's ancestor). */
+function onChain(a: string, b: string): boolean {
+  return a === "" || a === b || b.startsWith(a + "/");
 }
 
-/** Subtree semantics: `allowed` admits `tag` when it lists the tag itself or
- * any ancestor namespace. */
-function admits(allowed: readonly string[], tag: string): boolean {
-  return allowed.some((a) => tag === a || tag.startsWith(a + "/"));
+/** Folder depth: "" (the root's) is 0. */
+const depth = (folder: string): number => (folder === "" ? 0 : folder.split("/").length);
+
+/** Does the declaration admit `tag`? Exact rows admit themselves; a family
+ * row admits every token under its head, not the head itself. */
+function admits(d: Declaration, tag: string): boolean {
+  return d.family === null ? d.token === tag : tag.startsWith(d.family + "/");
 }
 
 export function scopeTagsProvider(cfg: ScopeTagsConfig, listing: VocabNote[]): ScopeTagsProvider {
+  const config = resolveScopeTagsConfig(cfg as unknown as Record<string, unknown>);
   const capabilities: VocabCapabilities = {
     validate: true,
     resolveDefinition: true,
     hierarchical: true,
-    deprecations: true,
+    deprecations: false,
   };
 
   const normalize = (raw: string): string => {
@@ -168,113 +242,104 @@ export function scopeTagsProvider(cfg: ScopeTagsConfig, listing: VocabNote[]): S
     return s.startsWith("#") ? s.slice(1) : s;
   };
 
-  // ── build: registry entries + scope whitelist map, one pass ────────────────
-  const entries: VocabEntry[] = [];
-  const untagged: string[] = [];
-  /** scope folder → its declared (normalized) whitelist. Only folders whose
-   * scope note DECLARES the key appear — presence is what engages the gate. */
-  const allowedByFolder = new Map<string, string[]>();
-
+  // ── build: every table row, one pass ───────────────────────────────────────
+  const decls: Declaration[] = [];
+  let rootPresent = false;
   for (const note of listing) {
-    const fm = note.frontmatter;
-    if (!fm) continue;
-    if (isRegistryNote(fm, cfg.registryClass)) {
-      // Deduped per note: a list value repeating one token is a single
-      // declaration, not a self-duplicate for `registry_duplicate` to report.
-      const tokens = [...new Set(asStrings(fm[cfg.tagKey]).map(normalize).filter((t) => t !== ""))];
-      if (tokens.length === 0) {
-        untagged.push(note.path);
-      } else {
-        for (const canonical of tokens) {
-          entries.push({
-            canonical,
-            kind: "tag",
-            path: note.path,
-            aliases: asStrings(fm.aliases),
-            definition: typeof fm.description === "string" ? fm.description : null,
-            parent: canonical.includes("/") ? canonical.split("/").slice(0, -1).join("/") : null,
-            deprecated: fm.retired === true || fm.deprecated === true || SUPERSEDED.test(basename(note.path)),
-          });
-        }
-      }
-    }
-    if (cfg.allowedTagsKey in fm) {
-      const folder = scopeFolderOf(note.path, cfg.rootNote);
-      if (folder !== null) {
-        allowedByFolder.set(
-          folder,
-          asStrings(fm[cfg.allowedTagsKey]).map(normalize).filter((t) => t !== "")
-        );
-      }
+    if (config.rootNote !== "" && note.path === config.rootNote) rootPresent = true;
+    const folder = scopeFolderOf(note.path, config.rootNote);
+    if (folder === null || !note.body) continue;
+    for (const { tag, description } of parseTagsTable(note.body, config.tagsHeading)) {
+      const token = normalize(tag);
+      if (token === "") continue;
+      const family = token.endsWith("/*") ? token.slice(0, -2) : null;
+      if (family === "") continue; // a bare `/*` names no head
+      decls.push({ token, family, description, path: note.path, folder });
     }
   }
-  entries.sort((a, b) => (a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : 0));
+  /** The switch: with a root configured, its presence; without one, any table. */
+  const engaged = config.rootNote !== "" ? rootPresent : decls.length > 0;
 
-  const byToken = new Map<string, VocabEntry[]>();
-  for (const e of entries) {
-    const list = byToken.get(e.canonical) ?? [];
-    list.push(e);
-    byToken.set(e.canonical, list);
+  const byFolder = new Map<string, Declaration[]>();
+  const byToken = new Map<string, Declaration[]>();
+  for (const d of decls) {
+    byFolder.set(d.folder, [...(byFolder.get(d.folder) ?? []), d]);
+    byToken.set(d.token, [...(byToken.get(d.token) ?? []), d]);
   }
-  /** Registry notes exist at all — the seeded/unseeded switch. An untagged
-   * registry note still counts as "the registry exists": its own finding
-   * (`registry_entry_untagged`) is the actionable report there. */
-  const seeded = entries.length > 0 || untagged.length > 0;
 
-  /** The chain union for a note path: `declared` is whether ANY chain scope
-   * note declares the whitelist key — undeclared means the placement gate is
-   * not engaged for that note. */
-  function chainUnion(notePath: string): { declared: boolean; allowed: string[] } {
-    const allowed = new Set<string>();
-    let declared = false;
-    for (const folder of chainFolders(notePath)) {
-      const declaredHere = allowedByFolder.get(folder);
-      if (declaredHere === undefined) continue;
-      declared = true;
-      for (const t of declaredHere) allowed.add(t);
-    }
-    return { declared, allowed: [...allowed] };
+  const entryOf = (d: Declaration): VocabEntry => {
+    const name = d.family ?? d.token;
+    return {
+      canonical: d.token,
+      kind: "tag",
+      path: d.path,
+      aliases: [],
+      definition: d.description !== "" ? d.description : null,
+      parent: d.family !== null ? d.family : name.includes("/") ? name.split("/").slice(0, -1).join("/") : null,
+      deprecated: false,
+    };
+  };
+  const entries = decls
+    .map(entryOf)
+    .sort((a, b) => (a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : (a.path ?? "") < (b.path ?? "") ? -1 : 1));
+
+  /** The rows declaring `tag`: its exact rows if any, else the rows of its
+   * most specific family. */
+  function declaring(tag: string): Declaration[] {
+    const exact = (byToken.get(tag) ?? []).filter((d) => d.family === null);
+    if (exact.length > 0) return exact;
+    const families = decls.filter((d) => d.family !== null && admits(d, tag));
+    if (families.length === 0) return [];
+    const longest = Math.max(...families.map((d) => (d.family as string).length));
+    return families.filter((d) => (d.family as string).length === longest);
+  }
+
+  /** The tables met walking `notePath`'s chain, nearest first. */
+  function chain(notePath: string): Declaration[] {
+    return chainFolders(notePath).flatMap((f) => byFolder.get(f) ?? []);
   }
 
   // ── the VocabularyProvider surface ─────────────────────────────────────────
 
   function validateToken(rawToken: string, kind: VocabKind): VocabFinding[] {
     if (kind !== "tag") return [];
-    if (!seeded) return []; // registry seeding deferred — reportable state, not per-tag drift
+    if (!engaged) return []; // no root scope note ⇒ no scoping (01.21 rule 3)
     const token = normalize(rawToken);
-    const found = byToken.get(token) ?? [];
-    if (found.length > 0) {
-      if (found.every((e) => e.deprecated)) {
-        return [
-          {
-            code: "deprecated",
-            token,
-            path: null,
-            detail: `'${token}' (tag) is deprecated — declared at ${found.map((e) => e.path).join(", ")}`,
-          },
-        ];
-      }
-      return [];
-    }
+    if (declaring(token).length > 0) return [];
     return [
       {
         code: "tag_unregistered",
         token,
         path: null,
-        detail: `'${token}' is not a registered tag — no ${cfg.registryClass} note declares it`,
+        detail: `'${token}' is not a declared tag — no \`## ${config.tagsHeading}\` table row declares it, exactly or as a \`head/*\` family`,
       },
     ];
   }
 
+  /** The declaring row's entry. A token declared only through a family row
+   * resolves to an entry for the TOKEN, carrying the family row's path and
+   * description. Several rows with one description are one sense (the
+   * duplicate is `registryFindings`' report); differing descriptions refuse. */
   function resolve(rawToken: string, kind: VocabKind): VocabEntry | null {
     if (kind !== "tag") return null;
     const token = normalize(rawToken);
-    const found = byToken.get(token) ?? [];
+    const found = declaring(token);
     if (found.length === 0) return null;
-    if (found.length > 1) {
-      throw new VocabAmbiguousError(token, "tag", found.map((e) => e.path ?? "<pathless>"));
+    const senses = new Set(found.map((d) => d.description));
+    if (senses.size > 1) {
+      throw new VocabAmbiguousError(token, "tag", found.map((d) => d.path));
     }
-    return found[0];
+    const d = found[0];
+    if (d.family === null) return entryOf(d);
+    return {
+      canonical: token,
+      kind: "tag",
+      path: d.path,
+      aliases: [],
+      definition: d.description !== "" ? d.description : null,
+      parent: token.split("/").slice(0, -1).join("/"),
+      deprecated: false,
+    };
   }
 
   function list(kind: VocabKind, scope?: string): VocabEntry[] {
@@ -283,68 +348,78 @@ export function scopeTagsProvider(cfg: ScopeTagsConfig, listing: VocabNote[]): S
     return entries.filter((e) => e.path !== null && underRoot(e.path, scope));
   }
 
-  /** Per-note findings beyond token validation (the `noteFindings` seam):
-   * `tag_out_of_scope` for registered tags outside the note's chain union,
-   * `allowedTags_unregistered` for a scope note whitelisting tokens the
-   * registry does not declare. `tag_unregistered` arrives through the
-   * ordinary token path (validateToken via findings.ts's check). */
+  /** `tag_out_of_scope` — a declared tag that no table on the note's own
+   * chain admits. `tag_unregistered` arrives through the ordinary token path
+   * (validateToken via findings.ts's check). */
   function noteFindings(note: { path: string; frontmatter: Record<string, unknown> | null }): VocabFinding[] {
-    if (!seeded) return [];
+    if (!engaged) return [];
     const fm = note.frontmatter;
     if (!fm) return [];
+    const rows = chain(note.path);
     const findings: VocabFinding[] = [];
-
-    const { declared, allowed } = chainUnion(note.path);
-    if (declared) {
-      for (const raw of asStrings(fm.tags)) {
-        const tag = normalize(raw);
-        if (tag === "" || !byToken.has(tag)) continue; // unregistered is the other finding
-        if (!admits(allowed, tag)) {
-          findings.push({
-            code: "tag_out_of_scope",
-            token: tag,
-            path: note.path,
-            detail:
-              `'${tag}' is registered but outside this note's scope chain — ` +
-              (allowed.length > 0 ? `the chain admits: ${allowed.join(", ")}` : "the chain admits no tags"),
-          });
-        }
-      }
-    }
-
-    if (cfg.allowedTagsKey in fm && scopeFolderOf(note.path, cfg.rootNote) !== null) {
-      for (const raw of asStrings(fm[cfg.allowedTagsKey])) {
-        const token = normalize(raw);
-        if (token === "" || byToken.has(token)) continue;
-        findings.push({
-          code: "allowedTags_unregistered",
-          token,
-          path: note.path,
-          detail: `this scope whitelists '${token}' but no ${cfg.registryClass} note declares it`,
-        });
-      }
+    for (const raw of asStrings(fm.tags)) {
+      const tag = normalize(raw);
+      if (tag === "") continue;
+      const where = declaring(tag);
+      if (where.length === 0) continue; // unregistered is the other finding
+      if (rows.some((d) => admits(d, tag))) continue;
+      const scopes = [...new Set(rows.map((d) => d.path))];
+      findings.push({
+        code: "tag_out_of_scope",
+        token: tag,
+        path: note.path,
+        detail:
+          `'${tag}' is declared at ${[...new Set(where.map((d) => d.path))].join(", ")}, but no table on this note's scope chain admits it — ` +
+          (scopes.length > 0 ? `the chain's tables are on: ${scopes.join(", ")}` : "no scope note on the chain declares a table"),
+      });
     }
     return findings;
   }
 
+  /** Findings about the tables (01.13 rule 6's lint): a token declared twice
+   * on one chain is refused — reported at the LOWER row, which is the one to
+   * drop or hoist; a token declared on two unrelated branches with different
+   * descriptions is reported once. Plus the switch, when the root is missing. */
   function registryFindings(): VocabFinding[] {
     const findings: VocabFinding[] = [];
-    for (const path of untagged) {
+    if (config.rootNote !== "" && !rootPresent) {
       findings.push({
-        code: "registry_entry_untagged",
-        token: basename(path).replace(/\.md$/, ""),
-        path,
-        detail: `registry note declares no '${cfg.tagKey}' value — invisible to its own whitelist`,
+        code: "scope_root_missing",
+        token: config.rootNote,
+        path: null,
+        detail:
+          `the root scope note '${config.rootNote}' is not in this vocabulary's listing — scoping is off, so no tag finding fires; ` +
+          "set this vocabulary's `rootNote` to the vault's root scope note",
       });
     }
-    for (const [token, list] of byToken) {
-      if (list.length < 2) continue;
-      findings.push({
-        code: "registry_duplicate",
-        token,
-        path: list[0].path,
-        detail: `'${token}' is claimed by ${list.length} registry notes: ${list.map((e) => e.path).join(", ")}`,
-      });
+    for (const [token, rows] of byToken) {
+      if (rows.length < 2) continue;
+      // shallowest first, so the row reported is always the lower one
+      const ordered = [...rows].sort((a, b) => depth(a.folder) - depth(b.folder));
+      for (let i = 1; i < ordered.length; i++) {
+        const upper = ordered.slice(0, i).find((u) => onChain(u.folder, ordered[i].folder));
+        if (!upper) continue;
+        findings.push({
+          code: "tag_declared_twice_on_chain",
+          token,
+          path: ordered[i].path,
+          detail:
+            upper.path === ordered[i].path
+              ? `'${token}' is declared twice in this note's table — keep one row`
+              : `'${token}' is declared here and again up the chain at ${upper.path} — keep the lower row or hoist it to the common ancestor`,
+        });
+      }
+      const unrelated = ordered.some((a, i) =>
+        ordered.slice(i + 1).some((b) => !onChain(a.folder, b.folder) && !onChain(b.folder, a.folder) && a.description !== b.description)
+      );
+      if (unrelated) {
+        findings.push({
+          code: "tag_declared_on_two_branches",
+          token,
+          path: ordered[0].path,
+          detail: `'${token}' is declared on unrelated branches with different descriptions: ${[...new Set(ordered.map((d) => d.path))].join(", ")} — keep one row or hoist it to the common ancestor`,
+        });
+      }
     }
     return findings;
   }
@@ -362,13 +437,12 @@ export function scopeTagsProvider(cfg: ScopeTagsConfig, listing: VocabNote[]): S
 }
 
 /**
- * The whole-vault five-finding rule pack — deliberately NOT a tool (the
- * conformance convention: capabilities arrive as rule packs, never as new
- * surface; per-note lookups go through `obsidian_validate_terms`). Exactly the
- * five specced codes:
+ * The whole-vault rule pack — deliberately NOT a tool (the conformance
+ * convention: capabilities arrive as rule packs, never as new surface;
+ * per-note lookups go through the validate tool). Exactly these codes:
  *
- *   tag_unregistered · tag_out_of_scope · allowedTags_unregistered ·
- *   registry_entry_untagged · registry_duplicate
+ *   tag_unregistered · tag_out_of_scope · tag_declared_twice_on_chain ·
+ *   tag_declared_on_two_branches · scope_root_missing
  */
 export function scopeTagsFindings(
   notes: Array<{ path: string; frontmatter: Record<string, unknown> | null }>,

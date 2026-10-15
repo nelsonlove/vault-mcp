@@ -157,9 +157,12 @@ import {
   asStrings,
   VocabAmbiguousError,
   noteVocabFindings,
+  vocabularyFindings,
   VocabRegistry,
   DEFAULT_VOCABULARIES,
   isVisible,
+  isScopeTagsSource,
+  resolveScopeTagsConfig,
   type VocabEntry,
   type VocabFinding,
   type VocabInstance,
@@ -221,8 +224,10 @@ export interface VocabSource {
   paths(): string[];
   /** Frontmatter of a markdown note, from the host's metadata cache. */
   frontmatter(path: string): Record<string, unknown> | null;
-  /** Raw content of any file (for `.fileclass` frontmatter and `## Terms`
-   * sections — the two shapes the metadata cache cannot serve). */
+  /** Raw content of any file (for `.fileclass` frontmatter, `## Terms`
+   * sections and scope notes' `## Tags` tables — the shapes the metadata
+   * cache cannot serve). A leading frontmatter block is fine: the parsers
+   * strip it. */
   body(path: string): Promise<string | null>;
 }
 
@@ -289,8 +294,9 @@ function under(path: string, root: string): boolean {
 /**
  * The notes the configured vocabularies need, visible-filtered BEFORE any
  * content is touched. Body reads are confined to what actually needs one:
- * `.fileclass` files under a blueprint root, and markdown under a glossary's
- * `termsRoot` (the `## Terms` chapters) — never the whole vault.
+ * `.fileclass` files under a blueprint root, markdown under a glossary's
+ * `termsRoot` (the `## Terms` chapters), and the scope notes a scope-tags
+ * vocabulary reads its `## Tags` tables from — never the whole vault.
  *
  * The `visible` filter is the DORMANT seam. In the shipped configuration it is
  * the identity, so this reads the whole vault listing; see the header for the
@@ -324,12 +330,14 @@ async function buildListing(
         if (termsRoot !== null && under(p, termsRoot) && under(p, row.root)) want(p, "body");
       }
     } else if (row.provider === "scope-tags") {
-      // Registry notes (`fileClass: Meta/Tag`) and scope folder-notes are
-      // recognized by FRONTMATTER, which only the provider can inspect — so
-      // every markdown note under the root arrives with its cached
-      // frontmatter. No body is ever read: this provider needs none.
+      // The tags are declared in the `## Tags` tables in the BODIES of scope
+      // notes (vault spec 01.13 rule 6), so this provider reads bodies — but
+      // only of the notes that can declare: folder notes (`A/B/B.md`) and the
+      // configured root scope note, recognized by PATH before anything is
+      // opened. It needs no frontmatter from the listing.
+      const { rootNote } = resolveScopeTagsConfig(row.config);
       for (const p of all) {
-        if (p.endsWith(".md") && under(p, row.root)) want(p, "fm");
+        if (p.endsWith(".md") && under(p, row.root) && isScopeTagsSource(p, rootNote)) want(p, "body");
       }
     }
   }
@@ -438,7 +446,16 @@ export function buildVocabTools(source: VocabSource, ctx: VocabToolsCtx): SdkToo
               inst.provider.kinds.map((k) => [k, inst.provider.list(k).slice(0, 3).map((e) => e.canonical)])
             ),
           })),
-          problems: registry.problems,
+          // settings problems, plus each instance's switch report: a dead
+          // root scope note is a configuration problem, not drift (#551 review)
+          problems: [
+            ...registry.problems,
+            ...all.flatMap((inst) =>
+              vocabularyFindings([inst.provider])
+                .filter((f) => f.code === "scope_root_missing")
+                .map((f) => `vocabulary '${inst.id}': ${f.detail}`)
+            ),
+          ],
         };
       },
     },
@@ -562,8 +579,9 @@ export function buildVocabTools(source: VocabSource, ctx: VocabToolsCtx): SdkToo
       description:
         "Check one note's frontmatter against the controlled vocabulary, per the configured providers: unregistered " +
         "tags (exact-match under the default scope-tags model; namespace-permissive under the legacy blueprint " +
-        "grammar), tags outside the note's scope-chain whitelist, unregistered whitelist entries on a scope note, " +
-        "undefined properties, unknown or retired types, ambiguous senses. Report-only — findings are returned, " +
+        "grammar), tags no `## Tags` table on the note's scope chain admits, a missing root scope note " +
+        "(scope_root_missing: scoping is off), undefined properties, unknown or retired types, ambiguous senses. " +
+        "Report-only — findings are returned, " +
         "never fixed, and nothing is written. `path` is a recognized Vault MCP path argument, so under an active path " +
         "allowlist this tool stays available and the host scopes the note you may name.",
       inputSchema: {
@@ -574,10 +592,14 @@ export function buildVocabTools(source: VocabSource, ctx: VocabToolsCtx): SdkToo
         const path = requirePath(args.path, "path");
         requireVisible(path);
         const { instances: all } = await instances();
-        const findings = noteVocabFindings(
-          { path, frontmatter: source.frontmatter(path) },
-          all.map((i) => i.provider)
-        );
+        const providers = all.map((i) => i.provider);
+        // A dead root switches scoping off, so the per-note checks go quiet;
+        // say so here, once per call (#551 review). Only that code: the table
+        // lint is about OTHER notes and belongs to the whole-vault rail.
+        const findings = [
+          ...vocabularyFindings(providers).filter((f) => f.code === "scope_root_missing"),
+          ...noteVocabFindings({ path, frontmatter: source.frontmatter(path) }, providers),
+        ];
         return { path, findings, clean: findings.length === 0 };
       },
     },
