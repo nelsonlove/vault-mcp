@@ -16,14 +16,23 @@
 // so the rule is tested without an app.
 
 import { MCP_SURFACE_INVENTORY, EXTERNAL_PUBLISHER_ROW, type Protection, type ProtectionClass } from "./operations/inventory-mcp.js";
+import type { DeclaredProtection } from "./tool-declaration.js";
 
 const BY_TOOL: ReadonlyMap<string, Protection | undefined> = new Map(MCP_SURFACE_INVENTORY.map((r) => [r.tool, r.protection]));
 
+/** The row that rules a tool: the inventory's when it knows the tool, else
+ *  what a satellite tool declared (apiVersion 3, tool-declaration.ts). The
+ *  inventory wins, so a declaration cannot weaken a host tool. */
+function ruleOf(tool: string, declared?: DeclaredProtection): Protection | undefined {
+  return BY_TOOL.has(tool) ? BY_TOOL.get(tool) : declared;
+}
+
 /** The protection class a call requires, or null when the call itself need
  *  carry nothing (a read, a non-write, the dispatcher, a batch checked per
- *  item, an external tool, or a tool this inventory does not know). */
-export function requiredProtection(tool: string, args: Record<string, unknown>): ProtectionClass | null {
-  const p = BY_TOOL.get(tool);
+ *  item, a v2 external tool, or a tool this inventory does not know and that
+ *  declared nothing). `declared` is a v3 satellite tool's own declaration. */
+export function requiredProtection(tool: string, args: Record<string, unknown>, declared?: DeclaredProtection): ProtectionClass | null {
+  const p = ruleOf(tool, declared);
   if (p === undefined) return null;
   if (typeof p === "object") {
     const v = args[p.arg];
@@ -60,8 +69,9 @@ export function protectionRefusal(
   tool: string,
   args: Record<string, unknown>,
   given: { ifRev?: number; idempotencyKey?: string },
+  declared?: DeclaredProtection,
 ): { code: string; message: string } | null {
-  const need = requiredProtection(tool, args);
+  const need = requiredProtection(tool, args, declared);
   if (need === null || need === "exempt") return null;
   const missing: string[] = [];
   if ((need === "token" || need === "both") && given.ifRev === undefined) missing.push(TOKEN_HOW);
@@ -81,8 +91,8 @@ export function protectionRefusal(
  * requirement before its first call is refused. Null when the argument is
  * optional for this tool.
  */
-export function requirementNote(tool: string, which: "if_rev" | "idempotency_key"): string | null {
-  const p = BY_TOOL.get(tool);
+export function requirementNote(tool: string, which: "if_rev" | "idempotency_key", declared?: DeclaredProtection): string | null {
+  const p = ruleOf(tool, declared);
   if (p === undefined) return null;
   const needs = (c: ProtectionClass) => (which === "if_rev" ? c === "token" || c === "both" : c === "key" || c === "both");
   if (typeof p === "object") {
@@ -117,7 +127,7 @@ function requirementText(p: Protection): string {
     case "not-a-write": return "nothing (not a vault write)";
     case "dispatcher": return "what the tool it calls requires";
     case "per-item": return "per item: `if_rev` to overwrite an existing note; nothing to create one";
-    case "external": return "not enforced yet: the SDK cannot declare protection until apiVersion 3";
+    case "external": return "what the tool declares (`protection`, satellite apiVersion 3); a tool that declares nothing (apiVersion 2): not enforced";
   }
 }
 
@@ -131,6 +141,6 @@ export function protectionTableMarkdown(): string {
   const rows = MCP_SURFACE_INVENTORY.filter((r) => !r.readOnly && r.protection !== undefined)
     .sort((a, b) => a.tool.localeCompare(b.tool))
     .map((r) => `| \`${r.tool}\` | ${requirementText(r.protection!)} | ${(r.protectionNote ?? "").replace(/\|/g, "\\|")} |`);
-  rows.push(`| satellite tools (\`vaultmcp_*\`) | ${requirementText(EXTERNAL_PUBLISHER_ROW.protection!)} | The known gap: every satellite is off today. |`);
+  rows.push(`| satellite tools (\`vaultmcp_*\`) | ${requirementText(EXTERNAL_PUBLISHER_ROW.protection!)} | Enforced like a host tool's row once declared (#550); the gap that remains is a satellite still on apiVersion 2. |`);
   return ["| Tool | Requires | Note |", "| --- | --- | --- |", ...rows].join("\n");
 }

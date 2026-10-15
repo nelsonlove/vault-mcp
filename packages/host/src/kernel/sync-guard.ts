@@ -28,6 +28,7 @@
 
 import { MCP_SURFACE_INVENTORY, type SyncKindSpec } from "./operations/inventory-mcp.js";
 import { collectPaths } from "../guard.js";
+import type { DeclaredSync } from "./tool-declaration.js";
 
 // ── settings ─────────────────────────────────────────────────────────────────
 
@@ -250,8 +251,9 @@ const KIND_BY_TOOL: ReadonlyMap<string, SyncKindSpec | undefined> = new Map(MCP_
  * row: one table, as `protection` is). Null for a tool the guard does not
  * check: a read, a non-note write, or a tool the inventory does not know.
  */
-export function syncKindOf(tool: string, args: Record<string, unknown>): SyncKind | null {
-  const k = KIND_BY_TOOL.get(tool);
+export function syncKindOf(tool: string, args: Record<string, unknown>, declared?: DeclaredSync): SyncKind | null {
+  // The inventory wins; a v3 satellite tool's declaration rules only a tool it does not know (#550).
+  const k = KIND_BY_TOOL.has(tool) ? KIND_BY_TOOL.get(tool) : declared?.kind;
   if (k === undefined) return null;
   if (typeof k === "string") return k;
   const v = args[k.arg];
@@ -300,15 +302,17 @@ export interface SyncGuardDeps {
  * write in `refuse` mode, and lets everything else go on with a warning.
  * Returns null when the call goes on with nothing to say.
  */
-export async function decideSync(tool: string, args: Record<string, unknown>, deps: SyncGuardDeps): Promise<SyncDecision> {
+export async function decideSync(tool: string, args: Record<string, unknown>, deps: SyncGuardDeps, declared?: DeclaredSync): Promise<SyncDecision> {
   const { settings } = deps;
   if (!settings.enabled) return null;
-  const kind = syncKindOf(tool, args);
+  const kind = syncKindOf(tool, args, declared);
   if (kind === null) return null;
   const targets = targetsOf(tool, args);
+  // A v3 satellite tool's list membership comes from its declaration (#550), for a tool the inventory does not know.
+  const own = KIND_BY_TOOL.has(tool) ? undefined : declared;
   // A structure write that does not name where it writes checks every pending change.
-  const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool));
-  const strictStatus = kind === "structure" && STATUS_STRICT.has(tool);
+  const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool) || own?.destinationUnnamed === true);
+  const strictStatus = kind === "structure" && (STATUS_STRICT.has(tool) || own?.strictStatus === true);
   let v = judgeSync(deps.read(), deps.now(), targets, anyPending, strictStatus);
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
@@ -366,7 +370,7 @@ function unknownDecision(tool: string, why: string, settings: SyncGuardSettings)
  */
 export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "onWaitExpired">) {
   let holdUntil = 0;
-  return async (tool: string, args: Record<string, unknown>): Promise<SyncDecision> => {
+  return async (tool: string, args: Record<string, unknown>, declared?: DeclaredSync): Promise<SyncDecision> => {
     const deps = base();
     const d = await decideSync(tool, args, {
       ...deps,
@@ -377,10 +381,10 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
         // judges the status text for those tools alone. A pending change at one write's paths says nothing of others' (#529 review).
         if (v.kind === "behind" && (v.scope === "connection" || v.scope === "status")) holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
       },
-    });
+    }, declared);
     // Clear the hold only after a call that was really judged and found clean:
     // a tool the guard does not check says nothing about the link (#529 review 2).
-    if (d === null && deps.settings.enabled && syncKindOf(tool, args) !== null) holdUntil = 0;
+    if (d === null && deps.settings.enabled && syncKindOf(tool, args, declared) !== null) holdUntil = 0;
     return d;
   };
 }
