@@ -90,7 +90,7 @@ Private operators may add separately installed capability packs. Those packs are
 
 **An argument a write tool does not name is refused.** A write tool that vault-mcp registers (the shared tools on both servers and the plugin's own, `obsidian_write_notes` and each of its items included) answers an unknown argument with a validation error, `Unrecognized key(s)`, and writes nothing, where a plain schema would drop the argument and run the call without it (#510). The kernel arguments (`if_rev`, `idempotency_key`, `intent`) are named on each of these write tools, so they stay accepted; on the file-system server they are accepted and not checked. `obsidian_write_notes` names `intent` at the top level and `if_rev` and `idempotency_key` on each item, so a top-level `if_rev` or `idempotency_key` is refused. Read tools, and satellite tools published by other plugins, keep their own schemas.
 
-Each of the host's own write tools declares the protection it needs, and the host refuses a call that does not carry it (01.43 rules 3–4, 01.33 rule 6f). The exceptions, the three temporary exemptions, the satellite tools and the file-system fallback server, are named at the end of this section. Two arguments carry the protection. Neither reaches the tool's own code: the host takes them off the call and checks them.
+Each of the host's own write tools declares the protection it needs, and the host refuses a call that does not carry it (01.43 rules 3–4, 01.33 rule 6f). The exceptions, the temporary exemptions, the satellite tools and the file-system fallback server, are named at the end of this section. Two arguments carry the protection. Neither reaches the tool's own code: the host takes them off the call and checks them.
 
 - **`if_rev`** is the revision of a note as you read it. Get it by reading the note: `obsidian_read_note` (and `obsidian_read_notes`) return `rev`. Pass that value unchanged. If the note changed after you read it, the write is refused with `rev_conflict` and nothing is written, so you never overwrite a change you did not see. A tool that changes content you read needs it: an overwrite, a frontmatter set or delete, a patch replace.
 - **`idempotency_key`** is any string that is new for each write you intend (a UUID is fine). If the call fails or times out and you retry, send the SAME key with the same arguments: the host then does the write once, and a retry of a finished write returns the first result. The host remembers a key for 10 minutes, and forgets it when the plugin reloads. Never reuse a key for a different write. A write that is not safe to repeat needs it: an append, a move, running a command.
@@ -126,7 +126,6 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_call_tool` | what the tool it calls requires |  |
 | `obsidian_claim_scope` | nothing (not a vault write) |  |
 | `obsidian_cli` | `idempotency_key` |  |
-| `obsidian_conformance_debt_render` | nothing | Temporarily exempt (Nelson's "a", 2026-09-29): ruled token, but it names no path (it computes where the register goes), so an if_rev would refuse every run; back to token with #427. |
 | `obsidian_create_note` | `idempotency_key` |  |
 | `obsidian_create_note_from_template` | `idempotency_key` |  |
 | `obsidian_delete_note` | `if_rev` and `idempotency_key` |  |
@@ -163,7 +162,7 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | satellite tools (`vaultmcp_*`) | not enforced yet: the SDK cannot declare protection until apiVersion 3 | The known gap: every satellite is off today. |
 <!-- protection-table:end -->
 
-**Three temporary exemptions.** `obsidian_repoint_link`, `obsidian_snippet_write` and `obsidian_conformance_debt_render` are ruled `if_rev` tools, but the host cannot check an `if_rev` for them honestly yet: it checks the revision of the first path a call names, and these name no path, or only the note links point at. Nelson ruled on 2026-09-29 that they are exempt until [#427](https://github.com/nelsonlove/vault-mcp/issues/427) gives the host a revision it can check, a snippet revision and one per note found in a scan. Then they go back to requiring `if_rev`.
+**Two temporary exemptions.** `obsidian_repoint_link` and `obsidian_snippet_write` are ruled `if_rev` tools, but the host cannot check an `if_rev` for them honestly yet: it checks the revision of the first path a call names, and these name no path, or only the note links point at. Nelson ruled on 2026-09-29 that they are exempt until [#427](https://github.com/nelsonlove/vault-mcp/issues/427) gives the host a revision it can check, a snippet revision and one per note found in a scan. Then they go back to requiring `if_rev`. The ruling named a third tool, `obsidian_conformance_debt_render`; it left the host with the conformance rail on 2026-10-14 and is now `vaultmcp_conformance_debt_render`, a satellite tool (see the satellite gap below).
 
 **The satellite gap.** Tools published by the satellite plugins (`vaultmcp_*`) are not checked. The `vault-mcp-api` SDK has no way to declare a tool's protection until apiVersion 3. Every satellite is off today.
 

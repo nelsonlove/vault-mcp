@@ -10,7 +10,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
-import { schemeFindings } from "../src/kernel/scheme/findings.js";
+import { schemeFindings } from "@vault-mcp/core";
 
 const instance = { id: "jd", providerName: "johnny-decimal", provider: jdProvider(DEFAULT_JD_CONFIG) };
 
