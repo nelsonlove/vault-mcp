@@ -11,6 +11,7 @@ import type { App } from "obsidian";
 import type { DebtSource, DebtRegisterSource } from "./tools.js";
 import type { Finding } from "./kernel/finding.js";
 import type { SkippedTerritory } from "./kernel/snapshot.js";
+import type { RunCoverage } from "./kernel/report-caps.js";
 import { parseSidecar, sidecarPathFor, type DebtSidecar } from "./kernel/debt-sidecar.js";
 import { runConformance, inAppBaselineRel, inAppBaselineRefusal, inAppBaselineFromEnv, excludedRootsFrom, coverageRefusal, baselinePackIds } from "./kernel/cli.js";
 import { parseBaseline } from "./kernel/ratchet.js";
@@ -53,6 +54,8 @@ export function obsidianDebtSource(app: App, territories?: () => readonly string
   // What the last live run stepped around (#398) — read by the tools after
   // `liveFindings()` resolves, so the report and the register can name it.
   let lastSkipped: readonly SkippedTerritory[] = [];
+  // What the last live run checked (report cap 4), for the report and the register.
+  let lastCoverage: RunCoverage | null = null;
   // Refuses, never answers empty: a blank or wrong path must not read as "no accepted debt" (#494 review).
   const baselineText = async () => {
     const rel = baselineRelNow();
@@ -90,10 +93,14 @@ export function obsidianDebtSource(app: App, territories?: () => readonly string
       const coverage = coverageRefusal(baselinePackIds(parseBaseline(text)), new Set(res.coveredPackIds), "run");
       if (coverage) throw new Error(coverage);
       lastSkipped = res.skippedTerritories;
+      lastCoverage = res.coverage;
       return res.findings;
     },
     skippedTerritories(): readonly SkippedTerritory[] {
       return lastSkipped;
+    },
+    coverage(): RunCoverage | null {
+      return lastCoverage;
     },
     baselineText,
     async sidecar(): Promise<DebtSidecar> {

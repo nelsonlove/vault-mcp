@@ -9,7 +9,8 @@
  * ported functions. Then the pack: the class list from `fileclassesRoot`,
  * the four finding keys, "unchecked" never read as clean, the governed scope,
  * absence refused. Then the run: the pack registers with the legacy packs, a
- * blank `fileclassesRoot` is a dead convention (the pack is NOT measured).
+ * blank `fileclassesRoot` is a dead convention (the pack is NOT measured),
+ * and the report says what it checked (report cap 4).
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -268,17 +269,21 @@ describe("the shape pack in a conformance run", () => {
       assert.ok(!res.findings.some((f) => f.script === "shape"));
       assert.ok(res.findings.some((f) => f.script === ENGINE_ID && f.check === "dead_convention" && f.target === "fileclassesRoot"));
       assert.match(res.report, /DEAD CONVENTION: fileclassesRoot = \(empty\) — 'shape' not measured/);
+      assert.match(res.report, /NOT measured: [^;\n]*shape/);
+      assert.equal(res.coverage.shape, undefined);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("fileclassesRoot named: the pack is measured, and its findings are NEW", async () => {
+  test("fileclassesRoot named: the pack is measured, its findings are NEW, and the report states what it checked", async () => {
     const root = await vault();
     try {
       const res = await runConformance({ ...base, root, conventions: { ...EMPTY_VAULT_CONVENTIONS, fileclassesRoot: ROOT } });
       assert.ok(res.coveredPackIds.includes("shape"));
       assert.ok(res.ratchet.newKeys.includes("shape|missing_heading|Notes/a.md|Task/AgentTask: {{TITLE}} > ## Response"));
+      assert.deepEqual(res.coverage.shape, { classes: 1, uncheckedClasses: 0, checkedNotes: 1, unboundNotes: 1 });
+      assert.match(res.report, /^checked: \d+ note\(s\) read; \d+ pack\(s\) measured \([^)]*shape[^)]*\);.*shape: 1 class\(es\), 0 unchecked \(no fence\), 1 typed note\(s\) checked, 1 with a type that names no class$/m);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
