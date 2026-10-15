@@ -23,9 +23,6 @@ import { registerExternalTools, externalToolSnapshot } from "./external-tools.js
 import { registerLockTools } from "./tools-locks.js";
 import { registerUidTools } from "./tools-uid.js";
 import { registerLinkTools, obsidianLinkSource } from "./tools-links.js";
-import { registerConformanceDebtTools, registerConformanceDebtRenderTool } from "./tools-conformance-debt.js";
-import { obsidianDebtRenderSource } from "./obsidian-debt-source.js";
-import { resolveConventions } from "../conformance/vault-conventions.js";
 import { createSyncGuard, normalizeSyncGuard, readSyncSnapshot } from "../kernel/sync-guard.js";
 import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
@@ -640,32 +637,12 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // rewrites them and checks for damage), so this reports the drift that came
   // from OUTSIDE.
   registerLinkTools(server, obsidianLinkSource(app), ctx);
-  // ── conformance debt register (issue #211, Parts A2 + B) ────────────────────
-  // The READ tool reports the carried debt (baseline + sidecar + live run:
-  // burn-down counts, staleness, budget) — whole-vault, like the health scan
-  // (now the `vaultmcp-health` satellite's `vaultmcp_health_scan`).
-  // The RENDER tool (Part B) materializes the same report as a generated
-  // register note beside the baseline; it is mutating (readOnlyHint: false), so
-  // it rides the guard-patched registrar (read-only mode, queue, journal) and
-  // refuses under an active allowlist unless the register path is inside it.
-  // Neither has an accept verb: acceptance metadata is minted only at the
-  // human-run --rebaseline, never here, and the rendered note carries only a
-  // generated/generator derivation stamp (accept-guard-checked before writing).
-  // The operator's territories, read per call (#397) — the conformance rail
-  // must refuse to walk a territory a human added, which is the half of #397
-  // that a first pass threaded through `SnapshotOpts` and then never supplied.
-  const debtSource = obsidianDebtRenderSource(
-    app,
-    () => resolveTerritories(ctx.getSettings().guardedTerritories),
-    // The conventions too, read per call (#403).
-    () => resolveConventions(ctx.getSettings().vaultConventions),
-  );
-  const debtCtx = {
-    config: ctx.getSettings().modules?.["conformance-debt"]?.config,
-    getSettings: () => ctx.getSettings(),
-  };
-  registerConformanceDebtTools(server, debtSource, debtCtx);
-  registerConformanceDebtRenderTool(server, debtSource, debtCtx);
+  // ── conformance debt register: MOVED to the vaultmcp-conformance satellite ──
+  // `obsidian_conformance_debt` and `obsidian_conformance_debt_render` were
+  // registered here until 2026-10-14. The rail (engine, packs, CLI, debt tools,
+  // Drift pane, vault conventions) is now `packages/conformance`, publishing
+  // `vaultmcp_conformance_debt` and `vaultmcp_conformance_debt_render` through
+  // vault-mcp-api; it reads the guarded territories through the api.
   // ── official-CLI proxy — conditional on the CLI binary being installed ──────
   // AND on the default-OFF "Raw CLI proxy" setting (Security tab): the
   // dedicated pinned-subcommand tools below cover the real usage, so the

@@ -341,17 +341,13 @@ const SCHEME: McpSurfaceRow[] = [
 // the tool namespace — and, like every external tool, they are outside this
 // inventory by design.
 
-// ── module: conformance-debt ─────────────────────────────────────────────────
-
-const CONFORMANCE: McpSurfaceRow[] = [
-  { tool: "obsidian_conformance_debt", readOnly: true, module: "conformance-debt", distribution: "public-optional", paths: ["folder"], postcondition: "Report carried conformance debt against the accepted baseline: burn-down, staleness, budget." },
-  // NOT refusesUnderScope. Its refusal is CONDITIONAL — it checks whether the
-  // computed register path is visible (`isVisible(notePath, settings)`) and
-  // succeeds when the allowlist happens to cover that folder. `refusesUnderScope`
-  // means "refuses outright whenever any scope is active", which is a stronger
-  // and different claim.
-  { tool: "obsidian_conformance_debt_render", readOnly: false, module: "conformance-debt", distribution: "public-optional", discovered: "none", postcondition: "Materialize the debt report as a generated register note beside the baseline, refusing when its computed path is outside the allowlist.", protection: "exempt", protectionNote: "Temporarily exempt (Nelson's \"a\", 2026-09-29): ruled token, but it names no path (it computes where the register goes), so an if_rev would refuse every run; back to token with #427." },
-];
+// The two conformance-debt rows (`obsidian_conformance_debt`,
+// `obsidian_conformance_debt_render`) were HERE until 2026-10-14, when the
+// conformance rail left the host for its own plugin (`packages/conformance`,
+// id `vaultmcp-conformance`). Its tools are on the wire as
+// `vaultmcp_conformance_debt` and `vaultmcp_conformance_debt_render` — the
+// plugin id IS the tool namespace — and, like every external tool, they are
+// outside this inventory by design.
 
 // The three `provenance_*` rows were HERE until the mutating-tier satellite
 // extraction, for the same reason the read tier's rows left at S7: derived-
@@ -422,7 +418,6 @@ export const MCP_SURFACE_INVENTORY: McpSurfaceRow[] = [
   ...SNIPPETS,
   ...CODE_MODE,
   ...SCHEME,
-  ...CONFORMANCE,
   ...SURVEY,
 ];
 

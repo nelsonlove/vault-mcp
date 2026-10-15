@@ -106,9 +106,13 @@ describe("agreement — the code matches the pinned 01.33 table", () => {
       });
     }
   }
-  test("the temporary exemptions are exactly Nelson's three, each exempt with a one-line reason naming #427", () => {
+  // Nelson ruled three temporary exemptions; the third, obsidian_conformance_debt_render,
+  // left the host with the conformance rail on 2026-10-14 (now the satellite tool
+  // vaultmcp_conformance_debt_render, under the "satellite tools" row). Its 01.33
+  // table row stays above, and is skipped here because the host no longer has the tool.
+  test("the temporary exemptions in the host are Nelson's three less the one that left with the rail, each exempt with a one-line reason naming #427", () => {
     const noted = MCP_SURFACE_INVENTORY.filter((r) => r.protectionNote !== undefined);
-    assert.deepEqual(noted.map((r) => r.tool).sort(), ["obsidian_conformance_debt_render", "obsidian_repoint_link", "obsidian_snippet_write"]);
+    assert.deepEqual(noted.map((r) => r.tool).sort(), ["obsidian_repoint_link", "obsidian_snippet_write"]);
     for (const r of noted) {
       assert.equal(r.protection, "exempt", r.tool);
       assert.match(r.protectionNote, /^Temporarily exempt \(Nelson's "a", 2026-09-29\): .*back to token with #427\.$/, r.tool);

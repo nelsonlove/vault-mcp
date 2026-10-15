@@ -186,7 +186,7 @@ Three details of that note in particular:
 
 One other Governor generator was considered and deliberately **not** stamped:
 
-- the **conformance debt register** (`src/conformance/debt-register.ts`) stamps
+- the **conformance debt register** (`packages/conformance/src/kernel/debt-register.ts`) stamps
   `generated` + `generator` but declares **no `derived-from`** — its inputs are a
   findings run and a baseline, not a resolvable file set, so `vaultmcp_provenance_check`
   cannot check it at all and a source count would witness nothing.

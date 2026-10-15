@@ -273,7 +273,11 @@ leave the single-artifact rollback intact.
   `obsidian_conformance_debt_render` (tools-conformance-debt.ts) and the CLI's
   `renderRegisterTo` (conformance/cli.ts) — call `registerAcceptRefusal` (the shared
   `parseGuardFrontmatter` + `acceptForbiddenReason` predicate) over the rendered text
-  before writing; pinned by tests/conformance-debt-register.test.mjs.
+  before writing; pinned by tests/conformance-debt-register.test.mjs. Re-checked
+  2026-10-14 after the move to the vaultmcp-conformance plugin: the tool is now
+  `vaultmcp_conformance_debt_render` (packages/conformance/src/tools.ts), the CLI path
+  is packages/conformance/src/kernel/cli.ts, both still call `registerAcceptRefusal`,
+  and the pin moved to packages/conformance/tests/conformance-debt-register.test.mjs.
 
 ## docs/identity-and-links.md
 
