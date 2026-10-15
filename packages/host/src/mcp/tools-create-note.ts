@@ -56,6 +56,20 @@ export interface FlowModules {
   className: (cls: string) => string;
   /** The top-level fields the class declares up its `extends` chain (#537): where a value no blank used may go. */
   fields?: (app: App, cls: string) => string[];
+  /** For a slot function class (`Meta/Slot/<Function>`): the slot's name, the class note's `slot-title`, else the
+   *  function's own name. Undefined for any other class. */
+  slotName?: (app: App, cls: string) => string | undefined;
+}
+
+/** A slot's address alone, `<AC>.<NN>` (e.g. `00.08`): the title a caller passes to have the slot named for it. */
+const SLOT_ADDRESS_RE = /^[A-Z0-9]{2}\.\d{2}$/;
+
+/** The slot name for a class, from its note's frontmatter: `slot-title`, else the part after `Meta/Slot/`. */
+export function slotNameOf(className: string, frontmatter: Record<string, unknown> | undefined): string | undefined {
+  const m = /^Meta\/Slot\/([^/]+)$/.exec(className);
+  if (!m) return undefined;
+  const t = frontmatter?.["slot-title"];
+  return (typeof t === "string" || typeof t === "number" ? String(t).trim() : "") || m[1];
 }
 
 export interface CreateNoteCtx {
@@ -86,6 +100,13 @@ export function loadFlowModules(app: App, flowRel: string): FlowModules {
     hasClass: (a: App, cls: string) => !!render.definitions(a).find(render.className(cls)),
     className: (cls: string) => String(render.className(cls)),
     fields: (a: App, cls: string) => declaredFields(a, render, cls),
+    slotName: (a: App, cls: string) => {
+      const name = String(render.className(cls));
+      const file = render.definitions(a).find(name);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const fm = file ? ((a.metadataCache.getFileCache(file) as any)?.frontmatter as Record<string, unknown> | undefined) : undefined;
+      return slotNameOf(name, fm);
+    },
   };
 }
 
@@ -251,8 +272,16 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const extra: Record<string, unknown> = { ...(args.frontmatter ?? {}) };
       const refuse = (code: string, why: string) => codedError(code, `${why} Nothing was written.`);
 
-      const title = String(args.title ?? values.title ?? "").trim();
+      let title = String(args.title ?? values.title ?? "").trim();
       if (!title) return refuse("invalid_argument", "A note needs a name: pass `title` (or `values.title`).");
+      // A slot is named for its function (2026-10-15, Nelson's "go" on the .08 "Audits & reports" name): a slot
+      // class with a bare address as its title gets "<address> <slot-title>", or the function's own name.
+      if (SLOT_ADDRESS_RE.test(title)) {
+        let probe: FlowModules | undefined;
+        try { probe = load(app, ctx.flowPath().trim()); } catch { probe = undefined; }
+        const slot = probe?.hasClass(app, args.class) ? probe.slotName?.(app, args.class) : undefined;
+        if (slot) title = `${title} ${slot}`;
+      }
       if (/[/\\]/.test(title) || /\.md$/i.test(title)) {
         return refuse("invalid_argument", `The title '${title}' names a folder or ends in .md: pass the folder as \`folder\` and the name without .md.`);
       }
