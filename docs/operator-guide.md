@@ -103,7 +103,7 @@ Use controlled vocabulary only when a term changes validation, permission, lifec
 - editor and agent projection; and
 - conformance consumer.
 
-An unseeded registry is reported as unengaged, not as proof that all tags are valid. Report findings before automatic changes.
+A missing root scope note is reported as `scope_root_missing` (tag scoping is then off), not as proof that all tags are valid. Report findings before automatic changes.
 
 Review vocabulary quarterly. Demote terms with no operational consumer to ordinary prose.
 
