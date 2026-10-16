@@ -356,6 +356,15 @@ plan time and re-checked at apply.
 - Both tools are published external tools and register at the host's guarded registration point like every built-in: read-only mode, path allowlist, serialized write queue, journal, kernel args.
 - The in-handler re-check of the computed destination against the allowlist is retained in the code but is dormant, since a satellite cannot reach the host's guard settings.
 
+Orphan purge (2026-08-23): the allowlist→docs direction was added to
+docs-drift.test.mjs (fourteenth instance — the old "no dead entries" title
+promised orphan coverage its code never ran), and its first run found the
+entries below the docs had outgrown: sentences from the pre-corpus README /
+docs family that PR #340 replaced, plus spans reworded by the coherence-fix
+pass. Each was a standing pre-approval for a sentence nobody has written —
+exempt-forever if ever re-written. Deleted rather than kept: an approval
+belongs to a living sentence. (Count: see the purge commit.)
+
 ## Known-overstated (tracked, not approved-as-true)
 
 Entries here are NOT approved as currently-true claims — they are the design's stated goal/
