@@ -352,7 +352,7 @@ Which current modules belong in the initial Community product rather than the pr
 ##### Private/operator in the first release
 
 - skills/policy compilation and export (now ships as the separate `vaultmcp-skills` satellite plugin — see [skills.md](skills.md) and `docs/suite-split-design.md` §6);
-- cross-session fleet coordination (now ships as the separate `vaultmcp-crosssession` satellite plugin — see [crosssession.md](crosssession.md) and `docs/suite-split-design.md` §6);
+- cross-session fleet coordination (now ships as the separate `vaultmcp-crosssession` satellite plugin — see `docs/suite-split-design.md` §6; vaultmcp-crosssession was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession'));
 - JD scaffolding (now ships as the separate `vaultmcp-jd-scaffold` satellite plugin — see `packages/jd-scaffold/README.md` and `docs/suite-split-design.md` §6);
 - triage mutations (now ships as the separate `vaultmcp-triage` satellite plugin — see [triage.md](triage.md) and `docs/suite-split-design.md` §6);
 - QuickAdd execution bindings;
