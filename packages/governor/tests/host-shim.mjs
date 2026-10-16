@@ -12,7 +12,7 @@
 // guarantee — unpinned.
 //
 // This shim reproduces exactly FOUR host behaviours and nothing else. The first
-// three are `packages/crosssession/tests/host-shim.mjs`'s, verbatim in intent;
+// three are the other satellites' shims' (e.g. `packages/triage/tests/host-shim.mjs`), verbatim in intent;
 // the fourth is this package's alone.
 //
 //   1. THE PUBLISHED NAME, including THE EXACT-NAME TABLE. The ordinary rule is
