@@ -285,7 +285,7 @@ ships as one today. Every module that used to be here left for its own plugin.
 
 - `skills` at the suite split's S4 (`packages/skills`, id `vaultmcp-skills`), publishing six `vaultmcp_skills_*` tools through the external-tool registry like any third-party publisher.
 - `triage` at S5 (`packages/triage`, id `vaultmcp-triage`), on the wire as `vaultmcp_triage_queue` / `vaultmcp_triage_dispose`.
-- `crosssession` at S6 (`packages/crosssession`, id `vaultmcp-crosssession`), on the wire as `vaultmcp_crosssession_channels` / `_delta` / `_attest` / `_post`.
+- `crosssession` at S6 (`packages/crosssession`, id `vaultmcp-crosssession`), on the wire as `vaultmcp_crosssession_channels` / `_delta` / `_attest` / `_post` until vaultmcp-crosssession was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession'); the package and its four tools no longer exist.
 - `health` at S7 (`packages/health`, id `vaultmcp-health`), on the wire as `vaultmcp_health_scan` / `vaultmcp_health_lint`.
 - `provenance`, `fileclass` and `jd-scaffold` with the mutating tier (`packages/provenance`, `packages/fileclass`, `packages/jd-scaffold`), on the wire as `vaultmcp_provenance_*` (3 tools), `vaultmcp_fileclass_*` (8 tools) and `vaultmcp_jd_scaffold_*` (7 tools).
 
@@ -303,8 +303,7 @@ table.)
 This inventory locks the `obsidian_*` family and has never counted external
 tools, so no total below changes — what changed is that seven names left the
 locked family. Deep references: `docs/skills.md`, `docs/triage.md`,
-`docs/crosssession.md`, `docs/provenance.md`, and the `README.md` of each
-package.
+`docs/provenance.md`, and the `README.md` of each package.
 
 ---
 

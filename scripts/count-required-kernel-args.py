@@ -13,6 +13,7 @@ def ts(r): return datetime.datetime.fromisoformat(r["ts"].replace("Z", "+00:00")
 NEEDS_IDEMPOTENCY = {"obsidian_append_note", "obsidian_append_at_heading", "obsidian_run_command", "obsidian_move_note", "obsidian_move_notes",
        "obsidian_assign_address", "obsidian_refile_address", "obsidian_renumber_address", "obsidian_cli", "obsidian_base_create",
        "obsidian_import_apple_notes", "obsidian_create_note_from_template", "crosssession_post", "vaultmcp_crosssession_post"}
+# crosssession_post / vaultmcp_crosssession_post: the vaultmcp-crosssession satellite was retired on 2026-10-15; the names stay for older journal records.
 NEEDS_REVISION = {"obsidian_fileclass_insert_fields", "obsidian_survey_slot", "obsidian_rename_heading"}
 BOTH = {"obsidian_trash", "obsidian_delete_note"}
 # The three temporary exemptions (Nelson's "a", 2026-09-29; back to token with #427). The render is a satellite tool since 2026-10-14

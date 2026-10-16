@@ -71,6 +71,9 @@ export class RecordImmutableError extends Error {
  * spelled `crosssession_post` before the S6 satellite extraction, when it was
  * this plugin's own module tool). It is the one other tool whose whole
  * contract is a dated end-of-file append.
+ * That satellite was retired on 2026-10-15 (Nelson's verify of "Retire
+ * vaultmcp-crosssession"), so the tool no longer exists; the reasoning below
+ * is kept as the record of why the set stayed closed.
  *
  * It is UNREACHABLE by this check, and the extraction did not change that.
  * Two facts, both re-verified at S6:

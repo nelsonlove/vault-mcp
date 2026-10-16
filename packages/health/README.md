@@ -82,7 +82,7 @@ Adding `vaultmcp-health` to `trustedReadOnlyPlugins` restores availability in re
 2. **It would be the illusion of a check.** The host guard would let a scoped `lint` through while the underlying scan still read every note — exactly the trap the cross-session extraction named when it declined to path-key `channel`.
 3. **The `to` → `to_address` precedent runs the other way.** The host renamed AWAY from a path key when the argument was not a path. `scope` is at least path-shaped, but `lint` accepts a folder OR a note path, and the guard would still be answering the wrong question about the wrong read.
 
-Read tools blocked wholesale under an allowlist is the documented posture, not a bug — the same one `vaultmcp_triage_queue`, all four `vaultmcp_crosssession_*` tools and five of the six `vaultmcp_skills_*` tools carry.
+Read tools blocked wholesale under an allowlist is the documented posture, not a bug — the same one `vaultmcp_triage_queue` and five of the six `vaultmcp_skills_*` tools carry (and all four `vaultmcp_crosssession_*` tools carried, until that satellite was retired on 2026-10-15).
 
 ### 3. Issue #381's whole-vault-read question is RESOLVED for these two tools
 

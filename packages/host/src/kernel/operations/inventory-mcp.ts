@@ -386,12 +386,14 @@ const SURVEY: McpSurfaceRow[] = [
 
 // The four `crosssession_*` rows were HERE until the S6 satellite extraction,
 // for the same reason the six `vaultmcp_skills_*` rows left at S4 and the two
-// `triage_*` rows at S5: fleet coordination is now a separate plugin
+// `triage_*` rows at S5: fleet coordination became a separate plugin
 // (`packages/crosssession`, id `vaultmcp-crosssession`) publishing through the
-// external-tool registry. Its tools are on the wire as
+// external-tool registry. Its tools were on the wire as
 // `vaultmcp_crosssession_channels` / `_delta` / `_attest` / `_post` — the plugin
 // id IS the tool namespace — and, like every external tool, they are outside
 // this inventory by design.
+// That satellite was retired on 2026-10-15 (Nelson's verify of "Retire
+// vaultmcp-crosssession"), so those four tools no longer exist anywhere.
 
 // The seven `obsidian_jd_*` rows were HERE until the mutating-tier satellite
 // extraction: JD scaffolding is now a separate plugin (`packages/jd-scaffold`,

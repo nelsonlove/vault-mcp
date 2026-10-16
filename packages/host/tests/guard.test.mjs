@@ -187,9 +187,10 @@ test("crosssession tool arguments are NOT path keys — the tripwire that actual
   // fire on the folder note. The satellite pins its own copy of PATH_KEYS, but
   // a copy is a snapshot — THIS test reads the live list, so the day someone
   // adds `channel` (or a sibling) to PATH_KEYS, the failure happens HERE, in
-  // the same PR, instead of silently on the operator's live channel. If you
-  // hit this: read packages/crosssession/CLAUDE.md's guard-posture section
-  // before deciding anything.
+  // the same PR, instead of silently on the operator's live channel. The
+  // satellite was retired on 2026-10-15 (Nelson's verify of "Retire
+  // vaultmcp-crosssession"), so this pin now guards no live tool; it is kept
+  // because it is harmless, and it may go with any change to PATH_KEYS.
   const paths = collectPaths({ handle: "h", channel: "c", body: "b", through_stamp: "s" });
   assert.deepEqual(paths, [], "a crosssession argument became a recognized path key — coordinate with the satellite");
 });

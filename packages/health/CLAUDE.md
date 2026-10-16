@@ -1,6 +1,6 @@
 # Vault Health (plugin id `vaultmcp-health`) — architecture & working notes for Claude Code
 
-The vaultmcp-health scanner as its own Obsidian plugin: a tiered read-only findings scan over the whole vault, and the same scan with findings restricted to one folder — published to the Governor host through `vault-mcp-api`. Extracted from the host at the suite split's S7 (the read tier), following `packages/quickadd-choices-compile` (the pilot), `packages/skills` (S4), `packages/triage` (S5) and `packages/crosssession` (S6). Package layout, build/test commands, and the extraction's five consequences are in `README.md`. There is no repo-root user doc for health (`docs/` has `skills.md`, `triage.md`, `crosssession.md` but no `health.md`); the tool descriptions and this package's two files are the documentation.
+The vaultmcp-health scanner as its own Obsidian plugin: a tiered read-only findings scan over the whole vault, and the same scan with findings restricted to one folder — published to the Governor host through `vault-mcp-api`. Extracted from the host at the suite split's S7 (the read tier), following `packages/quickadd-choices-compile` (the pilot), `packages/skills` (S4), `packages/triage` (S5) and `packages/crosssession` (S6). Package layout, build/test commands, and the extraction's five consequences are in `README.md`. There is no repo-root user doc for health (`docs/` has `skills.md` and `triage.md` but no `health.md`); the tool descriptions and this package's two files are the documentation.
 
 ## Locked decisions (don't relitigate without reason)
 
