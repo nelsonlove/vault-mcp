@@ -157,7 +157,7 @@ Typical state includes:
 - observation/effect manifests and replayable response objects;
 - review baselines and history;
 - pending review index;
-- module-specific operational state such as coordination receipts (the cross-session read receipts moved out of this plugin's directory with the `vaultmcp-crosssession` satellite at S6 — see [crosssession.md](crosssession.md); they are still plugin-directory state, just that plugin's);
+- module-specific operational state such as coordination receipts (the cross-session read receipts moved out of this plugin's directory with the `vaultmcp-crosssession` satellite at S6; vaultmcp-crosssession was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession'));
 - persisted rename evidence when needed for mechanical verification;
 - local Git objects and proposal/standing refs outside the Sync file set;
 - signing-key registrations and revocations; and

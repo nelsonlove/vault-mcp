@@ -1,9 +1,0 @@
-{
-  "id": "vaultmcp-crosssession",
-  "name": "Vault MCP Cross-session",
-  "version": "0.1.0",
-  "minAppVersion": "1.5.0",
-  "description": "Cross-session coordination channels for agents: discover the fleet's coordination logs by fileClass + audience frontmatter, read the entries newer than your attested position, attest read receipts, and post — with posting refused while unread entries exist. Published as MCP tools through the Vault MCP host (plugin id `vault-mcp`).",
-  "author": "Nelson Love",
-  "isDesktopOnly": true
-}

@@ -263,7 +263,7 @@ Report the exact availability reason and a safe alternative:
 
 - Bases unavailable → direct note search or ask the user to enable/update Bases (the Base tools ship as the separate `vaultmcp-bases` plugin since S7, published as `vaultmcp_bases_list` / `vaultmcp_bases_query`; if that plugin is not installed the tools are absent from the surface rather than failing);
 - review index unpublished → do not claim the queue is clear;
-- vocabulary unseeded → report validation not engaged (the vocabulary tools ship as the separate `vaultmcp-vocab` plugin since S7, published as `vaultmcp_vocab_*`);
+- root scope note missing (`scope_root_missing`) → report tag validation not engaged (the vocabulary tools ship as the separate `vaultmcp-vocab` plugin since S7, published as `vaultmcp_vocab_*`);
 - journal unhealthy → stop if attribution is required;
 - scope prevents a global operation → narrow the operation or ask the human to revise scope;
 - private capability absent → do not simulate it through a generic write.

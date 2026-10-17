@@ -86,9 +86,9 @@ import {
  *  counts as the host only if it exposes the api surface.
  *
  *  THE SUITE'S ONE BEHAVIOURAL TEST of this lookup is
- *  `packages/crosssession/tests/host-lookup.test.mjs`, over the extracted
- *  `packages/crosssession/src/host-lookup.ts` — same two lines, same reasoning,
- *  written out in full there. Nine identical suites would be nine copies of one
+ *  `packages/conformance/tests/host-lookup.test.mjs`, over the extracted
+ *  `packages/conformance/src/host-lookup.ts` — same two lines, same reasoning,
+ *  written out in full in the test. Nine identical suites would be nine copies of one
  *  assertion; a change here belongs in that file too. */
 const HOST_PLUGIN_IDS = ["vault-mcp", "governor"] as const;
 

@@ -62,8 +62,8 @@
 // host's conformance rail reads the setting. That was wrong, and the correction
 // is worth recording so nobody re-derives the error: `runConformance` does take
 // an `opts.vocabularies`, but all three of its call sites —
-// `mcp/obsidian-drift-source.ts`, `mcp/obsidian-debt-source.ts` and
-// `conformance/cli.ts`'s CLI entry point — pass `DEFAULT_VOCABULARIES`
+// `obsidian-drift-source.ts`, `obsidian-debt-source.ts` and `kernel/cli.ts`'s
+// CLI entry point (all in packages/conformance since 2026-10-14) — pass `DEFAULT_VOCABULARIES`
 // unconditionally. The rail has never read the user's configured list.)
 //
 // The field is nonetheless STILL DECLARED and STILL DEFAULTED in the host's

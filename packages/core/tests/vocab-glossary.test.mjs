@@ -1,12 +1,14 @@
 /**
  * vocab-glossary.test.mjs — the glossary VocabularyProvider
- * (kernel/vocab/glossary.ts), over the vault's TWO live term surfaces:
+ * (kernel/vocab/glossary.ts), over the vault's term surfaces:
  *
- *   (a) `note/definition` notes — term = title (fallback: basename), gloss =
- *       `description` frontmatter, aliases = `aliases`; the definitional-note
- *       convention (43 live notes under the 03.06 glossary).
- *   (b) `## Terms` sections — `- **term** — definition` bullets in the Assent
- *       chapters (the current authority per the vault memory).
+ *   (a) term notes — `type: Topic/Term` (the live model, about 651 notes on
+ *       2026-10-14, #551): term = title (fallback: basename), gloss =
+ *       `description` frontmatter, aliases = `aliases`.
+ *   (b) definition-tag notes — the retired `note/definition` convention, off
+ *       by default and still available through `definitionTag`.
+ *   (c) `## Terms` sections — `- **term** — definition` bullets in the
+ *       framework chapters.
  *
  * The deleted obsidian-new `defines:`/`Terms.base` scheme is NOT here — the
  * entry shape leaves room for it, but v1 parses what the vault actually has.
@@ -14,7 +16,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { glossaryProvider } from "../src/vocab/glossary.ts";
+import { glossaryProvider, resolveGlossaryConfig, DEFAULT_GLOSSARY_CONFIG } from "../src/vocab/glossary.ts";
 import { VocabAmbiguousError } from "../src/vocab/provider.ts";
 
 function notes(extra = []) {
@@ -24,7 +26,7 @@ function notes(extra = []) {
       frontmatter: {
         title: "Canonical",
         description: "Canonical describes the status of holding authority for one specific claim.",
-        tags: ["note/definition"],
+        type: "Topic/Term",
       },
     },
     {
@@ -32,7 +34,7 @@ function notes(extra = []) {
       frontmatter: {
         title: "Term",
         description: "A term is a defined word in the controlled vocabulary of the system.",
-        tags: ["note/definition"],
+        type: "Topic/Term",
         aliases: ["Terms"],
       },
     },
@@ -51,9 +53,25 @@ function notes(extra = []) {
   ];
 }
 
-const provider = (extra) => glossaryProvider({ definitionTag: "note/definition" }, notes(extra));
+const provider = (extra) => glossaryProvider(DEFAULT_GLOSSARY_CONFIG, notes(extra));
 
-describe("glossary provider: definition notes", () => {
+describe("glossary config", () => {
+  test("the defaults are the live model: `type: Topic/Term`, the definition tag off", () => {
+    assert.deepEqual(DEFAULT_GLOSSARY_CONFIG, { typeKey: "type", termType: "Topic/Term", definitionTag: "" });
+    assert.deepEqual(resolveGlossaryConfig(undefined), DEFAULT_GLOSSARY_CONFIG);
+  });
+
+  test("overrides merge over the defaults; wrong-typed values are ignored; an empty typeKey keeps the default", () => {
+    assert.deepEqual(resolveGlossaryConfig({ termType: "Meta/Term", definitionTag: "note/definition" }), {
+      typeKey: "type",
+      termType: "Meta/Term",
+      definitionTag: "note/definition",
+    });
+    assert.deepEqual(resolveGlossaryConfig({ termType: 7, typeKey: "" }), DEFAULT_GLOSSARY_CONFIG);
+  });
+});
+
+describe("glossary provider: term notes", () => {
   test("capabilities: definitions and deprecations, flat; kinds = term", () => {
     const p = provider();
     assert.deepEqual(p.capabilities, {
@@ -65,7 +83,7 @@ describe("glossary provider: definition notes", () => {
     assert.deepEqual(p.kinds, ["term"]);
   });
 
-  test("a note/definition note is a term entry: title, description, aliases", () => {
+  test("a Topic/Term note is a term entry: title, description, aliases", () => {
     const e = provider().resolve("Term", "term");
     assert.equal(e.canonical, "Term");
     assert.equal(e.kind, "term");
@@ -86,7 +104,7 @@ describe("glossary provider: definition notes", () => {
 
   test("a title-less definition note falls back to its basename", () => {
     const p = provider([
-      { path: "System/Glossary/Scope.md", frontmatter: { tags: ["note/definition"] } },
+      { path: "System/Glossary/Scope.md", frontmatter: { type: "Topic/Term" } },
     ]);
     assert.equal(p.resolve("Scope", "term").canonical, "Scope");
   });
@@ -95,11 +113,48 @@ describe("glossary provider: definition notes", () => {
     const p = provider([
       {
         path: "System/Glossary/[superseded] Locus.md",
-        frontmatter: { title: "Locus", tags: ["note/definition"] },
+        frontmatter: { title: "Locus", type: "Topic/Term" },
       },
     ]);
     assert.equal(p.resolve("Locus", "term").deprecated, true);
     assert.equal(p.validateToken("Locus", "term")[0].code, "deprecated");
+  });
+});
+
+describe("glossary provider: term-note shapes", () => {
+  test("a wikilinked class value, and a list value, still mark a term note", () => {
+    const p = provider([
+      { path: "G/Wiki.md", frontmatter: { title: "Wiki", type: "[[00.10 Fileclasses/Topic/Term.md|Term]]" } },
+      { path: "G/List.md", frontmatter: { title: "Listed", type: ["Topic/Term"] } },
+    ]);
+    assert.equal(p.resolve("Wiki", "term").path, "G/Wiki.md");
+    assert.equal(p.resolve("Listed", "term").path, "G/List.md");
+  });
+
+  test("another class, and the retired tag under the defaults, are not terms", () => {
+    const p = provider([
+      { path: "G/Topic.md", frontmatter: { title: "Topical", type: "Topic/Subject" } },
+      { path: "G/Old.md", frontmatter: { title: "Old", tags: ["note/definition"] } },
+    ]);
+    assert.equal(p.resolve("Topical", "term"), null);
+    assert.equal(p.resolve("Old", "term"), null);
+  });
+
+  test("the retired definition tag still works when configured, beside term notes", () => {
+    const p = glossaryProvider({ definitionTag: "note/definition" }, notes([{ path: "G/Old.md", frontmatter: { title: "Old", tags: ["note/definition"] } }]));
+    assert.equal(p.resolve("Old", "term").path, "G/Old.md");
+    assert.equal(p.resolve("Term", "term").path, "System/Glossary/Term.md");
+  });
+
+  test("a custom type key and class are honoured; termType '' turns term notes off", () => {
+    const listing = [{ path: "G/K.md", frontmatter: { title: "K", fileClass: "Meta/Term" } }];
+    assert.equal(glossaryProvider({ typeKey: "fileClass", termType: "Meta/Term" }, listing).resolve("K", "term").path, "G/K.md");
+    assert.equal(glossaryProvider({ termType: "" }, notes()).resolve("Term", "term"), null);
+  });
+
+  test("two Topic/Term notes sharing a title with different glosses refuse resolution (the pattern-language case)", () => {
+    const p = provider([{ path: "Other/Term.md", frontmatter: { title: "Term", type: "Topic/Term", description: "Another system's sense." } }]);
+    assert.throws(() => p.resolve("Term", "term"), VocabAmbiguousError);
   });
 });
 

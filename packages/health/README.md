@@ -82,7 +82,7 @@ Adding `vaultmcp-health` to `trustedReadOnlyPlugins` restores availability in re
 2. **It would be the illusion of a check.** The host guard would let a scoped `lint` through while the underlying scan still read every note — exactly the trap the cross-session extraction named when it declined to path-key `channel`.
 3. **The `to` → `to_address` precedent runs the other way.** The host renamed AWAY from a path key when the argument was not a path. `scope` is at least path-shaped, but `lint` accepts a folder OR a note path, and the guard would still be answering the wrong question about the wrong read.
 
-Read tools blocked wholesale under an allowlist is the documented posture, not a bug — the same one `vaultmcp_triage_queue`, all four `vaultmcp_crosssession_*` tools and five of the six `vaultmcp_skills_*` tools carry.
+Read tools blocked wholesale under an allowlist is the documented posture, not a bug — the same one `vaultmcp_triage_queue` and five of the six `vaultmcp_skills_*` tools carry (and all four `vaultmcp_crosssession_*` tools carried, until that satellite was retired on 2026-10-15).
 
 ### 3. Issue #381's whole-vault-read question is RESOLVED for these two tools
 
@@ -92,7 +92,7 @@ For this satellite's two tools the question is now moot, and the honest framing 
 
 - **The whole-vault read is unchanged in the code.** `scanHealth` still reads every note, and the settings accessor was always declared-and-deliberately-unapplied to the scan. The argument for that is still correct and the code still relies on it: a partial health report misreports orphans (an attachment referenced from outside the allowlist would read as orphaned) and loses duplicate-group members.
 - **What changed is WHERE the boundary is enforced.** As untrusted external tools with no recognized path-key argument, both are **blocked wholesale by the host's F3 gate while a path allowlist is active** — which is STRICTER than the documented-exception outcome #381 was weighing, and stricter than the in-module non-filtering it replaces. With NO allowlist configured nothing changes at all, because there was nothing to filter against.
-- **So #381's three-tool list shrinks to two** — `provenance_reconcile` and `obsidian_conformance_debt`, both still in the host, both still owed the enumerate-or-filter decision the issue asks for. This paragraph is written for the issue's reader: the health entry can be struck, and it was struck by a structural change rather than by an argument.
+- **So #381's three-tool list shrinks to two** — `provenance_reconcile` and `obsidian_conformance_debt`, both still in the host, both still owed the enumerate-or-filter decision the issue asks for. [Update 2026-10-14: `obsidian_conformance_debt` has left the host too, as the `vaultmcp-conformance` satellite's `vaultmcp_conformance_debt`, refused outright under an allowlist on the same terms; no tool on #381's list remains in the host. See `packages/conformance/CLAUDE.md`.] This paragraph is written for the issue's reader: the health entry can be struck, and it was struck by a structural change rather than by an argument.
 
 This claim is about `vaultmcp_health_*` only. The sibling read-tier extractions (vocab, bases) are not on #381's list and nothing here says anything about them.
 

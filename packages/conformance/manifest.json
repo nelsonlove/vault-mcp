@@ -1,0 +1,9 @@
+{
+  "id": "vaultmcp-conformance",
+  "name": "Vault MCP Conformance",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "The conformance rail: runs the rule packs over the vault, compares the findings with the accepted-debt baseline, reports the carried debt and renders the debt register note. Publishes two MCP tools through the Vault MCP host (plugin id `vault-mcp`) and adds a Drift pane that shows the scheme pack's new findings.",
+  "author": "Nelson Love",
+  "isDesktopOnly": true
+}

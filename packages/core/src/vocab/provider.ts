@@ -66,12 +66,14 @@ export interface VocabFinding {
     | "deprecated"
     | "ambiguous"
     | "malformed_token"
-    // the scope-tags provider's five-finding pack (#251)
+    // the scope-tags provider's whole-vault pack (the `## Tags` table model,
+    // #551; it replaced #251's allowedTags_unregistered, registry_entry_untagged
+    // and registry_duplicate, which described the retired Meta/Tag registry)
     | "tag_unregistered"
     | "tag_out_of_scope"
-    | "allowedTags_unregistered"
-    | "registry_entry_untagged"
-    | "registry_duplicate";
+    | "tag_declared_twice_on_chain"
+    | "tag_declared_on_two_branches"
+    | "scope_root_missing";
   token: string;
   path: string | null;
   detail: string;
@@ -137,4 +139,10 @@ export interface VocabularyProvider {
    * by `noteVocabFindings` for every provider that implements it; findings
    * carry the note's path. */
   noteFindings?(note: { path: string; frontmatter: Record<string, unknown> | null }): VocabFinding[];
+  /** Optional: findings about the vocabulary SOURCE itself, independent of
+   * any note (the scope-tags provider's table lint and its
+   * `scope_root_missing` switch report). Run ONCE per pass, not per note —
+   * `vocabularyFindings` collects them; the host rail and the vocab
+   * satellite's tools call it so a dead root is loud where it is used. */
+  registryFindings?(): VocabFinding[];
 }

@@ -10,7 +10,7 @@ Read-heavy, scope-first, preview-first, with human review. Use this profile unle
 
 ### Advanced governed
 
-Adds configured schemes, vocabulary, Bases evaluation, the health scan, and conformance. (Only schemes and conformance are still the host's own modules — since the host/Governor plugin split, the `acceptance` module has left the host's registry entirely and its settings now live in the Governor plugin's own `data.json` and settings tab. Triage and cross-session coordination ship as the separate `vaultmcp-triage` and `vaultmcp-crosssession` satellite plugins; since the S7 read-tier extraction, vocabulary, health and Bases ship as the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins. Each is installed, enabled and configured on its own, and publishes its tools to the host, Vault MCP, through `vault-mcp-api`.) These remain bounded and observable but require maintenance of their declarations and baselines.
+Adds configured schemes, vocabulary, Bases evaluation, the health scan, and conformance. (Only schemes are still the host's own module — since the host/Governor plugin split, the `acceptance` module has left the host's registry entirely and its settings now live in the Governor plugin's own `data.json` and settings tab. Triage ships as the separate `vaultmcp-triage` satellite plugin (cross-session coordination shipped as `vaultmcp-crosssession` until that plugin was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession')); since the S7 read-tier extraction, vocabulary, health and Bases ship as the separate `vaultmcp-vocab`, `vaultmcp-health` and `vaultmcp-bases` satellite plugins, and since 2026-10-14 conformance ships as the separate `vaultmcp-conformance` plugin. Each is installed, enabled and configured on its own, and publishes its tools to the host, Vault MCP, through `vault-mcp-api`.) These remain bounded and observable but require maintenance of their declarations and baselines.
 
 ### Private high-authority
 
@@ -103,7 +103,7 @@ Use controlled vocabulary only when a term changes validation, permission, lifec
 - editor and agent projection; and
 - conformance consumer.
 
-An unseeded registry is reported as unengaged, not as proof that all tags are valid. Report findings before automatic changes.
+A missing root scope note is reported as `scope_root_missing` (tag scoping is then off), not as proof that all tags are valid. Report findings before automatic changes.
 
 Review vocabulary quarterly. Demote terms with no operational consumer to ordinary prose.
 
@@ -125,7 +125,7 @@ Audit duplicates and misfiling before allocation runs.
 
 ## Conformance
 
-Conformance is a rail, not a cleanup bot. It compares current findings with an accepted baseline so new drift alarms while old debt remains visible.
+Conformance is a rail, not a cleanup bot. It compares current findings with an accepted baseline so new drift alarms while old debt remains visible. It is the separate `vaultmcp-conformance` plugin: install it beside Vault MCP to get the debt tools, the Drift pane and the conventions settings. On its first load it copies the conventions and the debt settings from Vault MCP once.
 
 Maintain:
 
@@ -159,21 +159,7 @@ Opaque macro-backed dispositions belong in a private profile. Their effects rema
 
 ## Cross-session coordination
 
-Coordination channels provide discovery, delta reads, read-position attestation, and guarded posting. Handles are cooperative assertions, not authentication.
-
-This capability is no longer part of this plugin: since the S6 satellite extraction it ships as the separate `vaultmcp-crosssession` plugin, which publishes its four tools to the host, Vault MCP, through `vault-mcp-api` (see [crosssession.md](crosssession.md)). The requirements below are unchanged and are that plugin's to satisfy; what changes for an operator is that it is installed and configured separately, and that its tools are named `vaultmcp_crosssession_*`.
-
-Operational requirements:
-
-- one authoritative channel shape per audience;
-- stable channel identity;
-- posting refuses unread foreign entries;
-- read receipts remain per-install operational state;
-- log appends preserve the message grammar;
-- generic append bypass is documented; and
-- channel health detects ambiguous or missing log files.
-
-Coordination helps fallible peers stay current. It is not an adversarial authorization layer.
+This capability is no longer part of the suite. From the S6 satellite extraction it shipped as the separate `vaultmcp-crosssession` plugin, and vaultmcp-crosssession was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession'). Nothing in the suite now provides coordination channels.
 
 ## Policy and skill layers
 

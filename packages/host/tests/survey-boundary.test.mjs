@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { checkMirrorBoundary } from "../src/kernel/survey/boundary.js";
 
 // checkMirrorBoundary reads the boundary from ASSENT_CONTENT_ROOT /
-// ASSENT_VAULT_ROOT at call time (matching conformance/snapshot.ts's own
+// ASSENT_VAULT_ROOT at call time (matching packages/conformance/src/kernel/snapshot.ts's own
 // declaredBoundary), so these tests set and restore them around each case
 // rather than mocking — there's no injection seam for env vars here, same as
 // snapshot.ts's own tests.

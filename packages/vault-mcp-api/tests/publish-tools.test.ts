@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { z } from "zod";
-import { publishTools, partial, isPartial, PARTIAL_BRAND, API_VERSION_MIN, hostApiRefusal, type CallContext } from "../src/index.js";
+import { publishTools, partial, isPartial, PARTIAL_BRAND, API_VERSION_MIN, API_VERSION_DECLARATIONS, hostApiRefusal, declaresWrites, specsForHost, type CallContext } from "../src/index.js";
 
 // Minimal fake of the Obsidian surface publishTools touches: workspace event
 // bus (on/offref/trigger) + plugins map + plugin.manifest.id.
@@ -255,4 +255,50 @@ test("the refusal names the rule that failed: not-a-number is not reported as 'b
   } finally { console.warn = orig; }
   assert.match(warned.join("\n"), /not a finite number/, "the console line a darkened satellite emits says the true cause");
   assert.doesNotMatch(warned.join("\n"), /below the supported floor/);
+});
+
+// ── apiVersion 3: the write declarations (#550) ──────────────────────────────
+
+const declaring = { name: "assign", description: "d", inputSchema: { path: z.string() }, protection: "key" as const, sync: { kind: "structure" as const, strictStatus: true }, paths: ["path"], handler: () => ({}) };
+const plain = { name: "plain", description: "d", handler: () => ({}) };
+
+test("the declarations cross to a v3 host as given; a spec without them carries none of the keys", () => {
+  const api = fakeApi(API_VERSION_DECLARATIONS);
+  publishTools(plugin(fakeWorld(api).app), [declaring, plain]);
+  const [a, p] = api.calls[0].tools;
+  assert.equal(a.protection, "key");
+  assert.deepEqual(a.sync, { kind: "structure", strictStatus: true });
+  assert.deepEqual(a.paths, ["path"]);
+  assert.equal("protection" in p || "sync" in p || "paths" in p, false);
+});
+
+test("fail closed below apiVersion 3: a declaring tool is left out (with one warning), the others register", () => {
+  const api = fakeApi(2);
+  const warned: unknown[] = [];
+  const orig = console.warn;
+  console.warn = (...a: unknown[]) => { warned.push(a.join(" ")); };
+  try {
+    publishTools(plugin(fakeWorld(api).app), [declaring, plain]);
+  } finally {
+    console.warn = orig;
+  }
+  assert.deepEqual(api.calls[0].tools.map((t) => t.name), ["plain"]);
+  assert.equal(warned.length, 1);
+  assert.match(String(warned[0]), /cannot enforce write declarations \(needs 3\).*assign/);
+});
+
+test("declaresWrites and specsForHost", () => {
+  assert.equal(declaresWrites({}), false);
+  assert.equal(declaresWrites({ paths: [] }), true, "an explicit empty paths list is a declaration");
+  assert.equal(declaresWrites({ protection: "exempt" }), true);
+  const specs = [{ ...plain, protection: "exempt" as const }, plain];
+  assert.equal(specsForHost({ apiVersion: 3 }, specs).length, 2);
+  assert.equal(specsForHost({ apiVersion: 7 }, specs).length, 2, "a floor, as for the version itself");
+  const orig = console.warn;
+  console.warn = () => {};
+  try {
+    assert.equal(specsForHost({ apiVersion: 2 }, specs).length, 1);
+  } finally {
+    console.warn = orig;
+  }
 });

@@ -83,6 +83,10 @@ export interface ModuleDescription {
 export const EXTRACTED_MODULE_IDS: ReadonlySet<string> = new Set([
   "skills", "triage", "crosssession", "vocab", "health", "bases",
   "fileclass", "provenance", "jd-scaffold",
+  // Never a mounted module: the conformance-debt tools were registered by hand
+  // in server.ts, but their config sat at `modules["conformance-debt"].config`.
+  // The vaultmcp-conformance satellite adopts it from there (2026-10-14).
+  "conformance-debt",
 ]);
 
 export class ModuleRegistry {

@@ -30,7 +30,7 @@
 //     guard.ts's PATH_KEYS allowlist never sees (it only knows vault-relative
 //     paths). The first cut passed both straight to fs.statSync/readdirSync
 //     with no check at all. kernel/survey/boundary.ts closes this the same
-//     way conformance/snapshot.ts already closed the identical hole once
+//     way the conformance rail's snapshot.ts (packages/conformance) closed the identical hole once
 //     (issue #157) — checked before every filesystem read here, not just at
 //     the top of the request.
 //   - obsidian_survey_slot wrote via raw app.vault.process /

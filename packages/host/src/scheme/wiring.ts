@@ -1,13 +1,16 @@
-// Wiring for the scheme Inbox and Drift panes (jd-dashboard fold, Stages B
-// and C). Both are read-only chrome: no MCP tool, no write capability, no
-// gesture gate — the same trust boundary as Obsidian's own file explorer,
-// which is why (unlike an MCP tool's `ctx.notes()`) the Inbox pane reads
-// `app.vault` directly rather than going through the MCP path-visibility
-// allowlist (guard.ts's `visiblePaths`). That allowlist bounds what an
-// MCP-connected AGENT can reach; a human's own sidebar in their own Obsidian
-// is not that boundary. (The Drift pane's equivalent — the conformance
-// engine's own `excludedRoots` config — is handled inside `runConformance`
-// itself, via `obsidian-drift-source.ts`; nothing extra needed here.)
+// Wiring for the scheme Inbox pane (jd-dashboard fold, Stage B). Read-only
+// chrome: no MCP tool, no write capability, no gesture gate — the same trust
+// boundary as Obsidian's own file explorer, which is why (unlike an MCP tool's
+// `ctx.notes()`) the Inbox pane reads `app.vault` directly rather than going
+// through the MCP path-visibility allowlist (guard.ts's `visiblePaths`). That
+// allowlist bounds what an MCP-connected AGENT can reach; a human's own sidebar
+// in their own Obsidian is not that boundary.
+//
+// The Drift pane (Stage C) was wired here beside it until 2026-10-14. It runs
+// the conformance engine and nothing else, so it left with the conformance rail
+// for the vaultmcp-conformance satellite (packages/conformance/src/drift-pane.ts),
+// which registers its own view, ribbon and command. The Inbox pane reads the
+// scheme registry and stays with the scheme surface, here in the host.
 //
 // The Inbox pane DOES still respect a configured scheme instance's
 // `excludedRoots`, though — that is a "what does this vault's addressing
@@ -25,11 +28,11 @@
 // isn't threaded through ScopeProvider itself).
 //
 // LIVE MOUNT/UNMOUNT (fixes governor#286, filed against the original,
-// onload-only shape of this file): both views + ribbons register on a
+// onload-only shape of this file): the view + ribbon register on a
 // shared child `Component` (`plugin.addChild`) that `wireSchemePanes`
 // returns — a live unmount is `plugin.removeChild(it)`, which detaches any
-// open leaves, unregisters both view types, and removes both ribbon
-// elements. This mirrors `governor/wiring/wiring.ts`'s `wireGovernance` exactly
+// open leaves, unregisters the view type, and removes the ribbon
+// element. This mirrors `governor/wiring/wiring.ts`'s `wireGovernance` exactly
 // (the fix pattern #286 pointed at, itself from #200) — a plugin-toggle
 // flip is no longer a "nothing happened until I reload" surprise, and
 // disabling the module no longer leaves a registered view type + a live
@@ -44,9 +47,6 @@
 import { type App, Component, type Plugin, type ViewCreator, Notice, TFolder } from "obsidian";
 import { makeRegistry, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import { INBOX_VIEW_TYPE, InboxPaneView, type InboxPaneController } from "./inbox-pane.js";
-import { DRIFT_VIEW_TYPE, DriftPaneView, type DriftPaneController } from "./drift-pane.js";
-import { obsidianDriftSource } from "../mcp/obsidian-drift-source.js";
-import { type VaultConventions } from "../conformance/vault-conventions.js";
 
 function revealFolder(app: App, path: string): void {
   const folder = app.vault.getAbstractFileByPath(path);
@@ -66,8 +66,7 @@ function revealFolder(app: App, path: string): void {
  *  unmount must unregister the type itself (its public wrapper offers no
  *  un-register). Duplicated from governor/wiring/wiring.ts's own private helper
  *  of the same name/shape, rather than exported and shared, matching this
- *  file's existing precedent of small per-file helpers (e.g. `vaultRoot` in
- *  mcp/obsidian-drift-source.ts / mcp/obsidian-debt-source.ts). An Obsidian
+ *  plugin's precedent of small per-file helpers. An Obsidian
  *  build without it degrades to "leave the type registered", handled by the
  *  reuse-on-duplicate try/catch below. */
 function viewRegistryOf(plugin: Plugin): { unregisterView(type: string): void } | undefined {
@@ -90,18 +89,8 @@ export interface WireSchemePanesOpts {
    *  rebuild-don't-cache factory), so a settings-tab edit to `excludedRoots`
    *  takes effect on the Inbox pane's next refresh without a plugin reload. */
   getSchemes: () => SchemeInstanceConfig[];
-  /** The operator's guarded territories, read fresh per call for the same
-   * reason `getSchemes` is (#397): the drift pane runs the conformance rail,
-   * which must not walk a territory a human added since the pane mounted. */
-  getTerritories?: () => readonly string[];
-  /** The operator's vault conventions, read fresh per call (#403), for the
-   * same reason: the drift pane must measure what the settings say now. */
-  getConventions?: () => VaultConventions;
 }
 
-/** Mount both panes on one shared child Component — they're gated by the
- *  same "scheme" module toggle and always mount/unmount together, so one
- *  Component (one `removeChild` call) is a complete teardown of both. */
 /** One pane's registration: view + teardown hook + ribbon, all landing on
  *  the shared `component`. Isolated in its own try/catch (see
  *  `wireSchemePanes`'s doc comment) so a failure setting up ONE pane cannot
@@ -124,21 +113,17 @@ function wirePane(plugin: Plugin, component: Component, viewType: string, label:
 }
 
 /**
- * Mount both panes on one shared child Component — they're gated by the
- * same "scheme" module toggle and always mount/unmount together, so one
- * Component (one `removeChild` call) is a complete teardown of both.
+ * Mount the scheme panes (today the Inbox pane alone) on one shared child
+ * Component, gated by the "scheme" module toggle — one `removeChild` call is a
+ * complete teardown.
  *
  * Each pane's registration is isolated (`wirePane`'s own try/catch) rather
  * than left to a single try/catch around this whole function (which is what
  * the CALLER, `applySchemePanesMount`, still wraps this in too) — a mount
- * cycle is now live and REPEATABLE (toggle off/on, off/on...), so a failure
- * setting up one pane must not silently orphan the other pane's ribbon/view
- * with no surviving reference to tear it down: the caller's catch only sees
- * a thrown `wireSchemePanes` and nulls its component handle, which would
- * otherwise abandon whatever already-registered pane never makes it into
- * that null'd reference. With isolation, the worst case on a genuine
- * failure is "one pane failed to mount, the other didn't" — never "a pane
- * mounted successfully and nothing can ever unmount it again."
+ * cycle is live and REPEATABLE (toggle off/on, off/on...), so a failure
+ * setting up one pane must not orphan another pane's ribbon/view with no
+ * surviving reference to tear it down. The isolation stays although one pane
+ * is left: it is what keeps a second pane added here safe.
  */
 export function wireSchemePanes(plugin: Plugin, opts: WireSchemePanesOpts): Component {
   const app = plugin.app;
@@ -161,17 +146,6 @@ export function wireSchemePanes(plugin: Plugin, opts: WireSchemePanesOpts): Comp
     console.error("[vault-mcp] scheme inbox pane wiring failed", e);
   }
 
-  try {
-    const driftSource = obsidianDriftSource(app, opts.getTerritories, opts.getConventions);
-    const driftController: DriftPaneController = {
-      scan: () => driftSource.scan(),
-      openNote: (path) => void app.workspace.openLinkText(path, ""),
-    };
-    wirePane(plugin, component, DRIFT_VIEW_TYPE, "Open JD drift", "alert-triangle", (leaf) => new DriftPaneView(leaf, driftController));
-  } catch (e) {
-    console.error("[vault-mcp] scheme drift pane wiring failed", e);
-  }
-
   return component;
 }
 
@@ -188,5 +162,4 @@ export function registerSchemeCommands(plugin: Plugin, isEnabled: () => boolean)
     await activateView(app, viewType);
   };
   plugin.addCommand({ id: "scheme-inbox-open", name: "Scheme: open JD inboxes", callback: () => void guarded(INBOX_VIEW_TYPE, "JD inboxes")() });
-  plugin.addCommand({ id: "scheme-drift-open", name: "Scheme: open JD drift", callback: () => void guarded(DRIFT_VIEW_TYPE, "JD drift")() });
 }

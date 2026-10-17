@@ -124,7 +124,7 @@ band) — distinct from a fully allocatable scope.
 
 ## Conformance findings (not a tool)
 
-`packages/host/src/kernel/scheme/findings.ts` is a scheme-conformance rule-pack (finding codes
+`packages/core/src/scheme/findings.ts` is a scheme-conformance rule-pack (finding codes
 `misfiled`, `duplicate_address`, `malformed_name`, `unaddressed`) that is deliberately **not
 registered as a tool** — capabilities arrive as rule packs, not as new mutating surface. It is
 available to future review/rail surfaces, not to agents as a write path.

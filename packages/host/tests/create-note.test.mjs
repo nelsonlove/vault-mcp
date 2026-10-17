@@ -8,7 +8,7 @@ import { installObsidianStub, TFile, TFolder } from "./obsidian-stub.mjs";
 import { fakeServer } from "./fake-server.mjs";
 
 installObsidianStub();
-const { registerCreateNoteTool, CREATE_NOTE_TOOL, fillDates, notePath, renderView } = await import("../src/mcp/tools-create-note.ts");
+const { registerCreateNoteTool, CREATE_NOTE_TOOL, fillDates, notePath, renderView, slotNameOf } = await import("../src/mcp/tools-create-note.ts");
 const { decideSync, normalizeSyncGuard } = await import("../src/kernel/sync-guard.ts");
 
 function fakeApp() {
@@ -36,14 +36,16 @@ function fakeApp() {
 }
 
 // The faked modules: render "type: <cls>" plus the values (as flow does), into the note through app.vault.modify.
-function fakeModules({ required = [], body = "", fmLines = [], type, echo = true, fields } = {}) {
+function fakeModules({ required = [], body = "", fmLines = [], type, echo = true, fields, slots } = {}) {
   const seen = { applyApps: [], placementActive: [] };
   return {
     seen,
     mods: {
       className: (cls) => String(cls).replace(/^\[\[|\]\]$/g, "").trim(),
       ...(fields ? { fields: () => fields } : {}),
-      hasClass: (a, cls) => ["Declared", "Loose", "Two"].includes(String(cls).replace(/^\[\[|\]\]$/g, "").trim()),
+      // slots: { "<class>": <its note's frontmatter> } — the slot classes this fake knows, read the real way.
+      ...(slots ? { slotName: (a, cls) => slotNameOf(String(cls), slots[String(cls)]) } : {}),
+      hasClass: (a, cls) => ["Declared", "Loose", "Two", ...Object.keys(slots ?? {})].includes(String(cls).replace(/^\[\[|\]\]$/g, "").trim()),
       resolvePlacement: async (view, cls, params, opts) => {
         // The module's human fallback is the active note's folder; the view must hide it.
         seen.placementActive.push(view.workspace.getActiveFile());
@@ -283,5 +285,33 @@ describe("obsidian_create_note under the write scope", () => {
     const no = await call({ class: "Loose", title: "Out", folder: "A/10.02 Tasks" });
     assert.match(errText(no), /^Error \[write_scope\]: .*'A\/10\.02 Tasks\/Out\.md' is not one of them/);
     assert.deepEqual(app.writes, ["A/10.01 Inbox/In.md"]);
+  });
+});
+
+describe("obsidian_create_note: a slot is named from its class's slot-title (2026-10-15)", () => {
+  const slots = { "Meta/Slot/Audits": { "slot-title": "Audits & reports" }, "Meta/Slot/Tasks": {}, "Meta/Slot/Now": { "slot-title": "  " } };
+  test("a bare address gets the class's slot-title", async () => {
+    const { app, call } = setup({ slots });
+    const r = await call({ class: "Meta/Slot/Audits", title: "00.08", folder: "C/00.08 Audits & reports" });
+    assert.notEqual(r.isError, true, errText(r));
+    assert.equal(r.structuredContent.path, "C/00.08 Audits & reports/00.08 Audits & reports.md");
+    assert.deepEqual(app.writes, ["C/00.08 Audits & reports/00.08 Audits & reports.md"]);
+  });
+  test("no slot-title, or a blank one: the function's own name", async () => {
+    const { call } = setup({ slots });
+    assert.equal((await call({ class: "Meta/Slot/Tasks", title: "AB.02", folder: "F" })).structuredContent.path, "F/AB.02 Tasks.md");
+    assert.equal((await call({ class: "Meta/Slot/Now", title: "10.00", folder: "F" })).structuredContent.path, "F/10.00 Now.md");
+  });
+  test("a full title is kept as given, and a non-slot class with an address-like title is not renamed", async () => {
+    const { call } = setup({ slots });
+    assert.equal((await call({ class: "Meta/Slot/Audits", title: "00.08 Checks", folder: "F" })).structuredContent.path, "F/00.08 Checks.md");
+    assert.equal((await call({ class: "Loose", title: "00.08", folder: "F" })).structuredContent.path, "F/00.08.md");
+  });
+  test("slotNameOf reads only Meta/Slot/<Function> classes", () => {
+    assert.equal(slotNameOf("Meta/Slot/Audits", { "slot-title": "Audits & reports" }), "Audits & reports");
+    assert.equal(slotNameOf("Meta/Slot/Audits", undefined), "Audits");
+    assert.equal(slotNameOf("Meta/Slot", { "slot-title": "x" }), undefined);
+    assert.equal(slotNameOf("Meta/Slot/A/B", {}), undefined);
+    assert.equal(slotNameOf("Task/AgentTask", { "slot-title": "x" }), undefined);
   });
 });

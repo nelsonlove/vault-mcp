@@ -28,51 +28,41 @@ never this module's name, so it was stripped rather than carried into a second o
 namespace. Sessions and prompts calling the old names must be updated.
 
 **The pure engine did NOT move into the plugin — it moved into `@vault-mcp/core`.** It has two
-consumers and always did: these four tools, and the host's own conformance rail, where
-`conformance/packs/vocab.ts` wraps `noteVocabFindings`, `conformance/cli.ts` builds a
+consumers and always did: these four tools, and the conformance rail (the host's at the time,
+the `vaultmcp-conformance` plugin since 2026-10-14), where
+`kernel/packs/vocab.ts` wraps `noteVocabFindings`, `kernel/cli.ts` builds a
 `VocabRegistry` per run, and `snapshot.ts` / `rule-pack.ts` are typed over `VocabNote`. Copying
 it would have been the failure the split exists to avoid — two copies of a vocabulary rule core
 is how one vault ends up with two vocabularies — so it was published instead, on the same
-precedent as `isVisible` (S4) and `executeQuickAddChoice` (S5). Conformance is itself a planned
-satellite, so core is where both consumers were always going to meet.
+precedent as `isVisible` (S4) and `executeQuickAddChoice` (S5). Conformance became a satellite
+too, so core is where both consumers meet.
 
 **One pre-existing gap the extraction makes visible, and does not create:** the conformance rail
 builds its registry from `DEFAULT_VOCABULARIES`, not from the configured instance list. It never
 read the user's configured vocabularies, so conformance findings and these tools can disagree
-about what is registered. That is a host question, recorded here because this is where a reader
+about what is registered. That is a question for the conformance rail, recorded here because this is where a reader
 would look for it.
 
 ## What it validates
 
 Four kinds — `VocabKind = "tag" | "property" | "type" | "term"` — served by three providers:
 
-- **scope-tags** (`scope-tags.ts`, #251) serves **`tag`** — the live per-scope whitelist model,
-  two independent gates over the vault's own declarations:
-  1. *existence* — a tag exists iff a registry note (`fileClass: Meta/Tag`, canonical token in
-     its `tag` field) declares it; exact-match, deliberately not prefix-permissive;
-  2. *placement* — each scope folder-note declares what it admits via `allowedTags`, and a
-     note's effective set is the **union walking up its folder chain** (band ← category ← area
-     ← the root scope note, live default `The system.md`), with subtree semantics: allowing
-     `note` admits `note/task`, `note/clipping/web`, ….
+- **scope-tags** (`scope-tags.ts`, #551) serves **`tag`** — the live model of vault spec 01.13 (rules 2, 5a, 5c, 6 and 6a) and 01.21 rule 3, read straight off the vault's own declarations:
+  1. *declaration* — each scope or slot note (a folder note, `A/B/B.md`) declares the tags it owns in the first table under its `## Tags` heading, in the note's BODY: tag and description. The tables are the only place a tag is declared. A row is exact (`person` declares `person`, nothing below it); a row written `head/*` declares the family, every token under `head/`, but not the bare head (rule 5c).
+  2. *existence* — a tag exists iff some row declares it, exactly or through a family row.
+  3. *placement* — a note's allowed set is the **union of the tables met walking its folder chain** to the root scope note. The root scope note is the folder note of category 00 (live default `00-09 System/00 System management/00 System management.md`), which claims the whole vault by declaration, so its table — the families every note may carry — joins every chain, outside 00-09 too.
 
-  Every vault-semantic value is config (`ScopeTagsConfig`: `registryClass`, `tagKey`,
-  `allowedTagsKey`, `rootNote`) with today's live shapes as defaults, validated per-provider by
-  the registry (invalid config skips that one instance and reports). Two deliberate gates match
-  the live rollout state: an **unseeded registry** (zero registry notes) forces no per-tag
-  findings — a reportable state (counts of 0), not drift — and a note whose chain declares no
-  `allowedTags` key has placement un-engaged, while a declared-empty whitelist is authoritative.
+  Every vault-semantic value is config (`ScopeTagsConfig`: `rootNote`, `tagsHeading`) with today's live shapes as defaults, validated per-provider by the registry (invalid config skips that one instance and reports). The root note is the switch (01.21 rule 3): when `rootNote` names a note that is not in the listing, no per-note finding fires and the pack reports `scope_root_missing`, so a dead root path is loud rather than silent. With `rootNote: ""` scoping is on whenever any table is declared, and no table is vault-wide. The retired #251 model (`Meta/Tag` registry notes, an `allowedTags` frontmatter key, a vault-root `The system.md`) is gone; its config keys (`registryClass`, `tagKey`, `allowedTagsKey`) are now ignored. The tool layer reads bodies only for folder notes and the root note.
 - **blueprint** (`blueprint.ts`) serves **`tag`**, **`property`**, **`type`** in the *gen-old
   registry grammar*: tags from `<name>.tag.md` notes (namespace-prefix permissive), properties
   from flat `<key>.property.md`, types from `<Name>.fileclass` files (`extends` = parent,
   `retired: true` = deprecated). No longer in the shipped defaults (that grammar has no live
   surface); available via settings.
-- **glossary** (`glossary.ts`) serves **`term`**: definition notes tagged `note/definition`
-  (term = `title`, gloss = `description`) and `## Terms` sections of `- **term** — definition`
-  bullets.
+- **glossary** (`glossary.ts`) serves **`term`**: term notes whose `type` is `Topic/Term` (term = `title`, gloss = `description`, aliases = `aliases`; the key and class are config, `typeKey` and `termType`), and `## Terms` sections of `- **term** — definition` bullets. The retired `note/definition` tag convention is off by default and still available through `definitionTag`.
 
 The registry (`VocabRegistry`) skip-and-reports duplicate ids, unknown providers, and invalid
 per-provider configs into a `problems` array (it never throws), reserving an id before the
-provider check. Shipped defaults: one `scope-tags` instance over the whole vault and one `glossary` over the whole vault with no `termsRoot`. The plugin ships no vault path (the #403 ruling, applied here after the default's `termsRoot` went dead silently three times as the framework folder was renamed). Without `termsRoot` the glossary serves definition notes only; set it in the vocab satellite's settings to read a folder's `## Terms` chapters. An install upgrading from the host adopts the value it already had.
+provider check. Shipped defaults: one `scope-tags` instance over the whole vault and one `glossary` over the whole vault with no `termsRoot`. No row ships a vault path (the #403 ruling, applied here after the default's `termsRoot` went dead silently three times as the framework folder was renamed); the one layout fact the defaults carry is the scope-tags provider's `rootNote`, and a dead one reports `scope_root_missing`. Without `termsRoot` the glossary serves term notes only; set it in the vocab satellite's settings to read a folder's `## Terms` chapters. An install upgrading from the host adopts the value it already had.
 
 ## The four tools
 
@@ -106,8 +96,8 @@ Finding codes (`VocabFinding.code`, shape `{ code, token, path, detail }`):
 ```
 unregistered_tag | undefined_property | unknown_type | unknown_term
 deprecated | ambiguous | malformed_token
-tag_unregistered | tag_out_of_scope | allowedTags_unregistered
-registry_entry_untagged | registry_duplicate
+tag_unregistered | tag_out_of_scope | tag_declared_twice_on_chain
+tag_declared_on_two_branches | scope_root_missing
 ```
 
 blueprint maps an unknown-per-kind token to `unregistered_tag` / `undefined_property` /
@@ -138,16 +128,12 @@ restores read-only-mode availability; it does not change the scoping gate below.
 the vocabulary, or a note re-tagged, is a decision the tool **names for you** — it never takes
 it.
 
-The scope-tags provider adds its **five-finding whole-vault rule pack** (`scopeTagsFindings` in
-`scope-tags.ts` — also not a tool; rail material):
+The scope-tags provider adds its **whole-vault rule pack** (`scopeTagsFindings` in `scope-tags.ts` — also not a tool; rail material), the lint of 01.13 rule 6:
 
-- `tag_unregistered` — a note carries a tag no registry note declares
-- `tag_out_of_scope` — registered, but outside the note's chain union
-- `allowedTags_unregistered` — a scope whitelists a tag that isn't in the registry
-- `registry_entry_untagged` — a registry note with an empty/missing `tag` field
-- `registry_duplicate` — two registry notes claiming one token
+- `tag_unregistered` — a note carries a tag no table row declares
+- `tag_out_of_scope` — declared, but no table on the note's own scope chain admits it
+- `tag_declared_twice_on_chain` — a token declared twice on one chain (or twice in one table), reported at the lower row, which is the one to drop or hoist
+- `tag_declared_on_two_branches` — a token declared on unrelated branches with different descriptions
+- `scope_root_missing` — the configured root scope note is not in the listing, so scoping is off
 
-Per-note, `tag_out_of_scope` and `allowedTags_unregistered` also surface through
-the validate tool via the optional `noteFindings` seam on `VocabularyProvider` (provider-
-specific whole-note checks, called by `noteVocabFindings`); `tag_unregistered` rides the
-ordinary token path. Report-first throughout — no write-time refusal; curation is human.
+Per-note, `tag_out_of_scope` also surfaces through the validate tool via the optional `noteFindings` seam on `VocabularyProvider` (provider-specific whole-note checks, called by `noteVocabFindings`); `tag_unregistered` rides the ordinary token path. Report-first throughout — no write-time refusal; curation is human.
