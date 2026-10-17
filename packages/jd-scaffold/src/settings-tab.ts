@@ -40,7 +40,7 @@ export class JdScaffoldSettingTab extends PluginSettingTab {
     //     these seven tools to.
     //
     // The suite's one behavioural test of this lookup is
-    // `packages/crosssession/tests/host-lookup.test.mjs`.
+    // `packages/conformance/tests/host-lookup.test.mjs`.
     const loaded = (this.app as unknown as {
       plugins?: { plugins?: Record<string, { api?: unknown } | undefined> };
     }).plugins?.plugins;

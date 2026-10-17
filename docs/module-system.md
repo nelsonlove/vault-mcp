@@ -143,7 +143,7 @@ Skills is no longer a built-in module: it now ships as its own satellite plugin,
 
 Triage is no longer a built-in module either: it now ships as its own satellite plugin, `vaultmcp-triage`, publishing the same two tools through `vault-mcp-api` — see [triage.md](triage.md).
 
-Cross-session coordination is no longer a built-in module either: it now ships as its own satellite plugin, `vaultmcp-crosssession`, publishing its four tools through `vault-mcp-api`. Their NAMES changed in the move (`crosssession_*` → `vaultmcp_crosssession_*`), because the plugin id is the tool namespace — the same trade triage made, and unlike skills, whose id happened to reproduce its shipped prefix. See [crosssession.md](crosssession.md).
+Cross-session coordination is no longer a built-in module either: from S6 it shipped as its own satellite plugin, `vaultmcp-crosssession`, publishing its four tools through `vault-mcp-api`, until that plugin was retired on 2026-10-15 (Nelson's verify of 'Retire vaultmcp-crosssession'). Their NAMES changed in the move (`crosssession_*` → `vaultmcp_crosssession_*`), because the plugin id is the tool namespace — the same trade triage made, and unlike skills, whose id happened to reproduce its shipped prefix.
 
 The whole **read tier** left together at S7 — the vocabulary provider (`vaultmcp-vocab`, [vocabulary-module.md](vocabulary-module.md)), the health scan (`vaultmcp-health`) and the Bases surface (`vaultmcp-bases`, [bases.md](bases.md)) — publishing `vaultmcp_vocab_*`, `vaultmcp_health_{scan,lint}` and `vaultmcp_bases_{list,query}` respectively. All eight names changed, for the same plugin-id-is-the-namespace reason, and `base_`/`obsidian_` were stripped rather than carried into a second namespace.
 

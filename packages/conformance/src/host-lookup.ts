@@ -15,7 +15,7 @@
 // `governor`, CURRENT FIRST, and a plugin counts as the host only if it exposes
 // the plugin-to-plugin `api` object (the governance provider under `governor`
 // has none). The suite's one behavioural test of that lookup is
-// `packages/crosssession/tests/host-lookup.test.mjs`; the territories reader is
+// `tests/host-lookup.test.mjs` in this package; the territories reader is
 // the same function as `packages/governor/src/host-lookup.ts`'s
 // `hostGuardedTerritories`, with the same fail-closed reading of null.
 
