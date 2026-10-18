@@ -6,6 +6,26 @@ import { redactSecrets, redactToolResult, redactingHandler, SCAN_FAILED_TEXT } f
 import { resolveProfile } from "../src/profile.ts";
 
 const A = (n) => "A".repeat(n);
+// Every key-shaped placeholder is built at run time from parts, so no literal that a secret
+// scanner (gitleaks, push protection) flags is committed. Every one is made up.
+const cat = (...p) => p.join("");
+const FAKE = (n) => "FAKE".repeat(n);
+const K = {
+  sk: cat("sk", "-test-", A(24)),
+  skProj: cat("sk", "-proj-", "FAKEfakeFAKEfake0000FAKE"),
+  ant: cat("sk", "-ant-", "api00-FAKE", A(30)),
+  ghp: cat("gh", "p_", FAKE(9)),
+  gho: cat("gh", "o_", FAKE(9)),
+  ghPat: cat("github", "_pat_", "11FAKE_", A(40)),
+  xoxb: cat("xo", "xb-", "0000000000-", FAKE(3)),
+  xoxp: cat("xo", "xp-", "1111-2222-", FAKE(2)),
+  akia: cat("AK", "IA", FAKE(4)),
+  aiza: cat("AI", "za", "F".repeat(35)),
+  jwt: [cat("ey", "JhbGciOiJIUzI1NiJ9"), cat("ey", "JzdWIiOiJmYWtlIn0"), "ZmFrZXNpZ25hdHVyZQ"].join("."),
+};
+const BEGIN = (t) => cat("-----", "BEGIN ", t, "PRIVATE KEY", "-----");
+const END = (t) => cat("-----", "END ", t, "PRIVATE KEY", "-----");
+const BODY = cat("MIIEv", "QIBADANBgkqhkiG9w0BAQEFAASC", "FAKE");
 const blanked = (input, kind) => {
   const out = redactSecrets(input);
   assert.ok(out.includes(`[redacted:${kind}]`), `expected [redacted:${kind}] in ${JSON.stringify(out)}`);
@@ -14,17 +34,16 @@ const blanked = (input, kind) => {
 
 describe("token shapes are blanked, with no part of the secret kept", () => {
   const cases = [
-    ["api-key", `sk-test-${A(24)}`],
-    ["api-key", `sk-proj-FAKEfakeFAKEfake0000FAKE`],
-    ["anthropic-key", `sk-ant-api00-FAKE${A(30)}`],
-    ["github-token", `ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`],
-    ["github-token", `gho_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`],
-    ["github-token", `github_pat_11FAKE_${A(40)}`],
-    ["slack-token", `xoxb-0000000000-FAKEFAKEFAKE`],
-    ["slack-token", `xoxp-1111-2222-FAKEFAKE`],
-    ["aws-key-id", `AKIA${"FAKE".repeat(4)}`],
-    ["google-api-key", `AIza${"F".repeat(35)}`],
-    // Built at run time, so no literal key-shaped string is committed.
+    ["api-key", K.sk],
+    ["api-key", K.skProj],
+    ["anthropic-key", K.ant],
+    ["github-token", K.ghp],
+    ["github-token", K.gho],
+    ["github-token", K.ghPat],
+    ["slack-token", K.xoxb],
+    ["slack-token", K.xoxp],
+    ["aws-key-id", K.akia],
+    ["google-api-key", K.aiza],
     ["stripe-key", ["sk", "live", "FAKE".repeat(6)].join("_")],
     ["stripe-key", ["rk", "live", "FAKE".repeat(6)].join("_")],
     ["slack-token", ["xoxe", "1", "FAKEFAKEFAKE"].join("-")],
@@ -34,7 +53,7 @@ describe("token shapes are blanked, with no part of the secret kept", () => {
     ["npm-token", "npm" + "_" + "FAKE".repeat(10)],
     ["tailscale-key", ["tskey", "auth", "FAKE", "FAKEFAKE"].join("-")],
     ["sendgrid-key", ["SG", "FAKE".repeat(5), "FAKE".repeat(10)].join(".")],
-    ["jwt", `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ`],
+    ["jwt", K.jwt],
   ];
   for (const [kind, secret] of cases) {
     test(`${kind}: ${secret.slice(0, 12)}…`, () => {
@@ -45,23 +64,23 @@ describe("token shapes are blanked, with no part of the secret kept", () => {
   }
 
   test("a PEM private key block, whole", () => {
-    const pem = `-----BEGIN RSA PRIVATE KEY-----\nMIIFAKEFAKEFAKE\nFAKEFAKEFAKE==\n-----END RSA PRIVATE KEY-----`;
+    const pem = `${BEGIN("RSA ")}\n${BODY}\nFAKEFAKEFAKE==\n${END("RSA ")}`;
     const out = blanked(`key:\n${pem}\nnext line`, "private-key");
     assert.equal(out, "key:\n[redacted:private-key]\nnext line");
   });
 
   test("a PEM block inside a JSON string (escaped line breaks), and a header cut off with no END", () => {
-    const json = JSON.stringify({ content: "-----BEGIN PRIVATE KEY-----\nMIIFAKEFAKE\n-----END PRIVATE KEY-----\nok" });
+    const json = JSON.stringify({ content: `${BEGIN("")}\n${BODY}\n${END("")}\nok` });
     const out = blanked(json, "private-key");
-    assert.ok(!out.includes("MIIFAKEFAKE"));
+    assert.ok(!out.includes(BODY));
     assert.ok(out.includes("ok"));
     assert.doesNotThrow(() => JSON.parse(out));
-    const cut = blanked("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaFAKEFAKE", "private-key");
+    const cut = blanked(`${BEGIN("OPENSSH ")}\nb3BlbnNzaFAKEFAKE`, "private-key");
     assert.ok(!cut.includes("b3BlbnNzaFAKEFAKE"));
   });
 
   test("a token right after a JSON-escaped line break", () => {
-    const json = JSON.stringify({ text: `line\nghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE` });
+    const json = JSON.stringify({ text: `line\n${K.ghp}` });
     const out = blanked(json, "github-token");
     assert.doesNotThrow(() => JSON.parse(out));
   });
@@ -139,6 +158,10 @@ describe("key=value and key: value pairs whose key names a secret", () => {
       "bypass: on",
       "compass = north",
       "This note is about passwords and tokens.",
+      "pin: 1234",
+      "password-protected: yes",
+      "The password-protected file opened.",
+      "pwm: x",
     ]) assert.equal(redactSecrets(s), s, s);
   });
 
@@ -163,7 +186,7 @@ describe("key=value and key: value pairs whose key names a secret", () => {
   });
 
   test("a PGP private key block", () => {
-    const pgp = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBFAKEFAKE\n=FAKE\n-----END PGP PRIVATE KEY BLOCK-----";
+    const pgp = `${BEGIN("PGP ")}`.replace(/-----$/, " BLOCK-----") + "\n\nlQOYBFAKEFAKE\n=FAKE\n" + `${END("PGP ")}`.replace(/-----$/, " BLOCK-----");
     assert.equal(redactSecrets(`a\n${pgp}\nb`), "a\n[redacted:private-key]\nb");
   });
 
@@ -181,7 +204,7 @@ describe("key=value and key: value pairs whose key names a secret", () => {
   });
 
   test("a value already blanked is not blanked twice", () => {
-    assert.equal(redactSecrets(`token: ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`), "token: [redacted:github-token]");
+    assert.equal(redactSecrets(`token: ${K.ghp}`), "token: [redacted:github-token]");
   });
 });
 
@@ -191,7 +214,7 @@ describe("JSON text and structured content are scanned key-aware and stay valid"
     { password: ["fake1", "fake2"], api_key: { id: "fake" }, list: [1, 2] },
     { frontmatter: { password: "fake", api_key: "fake-key", tags: ["x"], passed: 3 }, content: "---\npassword: fake\n---\nbody" },
     [{ secret: "fake", count: 2 }, { token: null }],
-    { nested: { deeper: { client_secret: "fake", "x,y": "a, b" } }, text: "sk-test-AAAAAAAAAAAAAAAAAAAAAAAA" },
+    { nested: { deeper: { client_secret: "fake", "x,y": "a, b" } }, text: K.sk },
   ];
   for (const [i, sample] of samples.entries()) {
     for (const indent of [undefined, 2]) {
@@ -230,6 +253,97 @@ describe("JSON text and structured content are scanned key-aware and stay valid"
   });
 });
 
+describe("review round 2: more key forms", () => {
+  const cases = [
+    ["API Key: fake1", "API Key: [redacted:secret]"],
+    ["**API Key:** fake2", "**API Key:** [redacted:secret]"],
+    ["1. API key: fake3", "1. API key: [redacted:secret]"],
+    ["Secret Key: fake4", "Secret Key: [redacted:secret]"],
+    ["Access Key = fake5", "Access Key = [redacted:secret]"],
+    ["Private Key: fake6", "Private Key: [redacted:secret]"],
+    ["Client  Secret: fake7", "Client  Secret: [redacted:secret]"],
+    ["*password*: fake8", "*password*: [redacted:secret]"],
+    ["_password_: fake9", "_password_: [redacted:secret]"],
+    ["pw: fake10", "pw: [redacted:secret]"],
+    ["passcode: fake11", "passcode: [redacted:secret]"],
+    ["password\tfake12", "password\t[redacted:secret]"],
+    ["password：fake13", "password：[redacted:secret]"],
+    ["password - fake14", "password - [redacted:secret]"],
+    ['<input name="password" value="fake15">', '<input name="password" value="[redacted:secret]">'],
+    ["<input type=password name=db_pass value=fake16>", "<input type=password name=db_pass value=[redacted:secret]>"],
+    ['password: ["fake17","fake18"]', "password: [redacted:secret]"],
+    ["token: {a: fake19, b: [fake20]} tail", "token: [redacted:secret] tail"],
+  ];
+  for (const [input, want] of cases) test(input, () => assert.equal(redactSecrets(input), want));
+
+  test("a JSON key with a space, and camelCase cookie and key names", () => {
+    const out = JSON.parse(redactSecrets(JSON.stringify({ "API Key": "q1", sessionCookie: "q2", privateKeyPem: "q3", "Secret Key": "q4", keep: "k" })));
+    assert.deepEqual(out, { "API Key": "[redacted:secret]", sessionCookie: "[redacted:secret]", privateKeyPem: "[redacted:secret]", "Secret Key": "[redacted:secret]", keep: "k" });
+  });
+
+  test("a fenced JSON block in a note: arrays and objects under a secret key, over several lines", () => {
+    const note = 'Config:\n```json\n{\n  "api_key": ["fake-k1", "fake-k2"],\n  "client_secret": {\n    "prod": "fake-abc",\n    "dev": "fake-}def"\n  },\n  "name": "kept"\n}\n```\nafter';
+    const out = redactSecrets(note);
+    assert.ok(!/fake/.test(out), out);
+    assert.match(out, /"name": "kept"/);
+    assert.match(out, /after$/);
+  });
+
+  test("a bracket that never closes is blanked to the end of its block, and no further", () => {
+    const out = redactSecrets('password: ["fake-a1", "fake-b2",\n "fake-c3"\n\nafter the block');
+    assert.ok(!/fake/.test(out), out);
+    assert.match(out, /after the block$/);
+  });
+
+  test("no value is capped: a long value leaks no tail", () => {
+    const long = "f".repeat(10_000);
+    for (const t of [`password: ${long}`, `password: "${long}"`, `password: '${long}'`, `| password | ${long} |`, `<password>${long}</password>`]) {
+      assert.ok(!redactSecrets(t).includes("ffff"), t.slice(0, 20));
+    }
+  });
+
+  test("a credentials table: the column under a secret header is blanked in every row", () => {
+    const table = "| Service | User | Password |\n|---|---|---|\n| mail | bob | fake-1 |\n| bank | amy | fake-2 |\n\n| a | b |";
+    assert.equal(redactSecrets(table), "| Service | User | Password |\n|---|---|---|\n| mail | bob | [redacted:secret] |\n| bank | amy | [redacted:secret] |\n\n| a | b |");
+    const two = "| Name | API Key | Notes |\n| :-- | :-: | --: |\n| x | fake-3 | keep |";
+    assert.equal(redactSecrets(two), "| Name | API Key | Notes |\n| :-- | :-: | --: |\n| x | [redacted:secret] | keep |");
+  });
+
+  test("an object key that is a token is blanked; __proto__ keys are kept", () => {
+    const out = JSON.parse(redactSecrets(JSON.stringify({ [K.ghp]: 1, b: 2 })));
+    assert.deepEqual(out, { "[redacted:github-token]": 1, b: 2 });
+    const proto = '{"__proto__": {"note": "token: fake-p"}, "b": 1}';
+    const r = redactSecrets(proto);
+    assert.ok(r.includes('"__proto__"') && !r.includes("fake-p"), r);
+    const sc = redactToolResult({ content: [], structuredContent: JSON.parse(proto) }).structuredContent;
+    assert.ok(Object.prototype.hasOwnProperty.call(sc, "__proto__"));
+    assert.equal(Object.getPrototypeOf(sc), Object.prototype);
+  });
+});
+
+describe("search snippets", () => {
+  const hits = (snippets) => ({ content: [{ type: "text", text: JSON.stringify({ hits: snippets.map((s, i) => ({ path: "a.md", line: i + 1, snippet: s })) }, null, 2) }], structuredContent: { hits: snippets.map((s, i) => ({ path: "a.md", line: i + 1, snippet: s })) } });
+
+  test("a body line or an indented one-token value is blanked under snippets", () => {
+    const secretLines = [BODY, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822c", "  - fake-hunter2", "    s3cr3t!x"];
+    const r = redactToolResult(hits(secretLines), { snippets: true });
+    for (const h of r.structuredContent.hits) assert.match(h.snippet, /^\s*(- )?\[redacted:secret\]$/, h.snippet);
+    const text = JSON.parse(r.content[0].text);
+    assert.deepEqual(text.hits, r.structuredContent.hits);
+  });
+
+  test("ordinary snippets pass under snippets", () => {
+    const keep = ["  - [[Some note]]", "- item123", "  - plain words here", "  - #tag/sub", "Body text with words", "  - https://example.test/x", "  ok", "  - Folder/Note"];
+    const r = redactToolResult(hits(keep), { snippets: true });
+    assert.deepEqual(r.structuredContent.hits.map((h) => h.snippet), keep);
+  });
+
+  test("without snippets, a body line passes (only search replies get the rule)", () => {
+    const r = redactToolResult(hits([BODY]));
+    assert.equal(r.structuredContent.hits[0].snippet, BODY);
+  });
+});
+
 describe("what must survive: ids, hashes and shas", () => {
   const keep = [
     ["a uuid v4", "3f2b8c1e-9a4d-4e6b-8f1a-2c3d4e5f6a7b"],
@@ -248,24 +362,24 @@ describe("what must survive: ids, hashes and shas", () => {
 
 describe("speed and failure", () => {
   test("1 MB of mixed text scans in well under a second", () => {
-    const chunk = "plain text with a uid 3f2b8c1e-9a4d-4e6b-8f1a-2c3d4e5f6a7b and token: fake and sk-test-AAAAAAAAAAAAAAAAAAAAAAAA\n";
+    const chunk = `plain text with a uid 3f2b8c1e-9a4d-4e6b-8f1a-2c3d4e5f6a7b and token: fake and ${K.sk}\n`;
     const big = chunk.repeat(Math.ceil(1_000_000 / chunk.length));
     const t0 = performance.now();
     const out = redactSecrets(big);
     assert.ok(performance.now() - t0 < 1000, `took ${performance.now() - t0} ms`);
-    assert.ok(!out.includes("sk-test-"));
+    assert.ok(!out.includes(K.sk));
   });
 
   test("1 MB adversarial inputs stay linear", () => {
     const inputs = [
-      "eyJ" + "a".repeat(1_000_000),
-      "eyJa.".repeat(200_000),
-      "-----BEGIN PRIVATE KEY-----".repeat(40_000),
+      cat("ey", "J") + "a".repeat(1_000_000),
+      cat("ey", "Ja.").repeat(200_000),
+      BEGIN("").repeat(40_000),
       "password: ".repeat(100_000),
       "a://b:".repeat(170_000),
       "Bearer ".repeat(150_000),
       "\\n".repeat(500_000),
-      "sk-".repeat(330_000),
+      cat("s", "k-").repeat(330_000),
       '\\"'.repeat(500_000),
       "token=\\\"" + "x".repeat(1_000_000),
       "| password ".repeat(90_000),
@@ -276,6 +390,13 @@ describe("speed and failure", () => {
       "<" + "a".repeat(1_000_000),
       "  ".repeat(500_000) + "x",
       "pass".repeat(250_000),
+      "  ".repeat(2_500_000) + "x",
+      "API Key ".repeat(120_000),
+      "password: [" + "[".repeat(1_000_000),
+      'password: ["' + "x".repeat(1_000_000),
+      "| Password |\n|---|\n" + "| x |\n".repeat(150_000),
+      '<x name="password" '.repeat(50_000),
+      "password - ".repeat(90_000),
       JSON.stringify({ notes: Array.from({ length: 20_000 }, (_, i) => ({ path: `n${i}.md`, password: "fake", body: "token: fake" })) }, null, 2),
     ];
     for (const s of inputs) {
@@ -292,7 +413,7 @@ describe("speed and failure", () => {
   });
 
   test("a result the scanner cannot walk fails closed, with no input text", () => {
-    const evil = { content: [{ type: "text", get text() { throw new Error("sk-test-" + A(24)); } }] };
+    const evil = { content: [{ type: "text", get text() { throw new Error(K.sk); } }] };
     const out = redactToolResult(evil);
     assert.equal(out.isError, true);
     assert.equal(out.content[0].text, SCAN_FAILED_TEXT);
@@ -300,13 +421,13 @@ describe("speed and failure", () => {
 });
 
 describe("tool results and handlers", () => {
-  const secret = `ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`;
+  const secret = K.ghp;
 
   test("every text item and every structured string is blanked; the input is not changed; images are left alone", () => {
     const input = {
       content: [
         { type: "text", text: `a ${secret}` },
-        { type: "image", data: "AKIAFAKEFAKEFAKEFAKE", mimeType: "image/png" },
+        { type: "image", data: K.akia, mimeType: "image/png" },
         { type: "resource", resource: { uri: "https://u:FakePass1@example.test/x", text: `token: fake` } },
       ],
       structuredContent: { notes: [{ body: `password: fake` }], n: 3 },
@@ -315,7 +436,7 @@ describe("tool results and handlers", () => {
     const out = redactToolResult(input);
     assert.deepEqual(input, copy);
     assert.equal(out.content[0].text, "a [redacted:github-token]");
-    assert.equal(out.content[1].data, "AKIAFAKEFAKEFAKEFAKE");
+    assert.equal(out.content[1].data, K.akia);
     assert.equal(out.content[2].resource.uri, "https://[redacted:url-credentials]@example.test/x");
     assert.equal(out.content[2].resource.text, "token: [redacted:secret]");
     assert.equal(out.structuredContent.notes[0].body, "password: [redacted:secret]");
