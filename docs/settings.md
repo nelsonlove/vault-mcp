@@ -405,7 +405,7 @@ A rename, move, delete or create (the structure kinds: `syncKind` on each row of
 |---|---|
 | Key | `syncGuard.strictWaitSeconds` |
 | Default | 120 (0 to 600) |
-| Effect | How long a rename, move or delete (`obsidian_move_note`, `obsidian_move_notes`, the three scheme address tools, `obsidian_delete_note`, `obsidian_trash`, and a satellite tool that declares `strictStatus`) waits for Sync to say "Fully synced" before the mode applies. It looks again every half second and goes on at the first such moment |
+| Effect | How long a rename, move or delete (`obsidian_move_note`, `obsidian_move_notes`, `obsidian_move_file`, the three scheme address tools, `obsidian_delete_note`, `obsidian_trash`, and a satellite tool that declares `strictStatus`) waits for Sync to say "Fully synced" before the mode applies. It looks again every half second and goes on at the first such moment |
 | Takes effect | Live, per call |
 | Risk | Longer than the MCP client's timeout (about 60 s): the caller can give up while the rename still waits |
 | Recovery | Lower it |

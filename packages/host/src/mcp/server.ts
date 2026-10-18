@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { inRecordFolder } from "./records.js";
 import { TFile, stringifyYaml, parseYaml, type App } from "obsidian";
-import { registerFsTools, ok,
+import { registerFsTools, registerFileTools, normalizeWriteScope, ok,
   CHARACTER_LIMIT,
   noteLengthFrom,
   WholeReads,
@@ -595,6 +595,19 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
           onCutRead: (p: string) => wholeReads.forget(p),
         }
       : {}),
+  });
+  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files through the same
+  // backend and the same guarded registerTool, so every kernel rule above applies to them. No
+  // profile option: the patched registerTool filters by profile here, as for every tool.
+  // pathScope: a .base is a query (#580 review 1), so while the allowlist or a vault-wide write
+  // scope limits paths it is not written, edited or moved; read per call, like the guard's settings.
+  registerFileTools(server, backend, {
+    pathScope: () => {
+      const st = ctx.getSettings();
+      if ((st.allowlist ?? []).length > 0) return "the path allowlist";
+      if (normalizeWriteScope(st.writeScope).mode !== "all") return "the vault's write scope";
+      return null;
+    },
   });
 
   // ── remaining tools — live-only, complementary, nav, integrations ────────────

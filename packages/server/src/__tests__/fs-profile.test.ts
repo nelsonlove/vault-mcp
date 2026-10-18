@@ -18,6 +18,7 @@ let core: typeof import("@vault-mcp/core");
 let READ: Set<string>;
 let READ_MESSAGE: Set<string>;
 let FS_NAMES: string[];
+let FILE_NAMES: readonly string[];
 let vault: string;
 let journal: string;
 // Built at run time from parts, so no key-shaped literal is committed; made up.
@@ -39,6 +40,7 @@ before(async () => {
   READ = new Set(core.READ_PROFILE_TOOLS);
   READ_MESSAGE = new Set(core.READ_MESSAGE_PROFILE_TOOLS);
   FS_NAMES = core.FS_TOOLS.map((t: { name: string }) => t.name);
+  FILE_NAMES = core.FILE_TOOL_NAMES;
   await core.buildIndex();
 });
 
@@ -61,9 +63,9 @@ async function client(profile?: string, redaction?: any) {
 const text = (r: unknown) => JSON.stringify(r);
 
 describe("FS mode under a profile", () => {
-  test("no profile: every FS tool, as before", async () => {
+  test("no profile: every FS tool, as before, and the three .base/.canvas file tools (#575)", async () => {
     const c = await client();
-    assert.deepEqual((await c.listTools()).tools.map((t) => t.name).sort(), [...FS_NAMES].sort());
+    assert.deepEqual((await c.listTools()).tools.map((t) => t.name).sort(), [...FS_NAMES, ...FILE_NAMES].sort());
     await c.close();
   });
 

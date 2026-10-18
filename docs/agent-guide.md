@@ -144,10 +144,14 @@ Rename a heading with `obsidian_rename_heading`, never by editing its text. A li
 
 Each write tool requires what its operation needs, and the host refuses a call without it (`Error [protection_required]`, which names the argument and how to get it; 01.43 rules 3–4, 01.33 rule 6f). The per-tool table, the refusal messages and what to do about each are in the [README](../README.md#write-protection-if_rev-and-idempotency_key). The tool's own schema says which: its `if_rev` or `idempotency_key` description opens with `REQUIRED`. In short:
 
-- **`if_rev`** is required on a write that changes content you read: an overwrite (`obsidian_write_note` with `overwrite: true`), a frontmatter set or delete, a patch replace, inserting fileclass fields, a survey rewrite, a heading rename (`obsidian_rename_heading`). Read the note first; `obsidian_read_note` returns its `rev`.
-- **`idempotency_key`** is required on a write that is not naturally idempotent: an append (including append at heading), a patch append or prepend, a move or rename, a scheme move, running a command or the CLI, creating a base, importing notes. Use a new key for each intended write, and the same key only to retry that write.
-- **Both** are required to trash or delete a note.
-- **Neither** is required to create a note (`overwrite: false`), to open a periodic note, or for claims, plugin state and navigation, which are not vault writes. In `obsidian_write_notes`, an item without `if_rev` is a create and is refused if the note exists.
+- **`if_rev`** is required on a write that changes content you read: an overwrite (`obsidian_write_note` or `obsidian_write_file` with `overwrite: true`), an `obsidian_edit_file`, a frontmatter set or delete, a patch replace, inserting fileclass fields, a survey rewrite, a heading rename (`obsidian_rename_heading`). Read the note first; `obsidian_read_note` returns its `rev`.
+- **`idempotency_key`** is required on a write that is not naturally idempotent: an append (including append at heading), a patch append or prepend, a move or rename (`obsidian_move_file` too), a scheme move, running a command or the CLI, creating a base, importing notes. Use a new key for each intended write, and the same key only to retry that write.
+- **Both** are required to trash or delete a note (`obsidian_trash` also trashes a `.base` or `.canvas` file).
+- **Neither** is required to create a note or a `.base`/`.canvas` file (`overwrite: false`), to open a periodic note, or for claims, plugin state and navigation, which are not vault writes. In `obsidian_write_notes`, an item without `if_rev` is a create and is refused if the note exists.
+
+### Bases and Canvas files
+
+A `.base` (Obsidian Bases, YAML) or `.canvas` (JSON Canvas) file is written with `obsidian_write_file`, edited one item at a time with `obsidian_edit_file` (a Base view by its `name`; a Canvas node or edge by its `id`), moved with `obsidian_move_file`, and trashed with `obsidian_trash`. Read one with `obsidian_read_note` to get its text and its `rev`. Content that does not parse as its type is refused with `invalid_file`, and nothing is written; an edit is checked the same way on its result. A Base is written without YAML anchors, aliases, merge keys or tags, and a Canvas edge must join two nodes of the file. While a path allowlist or a write scope limits the session, a `.base` is not written, edited or moved (`base_under_scope`): a Base is a query that could read notes outside the scope. A `.canvas` is still allowed. Prefer the keyed edit for a small change: it keeps the rest of the file as written, comments in a Base included.
 
 ### Revision precondition
 

@@ -60,7 +60,7 @@ describe("vaultmcp_send_message on the file-system server", () => {
     try {
       const { tools } = await client.listTools();
       assert.equal(tools.some((t) => t.name === "vaultmcp_send_message"), false);
-      assert.equal(tools.length, 17);
+      assert.equal(tools.length, 20, "the 17 note tools and the three .base/.canvas file tools (#575)");
     } finally {
       await close();
     }

@@ -31,16 +31,16 @@ import { makeGuarded, withKernelArgs } from "../src/mcp/guarded.ts";
 // ruled class ON PURPOSE (a temporary exemption, #427), with the reason.
 const NOT = "not a vault write";
 const TABLE = [
-  { op: "overwrite an existing note", class: "token", calls: [["obsidian_write_note", { overwrite: true }]] },
+  { op: "overwrite an existing note", class: "token", calls: [["obsidian_write_note", { overwrite: true }], ["obsidian_write_file", { overwrite: true }]], note: "obsidian_write_file overwrites a .base or .canvas file (#575): the same class" },
   { op: "frontmatter set", class: "token", calls: [["obsidian_manage_frontmatter", { op: "set" }]] },
   { op: "frontmatter delete", class: "token", calls: [["obsidian_manage_frontmatter", { op: "delete" }]] },
-  { op: "patch (replace)", class: "token", calls: [["obsidian_patch_note", { op: "replace" }]] },
+  { op: "patch (replace)", class: "token", calls: [["obsidian_patch_note", { op: "replace" }], ["obsidian_edit_file", {}]], note: "obsidian_edit_file replaces or removes one keyed item of a .base or .canvas file (#575): content read, so a token" },
   { op: "append, append at heading, cross-session post", class: "key", calls: [["obsidian_append_note", {}], ["obsidian_append_at_heading", {}]], note: "cross-session post is a satellite tool" },
   { op: "patch append, patch prepend", class: "key", calls: [["obsidian_patch_note", { op: "append" }], ["obsidian_patch_note", { op: "prepend" }]] },
   { op: "frontmatter list append", class: "key", calls: [], note: "the host's manage_frontmatter has no list-append operation (get, set, delete)" },
   { op: "run a command", class: "key", calls: [["obsidian_run_command", {}]] },
-  { op: "create if absent", class: "exempt", calls: [["obsidian_write_note", { overwrite: false }], ["obsidian_write_note", {}]] },
-  { op: "move, rename", class: "key", calls: [["obsidian_move_note", {}], ["obsidian_move_notes", {}]] },
+  { op: "create if absent", class: "exempt", calls: [["obsidian_write_note", { overwrite: false }], ["obsidian_write_note", {}], ["obsidian_write_file", { overwrite: false }], ["obsidian_write_file", {}]] },
+  { op: "move, rename", class: "key", calls: [["obsidian_move_note", {}], ["obsidian_move_notes", {}], ["obsidian_move_file", {}]] },
   { op: "rename a heading", class: "token", calls: [["obsidian_rename_heading", {}]] },
   { op: "scheme move", class: "key", calls: [["obsidian_assign_address", {}], ["obsidian_refile_address", {}], ["obsidian_renumber_address", {}]] },
   { op: "repoint a link", class: "exempt (temporary)", calls: [["obsidian_repoint_link", {}]], code: "exempt", why: "its only named path is target_path, the note links point AT, not the notes it rewrites; a token would check the wrong file" },

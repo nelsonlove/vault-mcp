@@ -53,12 +53,16 @@ import {
   resolveProfile,
   messageConfigFromEnv,
   scannerFor,
+  writeFile,
+  editFile,
+  moveFile,
+  registerFileTools,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
 import { loadRedaction } from "./redaction-env.js";
 import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
-import type { VaultBackend, VaultWatcherHandle } from "@vault-mcp/core";
+import type { VaultBackend, VaultWatcherHandle, FileBackend } from "@vault-mcp/core";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { FsWriteKernel, defaultJournalDir } from "./fs-write-kernel.js";
@@ -255,7 +259,7 @@ export class FsWritesDisabledError extends Error {
  */
 export function makeBackend(
   opts: { allowWrites?: boolean; kernel?: FsWriteKernel } = {},
-): VaultBackend {
+): VaultBackend & FileBackend {
   const allowWrites = opts.allowWrites ?? isFsWritesEnabled();
   const requireWrites = (): void => {
     if (!allowWrites) throw new FsWritesDisabledError();
@@ -434,6 +438,33 @@ export function makeBackend(
         { path: relPath, confirm },
         () => deleteNote(relPath, confirm),
       ),
+
+    // .base and .canvas files (#575): the same gate, path check, write scope, cut-read check,
+    // queue and journal as the note writes. There is no trash on this server, and its one
+    // removal tool (obsidian_delete_note, a permanent delete) stays notes-only.
+    writeFile: async (relPath, content, overwrite) =>
+      mutate(
+        "obsidian_write_file",
+        { path: relPath },
+        { path: relPath, content, overwrite },
+        () => writeFile(relPath, content, overwrite),
+      ),
+
+    editFile: async (relPath, edit) =>
+      mutate(
+        "obsidian_edit_file",
+        { path: relPath },
+        { path: relPath, op: edit.op, ...(edit.key !== undefined ? { key: edit.key } : {}), ...(edit.item !== undefined ? { item_json: edit.item } : {}) },
+        () => editFile(relPath, edit),
+      ),
+
+    moveFile: async (fromRel, toRel, options) =>
+      mutate(
+        "obsidian_move_file",
+        { path: fromRel, paths: [fromRel, toRel] },
+        { from: fromRel, to: toRel, update_backlinks: options.update_backlinks, overwrite: options.overwrite },
+        () => moveFile(fromRel, toRel, options),
+      ),
   };
 }
 
@@ -464,7 +495,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   // refused settings, so no server is built that would send replies unscanned.
   const redaction = opts?.redaction === undefined ? loadRedaction() : (opts.redaction ?? undefined);
   const scanner = scannerFor(redaction, profile?.name ?? "full");
-  registerFsTools(server, makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel }), {
+  const backend = makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel });
+  registerFsTools(server, backend, {
     // The same per-connection filter the plugin applies at origRegister (#521).
     ...(profile ? { profile, exists: existsInVault } : {}),
     ...(scanner ? { scanner } : {}),
@@ -477,6 +509,16 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     // No `rev` hook and no whole-read memory: FS writes carry no if_rev, so
     // no read shows a rev and no proof of a whole read can be tied to a
     // caller (#443, #446). `full: true` still serves the whole note.
+  });
+  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files, under the same
+  // profile, decoding and kernel-argument rules as the note tools above.
+  registerFileTools(server, backend, {
+    ...(profile ? { profile, exists: existsInVault } : {}),
+    decodeHtml: true,
+    kernelArgs: true,
+    // A .base is a query (#580 review 1): not written, edited or moved while the write scope limits
+    // paths. This server has no path allowlist; its write scope is the one path rule it has.
+    pathScope: () => (fsWriteScope().mode !== "all" ? `the write scope (${WRITE_SCOPE_ENV_VAR})` : null),
   });
 
   return server;

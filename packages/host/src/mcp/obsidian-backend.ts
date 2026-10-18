@@ -44,6 +44,9 @@ import {
   deriveJdIdFromPath,
   parseGuardFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
+  assertFilePath,
+  validateFileContent,
+  applyFileEdit,
 } from "@vault-mcp/core";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
@@ -58,6 +61,9 @@ import type {
   ManageFrontmatterResult,
   PatchAnchor,
   PatchOp,
+  FileBackend,
+  FileEdit,
+  FileEditResult,
 } from "@vault-mcp/core";
 
 /** Every markdown path under `folder`, so the count can be filtered before it is reported. */
@@ -90,7 +96,7 @@ async function ensureParentFolders(app: App, filePath: string): Promise<void> {
 
 // ── ObsidianBackend ───────────────────────────────────────────────────────────
 
-export class ObsidianBackend implements VaultBackend {
+export class ObsidianBackend implements VaultBackend, FileBackend {
   constructor(
     private readonly app: App,
     private readonly visible: VisibleFilter = (paths) => paths,
@@ -708,6 +714,97 @@ export class ObsidianBackend implements VaultBackend {
     if (!(file instanceof TFile)) throw new Error(`not found: ${relPath}`);
     await this.app.vault.delete(file);
     return { path: relPath, deleted: true };
+  }
+
+  // ── .base and .canvas files (#575) ──────────────────────────────────────────
+  //
+  // Through the vault API, so Obsidian's index and Sync see one clean change. The content is
+  // validated before anything is written (core's file-formats.ts, the same code the file-system
+  // server runs). These files carry no frontmatter, so the accept guard has nothing to read; the
+  // write-facts hook (the governance provider's proposals) is about notes and is not told.
+
+  async writeFile(relPath: string, content: string, overwrite: boolean): Promise<{ path: string; created: boolean }> {
+    assertFilePath(relPath);
+    // A cut read handed back as the content is refused first (#441), as for a note.
+    assertNotTruncatedRead(relPath, content);
+    validateFileContent(relPath, content);
+    const existing = this.app.vault.getAbstractFileByPath(relPath);
+    if (existing) {
+      if (!(existing instanceof TFile)) throw new Error(`not a file: ${relPath}`);
+      if (!overwrite) throw new Error(`exists (set overwrite=true to replace): ${relPath}`);
+      await this.app.vault.modify(existing, content);
+      return { path: relPath, created: false };
+    }
+    // A new file may not take a name Obsidian Sync refuses; an existing one stays writable in place.
+    assertCreateName(this.app, relPath);
+    await ensureParentFolders(this.app, relPath);
+    await this.app.vault.create(relPath, content);
+    return { path: relPath, created: true };
+  }
+
+  async editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }> {
+    assertFilePath(relPath);
+    if (edit.item !== undefined) assertNotTruncatedRead(relPath, edit.item);
+    const file = this.app.vault.getAbstractFileByPath(relPath);
+    if (!(file instanceof TFile)) throw new Error(`not found: ${relPath}`);
+    // Read, edit and write in one `process` call, so the edit applies to the text as it is now.
+    // A refused edit throws inside it, and nothing is written; a remove of an absent item
+    // returns the text unchanged.
+    let result: FileEditResult | undefined;
+    await this.app.vault.process(file, (data) => {
+      const out = applyFileEdit(relPath, data, edit);
+      result = out.result;
+      return out.text ?? data;
+    });
+    return { path: relPath, ...(result as FileEditResult) };
+  }
+
+  async moveFile(
+    fromRel: string,
+    toRel: string,
+    options: { update_backlinks: boolean; overwrite: boolean },
+  ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null; link_check?: LinkCheck }> {
+    const kind = assertFilePath(fromRel);
+    if (assertFilePath(toRel) !== kind) throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type`);
+    if (fromRel === toRel) throw new Error("from and to are the same path");
+    // Before anything is trashed or any folder is made: a refused name moves nothing.
+    await assertMoveName(this.app, fromRel, toRel, options.overwrite);
+    const file = this.app.vault.getAbstractFileByPath(fromRel);
+    if (!(file instanceof TFile)) throw new Error(`not found: ${fromRel}`);
+    const dest = this.app.vault.getAbstractFileByPath(toRel);
+    let trashedDest = false;
+    if (dest) {
+      if (!options.overwrite) throw new Error(`destination exists (set overwrite=true): ${toRel}`);
+      if (!(dest instanceof TFile)) throw new Error(`destination is a folder: ${toRel}`);
+      await this.app.vault.trash(dest, true);
+      trashedDest = true;
+    }
+    await ensureParentFolders(this.app, toRel);
+    let check: LinkCheck;
+    try {
+      // The same rename and backlink rewrite as a note's move: links in notes that reach the file
+      // are rewritten and checked. The file's own text is YAML or JSON, not Markdown, so its own
+      // links are never rewritten (`ownLinks: false`).
+      check = await moveWithLinks(this.app, file, toRel, {
+        updateBacklinks: options.update_backlinks,
+        ownLinks: false,
+        visible: (p) => this.visible([p]).length === 1,
+        isRecord: recordTest(this.recordIdentification),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (trashedDest) {
+        throw new Error(`${msg} (the file previously at '${toRel}' was already moved to the system trash and is recoverable there)`);
+      }
+      throw e;
+    }
+    return {
+      from: fromRel,
+      to: toRel,
+      backlinks_updated: check.links_rewritten,
+      backlinks_files_touched: check.files_rewritten.length,
+      link_check: check,
+    };
   }
 }
 
