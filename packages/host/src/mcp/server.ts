@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, isProfileName, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -141,34 +141,56 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // profile. When they do, every reply, refusals included, passes through it here, so no
   // registration path skips it. FAIL CLOSED: settings the scanner refuses (an unknown profile
   // name, a bad config) while a profile is listed give every remote connection, and a local one
-  // when `full` is listed, no tools at all, and the reason is logged. A list that cannot be parsed
-  // refuses every connection, local ones included. They never fall back to sending replies unscanned.
+  // when `full` is listed, no tools at all, and the reason is logged. A list that cannot be parsed,
+  // a name in it that is not a known profile, or a setting of the wrong type refuses every
+  // connection, local ones included. They never fall back to sending replies unscanned.
   let scanner: SecretScanner | undefined;
   let redactRefused = false;
   {
-    const st = ctx.getSettings();
-    const raw = (st.redactProfiles ?? []).filter((e) => typeof e === "string" && e.trim() !== "");
-    const rawConfig = st.redactConfig?.trim() ?? "";
-    if (raw.length > 0 || rawConfig) {
-      // The list is PARSED first (an entry may be a comma list or a JSON array), and the fail-closed
-      // check reads the parsed names. If it cannot be parsed, every connection it could have meant,
-      // `full` included, is refused.
-      let listed: string[] | null = null;
-      try {
-        listed = raw.flatMap((e) => parseProfileList(e));
-      } catch {
-        listed = null;
+    // A logged refusal, never a throw, whatever the settings hold (a hand-edited data.json included).
+    const refuseAll = (why: string): void => {
+      console.error(`[vault-mcp] secret scanner settings refused (${why}); this connection gets no tools`);
+      redactRefused = true;
+    };
+    try {
+      const st = ctx.getSettings() as { redactProfiles?: unknown; redactConfig?: unknown };
+      const rawProfiles = st.redactProfiles ?? [];
+      const rawConfigValue = st.redactConfig ?? "";
+      if (!Array.isArray(rawProfiles) || rawProfiles.some((e) => typeof e !== "string")) {
+        refuseAll("redactProfiles is not a list of strings");
+      } else if (typeof rawConfigValue !== "string") {
+        refuseAll("redactConfig is not text");
+      } else {
+        const raw = (rawProfiles as string[]).filter((e) => e.trim() !== "");
+        const rawConfig = rawConfigValue.trim();
+        if (raw.length > 0 || rawConfig) {
+          // The list is PARSED first (a line may be a comma list or a JSON array). A list that cannot
+          // be parsed, or that holds a name that is not a known profile (`Full`, `- full`,
+          // `full # local`), refuses every connection it could have meant, `full` included.
+          let listed: string[] | null = null;
+          try {
+            listed = raw.flatMap((e) => parseProfileList(e));
+          } catch {
+            listed = null;
+          }
+          const unknown = listed?.find((n) => !isProfileName(n));
+          if (listed === null) refuseAll("the redaction profile list cannot be parsed");
+          else if (unknown !== undefined) refuseAll(`the redaction profile list names an unknown profile '${unknown}'`);
+          else {
+            try {
+              const config = rawConfig ? JSON.parse(rawConfig) : undefined;
+              scanner = scannerFor(buildRedaction(listed, config), profile.name);
+            } catch (e) {
+              // A bad config with no profile listed leaves the scanner off and refuses nothing.
+              const covers = listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
+              if (covers) refuseAll((e as Error).message);
+              else console.error(`[vault-mcp] secret scanner config refused (${(e as Error).message}); no profile is listed, so the scanner stays off`);
+            }
+          }
+        }
       }
-      try {
-        if (listed === null) throw new Error("the redaction profile list cannot be parsed");
-        const config = rawConfig ? JSON.parse(rawConfig) : undefined;
-        scanner = scannerFor(buildRedaction(listed, config), profile.name);
-      } catch (e) {
-        // A bad config with no profile listed leaves the scanner off and refuses nothing.
-        const covers = listed === null ? true : listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
-        console.error(`[vault-mcp] secret scanner settings refused (${(e as Error).message}); ${covers ? "this connection gets no tools" : "this connection is not covered"}`);
-        redactRefused = covers;
-      }
+    } catch (e) {
+      refuseAll(`unexpected error: ${(e as Error).message}`);
     }
   }
   const origRegister: any =

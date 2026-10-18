@@ -206,7 +206,6 @@ describe("the secret scanner: off by default, on by setting", () => {
       { ...ON, redactConfig: "{not json" },
       { ...ON, redactConfig: JSON.stringify({ extraPatterns: [{ kind: "x", regex: "(" }] }) },
       { ...ON, redactConfig: JSON.stringify({ unknown: 1 }) },
-      { redactProfiles: ["read+mesage"] },
     ]) {
       assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
       assert.deepEqual(names(build({ profile: "read" }, result, bad)), [], JSON.stringify(bad));
@@ -220,6 +219,20 @@ describe("the secret scanner: off by default, on by setting", () => {
       { redactProfiles: ['["full","bogus"]'] },
       { redactProfiles: ['["full"'] },
     ]) {
+      assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+    }
+    // An entry that is not a known profile name refuses every connection, with a good config or a bad one.
+    for (const entry of ["Full", "full;read+message", "- full", '"full"', "full # local", "read+mesage"]) {
+      for (const redactConfig of ["", "{not json"]) {
+        const bad = { redactProfiles: [entry], redactConfig };
+        assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+        assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+      }
+    }
+    // A hand-edited data.json with the wrong types: a logged refusal of every connection, not a throw.
+    for (const bad of [{ redactProfiles: "read+message" }, { redactProfiles: [1] }, { redactProfiles: { a: 1 } }, { redactConfig: { extraKeyNames: [] } }, { redactProfiles: ["read+message"], redactConfig: 5 }]) {
+      assert.doesNotThrow(() => build({}, result, bad), JSON.stringify(bad));
       assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
       assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
     }

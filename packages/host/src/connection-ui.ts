@@ -716,7 +716,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .setDesc(
         "Connection profiles (one per line, such as read+message) whose tool replies pass through the secret scanner, " +
           "which blanks key- and token-shaped strings. Empty: off. A best-effort filter, not a guarantee. " +
-          "While a profile is listed, an unknown name or a config below that is refused gives every remote connection no tools until it is fixed. " +
+          "An unknown name refuses every connection, local ones included; while a profile is listed, a config below that is refused gives every remote connection no tools. Fix it to restore them. " +
           "Takes effect on the next session connect."
       )
       .addTextArea((ta) => {
