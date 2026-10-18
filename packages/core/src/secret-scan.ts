@@ -219,10 +219,19 @@ function matchBracket(text: string, i: number, escaped: boolean): number {
   const end = Math.min(text.length, i + BRACKET_CAP);
   for (let j = i; j < end; j++) {
     const c = text[j];
+    if (!escaped && c === "\n") {
+      // A blank line ends the block: the value did not close inside it. Stopping here (and not at
+      // the cap) keeps the whole pass linear: the caller resumes after this point.
+      let k = j + 1;
+      while (k < end && (text[k] === " " || text[k] === "\t" || text[k] === "\r")) k++;
+      if (k >= text.length || text[k] === "\n") return -1;
+      continue;
+    }
     if (!escaped && (c === '"' || c === "'")) {
-      // Skip a quoted string; an unclosed one runs to the end of its line.
-      j++;
-      while (j < end && text[j] !== c && text[j] !== "\n") j += text[j] === "\\" ? 2 : 1;
+      // Skip a quoted string; an unclosed one runs to the end of its line, which the loop then sees.
+      let k = j + 1;
+      while (k < end && text[k] !== c && text[k] !== "\n") k += text[k] === "\\" ? 2 : 1;
+      j = k < end && text[k] === "\n" ? k - 1 : k;
       continue;
     }
     if (escaped && c === "\\") {
@@ -445,22 +454,25 @@ function looksSecret(tok: string): boolean {
 
 /** A search snippet (one trimmed line) with a secret body blanked, even when its key is out of view. */
 function scanSnippet(s: string): string {
-  const t = s.trim();
-  if (t.length <= 8192 && ((BASE64_LINE.test(t) && /[0-9+/=]/.test(t)) || HEX_LINE.test(t) || BASE64_TAIL.test(t))) return SECRET_MARK;
+  // A snippet from a blockquote or callout keeps its `>` markers; every rule sees the line after them.
+  const q = /^(?:[ \t]*>[ \t]?)+/.exec(s);
+  const prefix = q ? q[0] : "";
+  const t = s.slice(prefix.length).trim();
+  if (t.length <= 8192 && ((BASE64_LINE.test(t) && /[0-9+/=]/.test(t)) || HEX_LINE.test(t) || BASE64_TAIL.test(t))) return prefix + SECRET_MARK;
   const one = t.length <= 512 ? ONE_TOKEN.exec(t) : null;
-  if (one && looksSecret(one[1])) return t.slice(0, t.length - one[1].length) + SECRET_MARK;
-  // A table row: blank each cell that holds one secret-looking token.
-  if (t.length <= 8192 && t.startsWith("|") && t.endsWith("|") && t.length > 1) {
+  if (one && looksSecret(one[1])) return prefix + t.slice(0, t.length - one[1].length) + SECRET_MARK;
+  // A table row, with or without outer pipes: blank each cell that holds one secret-looking token.
+  if (t.length <= 8192 && PIPE.test(t)) {
     const parts = t.split(PIPE);
     let changed = false;
-    for (let k = 1; k < parts.length - 1; k++) {
+    for (let k = 0; k < parts.length; k++) {
       const c = parts[k].trim();
       if (looksSecret(c)) {
         parts[k] = parts[k].replace(c, SECRET_MARK);
         changed = true;
       }
     }
-    if (changed) return parts.join("|");
+    if (changed) return prefix + parts.join("|");
   }
   return s;
 }
@@ -653,6 +665,8 @@ export class SecretScanConfigError extends Error {
 const CONFIG_KEYS = new Set(["keyNames", "extraKeyNames", "patterns", "extraPatterns"]);
 const KEY_NAME_RE = /^[A-Za-z0-9]+(?:[ _-][A-Za-z0-9]+)*$/;
 const KIND_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+// Strings a user pattern is tried on, to find one that can match an empty span.
+const ZERO_WIDTH_SAMPLES = ["", " ", "a", "abc def", "A1_b-2.c", "token: x", "\n", "[]{}"];
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function keyNameList(v: unknown, field: string): string[] {
@@ -676,8 +690,16 @@ function patternList(v: unknown, field: string): TokenPattern[] {
     if (typeof o.regex !== "string" || o.regex.length === 0 || o.regex.length > 512) throw new SecretScanConfigError(`${at}.regex must be a regular expression of 1 to 512 characters`);
     if (o.ignoreCase !== undefined && typeof o.ignoreCase !== "boolean") throw new SecretScanConfigError(`${at}.ignoreCase must be true or false`);
     try {
-      if (new RegExp(`^(?:${o.regex})$`).test("")) throw new SecretScanConfigError(`${at}.regex matches the empty string`);
-      new RegExp(`(?:${o.regex})`, "g");
+      // A pattern that can match nothing (`\b`, `(?:)|a`, `a{0}`) would blank empty spans: refused.
+      const re = new RegExp(`(?:${o.regex})`, o.ignoreCase === true ? "gi" : "g");
+      for (const sample of ZERO_WIDTH_SAMPLES) {
+        re.lastIndex = 0;
+        for (let n = 0; n <= sample.length; n++) {
+          const m = re.exec(sample);
+          if (!m) break;
+          if (m[0].length === 0) throw new SecretScanConfigError(`${at}.regex can match an empty string`);
+        }
+      }
     } catch (e) {
       if (e instanceof SecretScanConfigError) throw e;
       throw new SecretScanConfigError(`${at}.regex does not compile: ${(e as Error).message}`);
@@ -698,7 +720,10 @@ export function parseSecretScanConfig(v: unknown): SecretScanConfig {
     if (cfg.keyNames.length === 0) throw new SecretScanConfigError("keyNames, when given, must name at least one key (it replaces the shipped list)");
   }
   if (o.extraKeyNames !== undefined) cfg.extraKeyNames = keyNameList(o.extraKeyNames, "extraKeyNames");
-  if (o.patterns !== undefined) cfg.patterns = patternList(o.patterns, "patterns");
+  if (o.patterns !== undefined) {
+    cfg.patterns = patternList(o.patterns, "patterns");
+    if (cfg.patterns.length === 0) throw new SecretScanConfigError("patterns, when given, must hold at least one pattern (it replaces the shipped provider shapes)");
+  }
   if (o.extraPatterns !== undefined) cfg.extraPatterns = patternList(o.extraPatterns, "extraPatterns");
   return cfg;
 }

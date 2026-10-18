@@ -19,7 +19,7 @@ import { z } from "zod";
 import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
 import { SNIPPET_TOOLS, type SecretScanner } from "./secret-scan.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
-import { registerSendMessageTool, type MessageConfig } from "./send-message.js";
+import { registerSendMessageTool, type MessageConfig, type MessageSender } from "./send-message.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -108,6 +108,8 @@ export interface RegisterFsToolsOpts {
    * `messageConfigFromEnv()`; the plugin passes nothing.
    */
   message?: MessageConfig;
+  /** Test seam: the sender `vaultmcp_send_message` uses. Absent ⇒ the process-wide one. */
+  messageSender?: MessageSender;
 }
 
 /**
@@ -185,7 +187,7 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
   // The message tool's replies pass through the same scanner, so every reply on the connection does.
   const scanner = opts.scanner;
   const msgReg: ToolRegistrar = scanner ? { registerTool: (name, meta, h) => reg.registerTool(name, meta, scanner.wrap(h)) } : reg;
-  registerSendMessageTool(msgReg, opts.message, { profile });
+  registerSendMessageTool(msgReg, opts.message, { profile, ...(opts.messageSender ? { sender: opts.messageSender } : {}) });
 }
 
 // ── Per-tool handler factory ──────────────────────────────────────────────────

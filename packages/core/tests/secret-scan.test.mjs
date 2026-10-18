@@ -4,6 +4,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { redactSecrets, redactToolResult, redactingHandler, SCAN_FAILED_TEXT, createSecretScanner, SecretScanConfigError } from "../src/secret-scan.ts";
 import { buildRedaction, parseProfileList, scannerFor, RedactionSettingsError } from "../src/redaction.ts";
+import { registerFsTools } from "../src/register-fs-tools.ts";
 import { resolveProfile } from "../src/profile.ts";
 
 const A = (n) => "A".repeat(n);
@@ -354,6 +355,22 @@ describe("search snippets (trimmed, as both search backends make them)", () => {
     assert.deepEqual(r.structuredContent.hits.map((h) => h.snippet), keep);
   });
 
+  test("a callout or blockquote snippet, and a row without outer pipes, get the same rules", () => {
+    const pw = cat("hunter", "2xyz");
+    const cases = [
+      [`> | bob | ${pw} |`, "> | bob | [redacted:secret] |"],
+      [`> - ${pw}9`, "> - [redacted:secret]"],
+      [`> ${pw}9`, "> [redacted:secret]"],
+      [`> > ${BODY}`, "> > [redacted:secret]"],
+      [`password | ${pw}`, "password | [redacted:secret]"],
+      [`mail | bob | ${pw}`, "mail | bob | [redacted:secret]"],
+    ];
+    const r = redactToolResult(hits(cases.map(([i]) => i)), { snippets: true });
+    assert.deepEqual(r.structuredContent.hits.map((h) => h.snippet), cases.map(([, o]) => o));
+    const keep = ["> [!note] Logins", "> plain words in a quote", "a | b", "> | Name | Date |", "> - [[Link]]"];
+    assert.deepEqual(redactToolResult(hits(keep), { snippets: true }).structuredContent.hits.map((h) => h.snippet), keep);
+  });
+
   test("without snippets, a body line passes (only search replies get the rule)", () => {
     const r = redactToolResult(hits([BODY]));
     assert.equal(r.structuredContent.hits[0].snippet, BODY);
@@ -443,6 +460,10 @@ describe("speed and failure", () => {
       "> | Service | Password |\n> |---|---|\n" + "> | mail | x |\n".repeat(330_000),
       ">".repeat(1_000_000),
       "> ".repeat(500_000) + "| x |",
+      // Review of b5367b0: an unclosed bracket must stop at its block, not scan on (was 12 s at 320 KB).
+      "token: [\n\n".repeat(100_000),
+      "a\ntoken: {\n\nb\n".repeat(70_000),
+      'token: ["x\n\n'.repeat(80_000),
       JSON.stringify({ notes: Array.from({ length: 20_000 }, (_, i) => ({ path: `n${i}.md`, password: "fake", body: "token: fake" })) }, null, 2),
     ];
     for (const s of inputs) {
@@ -502,8 +523,28 @@ describe("tool results and handlers", () => {
     await assert.rejects(t({}), (e) => e.message === "bad [redacted:github-token]");
   });
 
-  test("no profile turns the scanner on in code", () => {
-    for (const n of [undefined, "full", "read", "read+inbox", "read+message", "nonsense"]) assert.equal(resolveProfile(n).redactSecrets, undefined, String(n));
+  test("nothing turns the scanner on in code: a profile carries only its name, tools and write scope, and an empty setting scans no profile", () => {
+    for (const n of [undefined, "full", "read", "read+inbox", "read+message", "nonsense"]) {
+      for (const k of Object.keys(resolveProfile(n))) assert.ok(["name", "tools", "writeScope"].includes(k), `${String(n)}: ${k}`);
+    }
+    const none = buildRedaction([]);
+    for (const n of ["full", "read", "read+inbox", "read+message"]) assert.equal(scannerFor(none, n), undefined, n);
+  });
+
+  test("vaultmcp_send_message: its reply is scanned when the scanner is on, and sent as it is when off", async () => {
+    const id = K.ghp;
+    const sender = { send: async () => ({ sent: true, id }) };
+    const grab = (scanner) => {
+      const tools = {};
+      const server = { registerTool: (name, _meta, handler) => { tools[name] = handler; } };
+      registerFsTools(server, {}, { profile: resolveProfile("read+message"), message: { url: "http://127.0.0.1:9", topic: "t" }, messageSender: sender, ...(scanner ? { scanner } : {}) });
+      return tools;
+    };
+    const on = await grab(createSecretScanner()).vaultmcp_send_message({ text: "hi" });
+    assert.ok(!JSON.stringify(on).includes(id), JSON.stringify(on));
+    assert.match(JSON.stringify(on), /redacted:github-token/);
+    const off = await grab(undefined).vaultmcp_send_message({ text: "hi" });
+    assert.ok(JSON.stringify(off).includes(id));
   });
 });
 
@@ -542,6 +583,8 @@ describe("configuration", () => {
       "x", [], { unknown: [] }, { keyNames: [] }, { keyNames: "password" }, { extraKeyNames: ["pa$$"] }, { extraKeyNames: [""] },
       { extraPatterns: [{ kind: "x", regex: "(" }] }, { extraPatterns: [{ kind: "x", regex: "a*" }] }, { extraPatterns: [{ kind: "Bad Kind", regex: "a" }] },
       { extraPatterns: [{ kind: "x", regex: "a", flags: "g" }] }, { patterns: [{ kind: "x" }] }, { extraPatterns: [{ kind: "x", regex: "a".repeat(600) }] },
+      { patterns: [] }, { extraPatterns: [{ kind: "x", regex: "\\b" }] }, { extraPatterns: [{ kind: "x", regex: "(?:)|a" }] }, { extraPatterns: [{ kind: "x", regex: "a{0}" }] },
+      { extraPatterns: [{ kind: "x", regex: "x?" }] }, { extraPatterns: [{ kind: "x", regex: "(?=a)" }] },
     ]) assert.throws(() => createSecretScanner(bad), SecretScanConfigError, JSON.stringify(bad));
     assert.doesNotThrow(() => createSecretScanner({}));
     assert.doesNotThrow(() => createSecretScanner(null));
