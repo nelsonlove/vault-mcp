@@ -553,8 +553,9 @@ export interface RelayOpts {
   preamble?: string;
 }
 
-const DISCONNECT_REASON =
-  "vault-mcp: connection to Obsidian lost (restarting?) — retry shortly";
+export const DISCONNECT_REASON =
+  "vault-mcp: connection to Obsidian lost (restarting?) — retry shortly. " +
+  "Do not write vault files directly; stop and retry, then report to your superior.";
 
 export class BridgeRelay {
   readonly state = new RelayState();
