@@ -55,6 +55,30 @@ export interface RegisterFileToolsOpts {
   profile?: ConnProfile;
   /** Whether a path exists, for the profile's create-only check. */
   exists?: (path: string) => boolean;
+  /**
+   * The path scope in force for this call, in words, or null when none (the base-under-scope rule
+   * below). The live host: its path allowlist or a vault-wide write scope that limits paths; the
+   * file-system server: its write scope. A connection profile's own write scope counts too.
+   */
+  pathScope?: () => string | null;
+}
+
+/**
+ * A `.base` is not written, edited or moved while a path scope is in force (#580 review 1). A Base
+ * is a QUERY: its filters can reach notes outside the allowlist, and `vaultmcp_bases_query` checks
+ * only the `.base` file's own path, so an agent-written Base inside the allowlist would read rows from
+ * outside it. The tools that run an agent's own query refuse outright under a scope; this is the same
+ * posture for the one way an agent could author such a query. A `.canvas` runs no query and stays allowed.
+ */
+export class BaseUnderScopeError extends Error {
+  readonly code = "base_under_scope";
+  constructor(tool: string, path: string, scope: string) {
+    super(
+      `'${tool}' does not write, edit or move a .base file ('${path}') while ${scope} is in force: a Base is a query, and its filters could read notes outside the scope. ` +
+        "Nothing was written. A .canvas file is still allowed; a person can change the Base in Obsidian.",
+    );
+    this.name = "BaseUnderScopeError";
+  }
 }
 
 const KERNEL_ARGS_FS = {
@@ -65,6 +89,9 @@ const KERNEL_ARGS_FS = {
 
 const VALIDATION =
   "Validated before anything is written: a .base must parse as one YAML document whose top level is a mapping (and whose `views`, when present, is a list of mappings); a .canvas must parse as a JSON object whose `nodes` and `edges`, when present, are arrays of objects each with a unique string `id` (JSON Canvas 1.0). Content that fails is refused with Error [invalid_file] and nothing is written. ";
+
+const SCOPE =
+  "While a path allowlist or a write scope limits this session, a .base file is not written, edited or moved (Error [base_under_scope]): a Base is a query, and its filters could read notes outside the scope. A .canvas is still allowed. ";
 
 const REV =
   "To get a file's `rev` for `if_rev`, read it with obsidian_read_note (it reads a .base or .canvas file as text). ";
@@ -85,11 +112,16 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
   const gated = (name: string, inner: (args: any, extra?: any) => Promise<unknown>) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async (args: any, extra?: any) => {
+      const seen: Record<string, unknown> = { ...args };
+      for (const k of ["path", "from", "to"]) if (typeof seen[k] === "string") seen[k] = dec(seen[k] as string);
       if (profile) {
-        const seen: Record<string, unknown> = { ...args };
-        for (const k of ["path", "from", "to"]) if (typeof seen[k] === "string") seen[k] = dec(seen[k] as string);
         const refused = profileCallRefusal(profile, name, true, seen, opts.exists ?? (() => true));
         if (refused) return fail(Object.assign(new Error(refused.message), { code: refused.code }));
+      }
+      const base = ["path", "from", "to"].map((k) => seen[k]).find((v): v is string => typeof v === "string" && v.endsWith(".base"));
+      if (base !== undefined) {
+        const scope = profile?.writeScope && profile.writeScope.mode !== "all" ? `this connection's write scope (profile '${profile.name}')` : opts.pathScope?.() ?? null;
+        if (scope) return fail(new BaseUnderScopeError(name, base, scope));
       }
       return inner(args, extra);
     };
@@ -102,6 +134,7 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
         description:
           "Create an Obsidian Bases file (.base, YAML) or a JSON Canvas file (.canvas), or overwrite one when overwrite=true. Path must end in .base or .canvas; a note goes through obsidian_write_note. Parent folders are created as needed. " +
           VALIDATION +
+          SCOPE +
           "A NEW file's path may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`; no path may be in a hidden folder. " +
           REV +
           "An argument this tool does not name is refused, never ignored. To change one view of a Base or one node or edge of a Canvas, use obsidian_edit_file.",
@@ -130,7 +163,8 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
         description:
           "Change one keyed item of a file and leave the rest as written. A .base: `upsert_view` replaces the view named `key` (or, without `key`, the view with the item's own `name`) with `item_json`, or adds it when there is none; `remove_view` removes the view named `key`. A .canvas: `upsert_node` / `upsert_edge` replace the node or edge with the item's `id`, or add it; `remove_node` / `remove_edge` remove the one with id `key` (removing a node also removes every edge that ends on it, listed in `edges_removed`). " +
           "A remove of an item the file does not have returns `found: false` and writes nothing. Two views with one name are refused (`invalid_edit`): rewrite the file whole. " +
-          "The result of the edit is validated as obsidian_write_file validates a whole file, and refused with Error [invalid_file] if it would not parse. A Base keeps its comments and the style of the parts not edited; a Canvas keeps its indentation. " +
+          "The result of the edit is validated as obsidian_write_file validates a whole file, and refused with Error [invalid_file] if it would not parse. A Base keeps its comments and the style of the parts not edited; a Canvas keeps its indentation. The result's `key` names the view the file now holds (`replaced` names the view an upsert renamed). " +
+          SCOPE +
           REV +
           "An argument this tool does not name is refused, never ignored.",
         inputSchema: schema({
@@ -159,6 +193,7 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
         description:
           "Move (or rename) a .base or .canvas file to another vault path with the same extension. `to` may keep the file's own name and the folders it is already in, but any NEW name or folder may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`. Refuses if `to` exists unless overwrite: true (on the live Obsidian server the file replaced goes to the system trash). Parent folders are created as needed. " +
           "Links TO the file: on the live Obsidian server, with update_backlinks true (the default), links in notes ([[Board.canvas]], ![[Tasks.base]]) are rewritten to the new path and checked for damage (`link_check`), as obsidian_move_note does; the file's own text is never rewritten, and links inside other .canvas files are not tracked (Obsidian's link index does not count them). The file-system server does not rewrite links to these files at all (`links_note` says so). " +
+          SCOPE +
           "The file's content is not read or changed, so no validation runs.",
         inputSchema: schema({
           from: z.string().min(1).describe("Existing vault-relative path of the .base or .canvas file."),

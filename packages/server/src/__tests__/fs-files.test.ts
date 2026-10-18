@@ -91,7 +91,7 @@ describe("the file tools on the file-system server", () => {
     let r = await call(c, "obsidian_write_file", { path: "Boards/New.base", content: BASE });
     assert.equal(r.isError, undefined, err(r));
     assert.equal(await read("Boards/New.base"), BASE);
-    for (const [p, content] of [["Boards/Bad.base", "views: [\n"], ["Boards/List.base", "- a\n"], ["Boards/Bad.canvas", "{nodes: []}"], ["Boards/Shape.canvas", "{\"edges\": {}}"]]) {
+    for (const [p, content] of [["Boards/Bad.base", "views: [\n"], ["Boards/List.base", "- a\n"], ["Boards/Bad.canvas", "{nodes: []}"], ["Boards/Shape.canvas", "{\"edges\": {}}"], ["Boards/Dangling.canvas", "{\"nodes\": [{\"id\": \"a\"}], \"edges\": [{\"id\": \"e\", \"fromNode\": \"a\", \"toNode\": \"z\"}]}"], ["Boards/Alias.base", "a: &x 1\nb: *x\n"], ["Boards/Tag.base", "f: !!js/function \"x\"\n"]]) {
       r = await call(c, "obsidian_write_file", { path: p, content });
       assert.match(err(r), /^Error \[invalid_file\]/, p);
       assert.equal(existsSync(path.join(vault, p)), false, p);
@@ -172,13 +172,23 @@ describe("the file tools on the file-system server", () => {
     await c.close();
   });
 
-  test("a create-only write scope refuses all three", async () => {
+  test("under a write scope a .base is refused as base_under_scope (a Base is a query); a .canvas falls to the write scope, which refuses all three", async () => {
     process.env[WRITE_SCOPE_ENV_VAR] = JSON.stringify({ mode: "create-only", paths: ["**"] });
     try {
       const c = await client();
-      const r = await call(c, "obsidian_write_file", { path: "Boards/Scoped.base", content: BASE });
-      assert.match(err(r), /^Error \[write_scope\]/);
+      for (const [name, args] of [
+        ["obsidian_write_file", { path: "Boards/Scoped.base", content: BASE }],
+        ["obsidian_edit_file", { path: "Boards/Tasks.base", op: "remove_view", key: "Table" }],
+        ["obsidian_move_file", { from: "Boards/Tasks.base", to: "Boards/Moved.base" }],
+      ] as const) {
+        const r = await call(c, name, args);
+        assert.match(err(r), /^Error \[base_under_scope\]: .*VAULT_MCP_WRITE_SCOPE/, name);
+      }
       assert.equal(existsSync(path.join(vault, "Boards", "Scoped.base")), false);
+      assert.match(await read("Boards/Tasks.base"), /name: Table/);
+      const r = await call(c, "obsidian_write_file", { path: "Boards/Scoped.canvas", content: "{}" });
+      assert.match(err(r), /^Error \[write_scope\]/);
+      assert.equal(existsSync(path.join(vault, "Boards", "Scoped.canvas")), false);
       await c.close();
     } finally {
       delete process.env[WRITE_SCOPE_ENV_VAR];

@@ -502,6 +502,9 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     ...(profile ? { profile, exists: existsInVault } : {}),
     decodeHtml: true,
     kernelArgs: true,
+    // A .base is a query (#580 review 1): not written, edited or moved while the write scope limits
+    // paths. This server has no path allowlist; its write scope is the one path rule it has.
+    pathScope: () => (fsWriteScope().mode !== "all" ? `the write scope (${WRITE_SCOPE_ENV_VAR})` : null),
   });
 
   return server;

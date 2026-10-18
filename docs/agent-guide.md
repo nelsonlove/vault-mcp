@@ -151,7 +151,7 @@ Each write tool requires what its operation needs, and the host refuses a call w
 
 ### Bases and Canvas files
 
-A `.base` (Obsidian Bases, YAML) or `.canvas` (JSON Canvas) file is written with `obsidian_write_file`, edited one item at a time with `obsidian_edit_file` (a Base view by its `name`; a Canvas node or edge by its `id`), moved with `obsidian_move_file`, and trashed with `obsidian_trash`. Read one with `obsidian_read_note` to get its text and its `rev`. Content that does not parse as its type is refused with `invalid_file`, and nothing is written; an edit is checked the same way on its result. Prefer the keyed edit for a small change: it keeps the rest of the file as written, comments in a Base included.
+A `.base` (Obsidian Bases, YAML) or `.canvas` (JSON Canvas) file is written with `obsidian_write_file`, edited one item at a time with `obsidian_edit_file` (a Base view by its `name`; a Canvas node or edge by its `id`), moved with `obsidian_move_file`, and trashed with `obsidian_trash`. Read one with `obsidian_read_note` to get its text and its `rev`. Content that does not parse as its type is refused with `invalid_file`, and nothing is written; an edit is checked the same way on its result. A Base is written without YAML anchors, aliases, merge keys or tags, and a Canvas edge must join two nodes of the file. While a path allowlist or a write scope limits the session, a `.base` is not written, edited or moved (`base_under_scope`): a Base is a query that could read notes outside the scope. A `.canvas` is still allowed. Prefer the keyed edit for a small change: it keeps the rest of the file as written, comments in a Base included.
 
 ### Revision precondition
 
