@@ -19,7 +19,9 @@ let READ_MESSAGE: Set<string>;
 let FS_NAMES: string[];
 let vault: string;
 let journal: string;
-const FAKE_KEY = "sk-test-AAAAAAAAAAAAAAAAAAAAAAAA";
+// Built at run time from parts, so no key-shaped literal is committed; made up.
+const FAKE_KEY = ["sk", "test", "A".repeat(24)].join("-");
+const FAKE_BODY = ["MIIEv", "QIBADANBgkqhkiG9w0BAQEFAASC", "FAKE"].join("");
 
 before(async () => {
   vault = await mkdtemp(path.join(tmpdir(), "fs-profile-"));
@@ -30,7 +32,7 @@ before(async () => {
   await mkdir(path.join(vault, "Notes"), { recursive: true });
   await writeFile(path.join(vault, "Notes", "a.md"), "# A\n");
   // A made-up key, for the secret scanner (read+message only).
-  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\npassword: fake-pass\n---\nThe key is ${FAKE_KEY} here.\n`);
+  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\npassword: fake-pass\nAPI Key: fake-spaced\n---\nThe key is ${FAKE_KEY} here.\n\nhunt marker\n${FAKE_BODY}\n\n| Service | Password |\n|---|---|\n| mail | fake-cell |\n`);
   buildFsServer = (await import("../fs-mode.js")).buildFsServer;
   const core = await import("@vault-mcp/core");
   READ = new Set(core.READ_PROFILE_TOOLS);
@@ -119,6 +121,13 @@ describe("FS mode under a profile", () => {
     const parsed = JSON.parse(res.content[0].text);
     assert.equal(parsed.content, res.structuredContent?.content);
     assert.match(parsed.content, /password: \[redacted:secret\]/);
+    // A whole read keeps the key in view, so the spaced key and the table column are blanked; a
+    // bare body line with no BEGIN header is not (only search snippets get that rule).
+    assert.ok(!/fake-spaced|fake-cell/.test(text(res)), text(res));
+    // A search hit carries one line: a key body line is blanked even without its key.
+    const body = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "QIBADANBgkqhkiG9w0" } }));
+    assert.match(body, /redacted:secret/);
+    assert.ok(!body.includes(FAKE_BODY), body);
     const s = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "key is" } }));
     assert.ok(!s.includes(FAKE_KEY), s);
     await m.close();

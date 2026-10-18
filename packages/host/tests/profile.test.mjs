@@ -156,7 +156,8 @@ describe("profile read+inbox", () => {
 
 describe("profile read+message: the secret scanner", () => {
   // A made-up key; never a real one.
-  const FAKE = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
+  // Built at run time from parts, so no key-shaped literal is committed; made up.
+  const FAKE = ["gh", "p_", "FAKE".repeat(9)].join("");
   const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`], frontmatter: { password: "fake-fm-pass", api_key: 1234567, title: "T", secret: true } };
   const call = async (profile) => {
     const client = await connect(build(profile ? { profile } : {}, result));
