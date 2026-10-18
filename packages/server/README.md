@@ -114,6 +114,7 @@ A fixed window per minute, in memory. A refused request gets 429 with `Retry-Aft
 - `VAULT_MCP_RATE_CRED_PER_MIN` (default 120): per credential id, checked after auth.
 - `0` turns a limit off.
 - `VAULT_MCP_TRUST_PROXY` (default `loopback`): Express's "trust proxy", which decides who may name the client IP in `X-Forwarded-For`. The default trusts only a loopback peer (tailscale serve, cloudflared).
+- `VAULT_MCP_PRM_UNDER_RESOURCE` (default off): serve the OAuth protected-resource metadata inside the resource's own path, `<MCP_RESOURCE_URL>/.well-known/oauth-protected-resource`, and name that URL in the 401's `resource_metadata`. Set it when a proxy publishes only one path (Funnel at `/mcp`), so a client finds the metadata without a second path at the host root. RFC 9728 §5.1 lets the header name any metadata URL, and the MCP clients that follow the spec use the header first. It needs `MCP_RESOURCE_URL`.
 
 ### Request log
 

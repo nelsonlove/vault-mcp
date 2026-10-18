@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import type express from "express";
 import { buildFront, endpointPaths, prmPaths } from "../front.js";
-import { resourceMetadataUrl, type AuthConfig } from "../auth.js";
+import { resourceMetadataUrl, loadAuthConfig, type AuthConfig } from "../auth.js";
 import { loadProfileMap, profileFor } from "../profiles.js";
 import { bridgeEnv, PROFILE_ENV_KEY } from "../bridge-env.js";
 import { createLiveProxy } from "../live-proxy.js";
@@ -143,3 +143,46 @@ describe("paths from MCP_RESOURCE_URL (Funnel at /vault-mcp)", () => {
     await s.close();
   });
 });
+
+describe("VAULT_MCP_PRM_UNDER_RESOURCE: the metadata inside the one published path (Funnel at /mcp)", () => {
+  const RES1 = "https://host.example.ts.net/mcp";
+  const on = (r: string): AuthConfig => ({ ...cfg(r), enabled: true, issuer: "https://issuer.example", jwksUri: "https://issuer.example/jwks", authorizationServers: ["https://issuer.example"], prmUnderResource: true });
+
+  test("off by default: the root RFC 9728 form, and no path inside /mcp", () => {
+    assert.equal(resourceMetadataUrl(cfg(RES1)), "https://host.example.ts.net/.well-known/oauth-protected-resource/mcp");
+    assert.equal(prmPaths(RES1).includes("/mcp/.well-known/oauth-protected-resource"), false);
+  });
+
+  test("on: resource_metadata names the URL inside the resource path, and it is served there", async () => {
+    assert.equal(resourceMetadataUrl(on(RES1)), "https://host.example.ts.net/mcp/.well-known/oauth-protected-resource");
+    assert.equal(resourceMetadataUrl(on("https://h.example/vault-mcp/mcp/")), "https://h.example/vault-mcp/mcp/.well-known/oauth-protected-resource");
+    assert.ok(prmPaths(RES1, true).includes("/mcp/.well-known/oauth-protected-resource"));
+    const s = await serve(buildFront({ cfg: on(RES1), token: TOKEN, presence: { isLive: () => false }, fs: spy(), live: spy() }));
+    const r = await fetch(`${s.url}/mcp/.well-known/oauth-protected-resource`);
+    assert.equal(r.status, 200);
+    assert.equal(((await r.json()) as { resource: string }).resource, RES1);
+    const un = await fetch(`${s.url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    assert.equal(un.status, 401);
+    assert.match(un.headers.get("www-authenticate") ?? "", /resource_metadata="https:\/\/host\.example\.ts\.net\/mcp\/\.well-known\/oauth-protected-resource"/);
+    await s.close();
+  });
+
+  test("the env switch: read from VAULT_MCP_PRM_UNDER_RESOURCE, and refused without MCP_RESOURCE_URL", () => {
+    const keep = { ...process.env };
+    try {
+      process.env.AUTH_ENABLED = "false";
+      process.env.MCP_RESOURCE_URL = RES1;
+      process.env.VAULT_MCP_PRM_UNDER_RESOURCE = "true";
+      assert.equal(loadAuthConfig().prmUnderResource, true);
+      delete process.env.VAULT_MCP_PRM_UNDER_RESOURCE;
+      assert.equal(loadAuthConfig().prmUnderResource, false);
+      process.env.VAULT_MCP_PRM_UNDER_RESOURCE = "1";
+      delete process.env.MCP_RESOURCE_URL;
+      assert.throws(() => loadAuthConfig(), /MCP_RESOURCE_URL/);
+    } finally {
+      for (const k of Object.keys(process.env)) if (!(k in keep)) delete process.env[k];
+      Object.assign(process.env, keep);
+    }
+  });
+});
+

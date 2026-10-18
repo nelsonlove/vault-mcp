@@ -86,10 +86,13 @@ export function endpointPaths(resourceUrl: string): { resourcePath: string; moun
  * path, its `/mcp` suffix (today's form), the resource path's suffix (`…/vault-mcp/mcp`), and each
  * of those again under the mount, for a proxy that does not strip it.
  */
-export function prmPaths(resourceUrl: string): string[] {
+export function prmPaths(resourceUrl: string, underResource = false): string[] {
   const { resourcePath, mount } = endpointPaths(resourceUrl);
   const base = [prmPath(), `${prmPath()}/mcp`, ...(resourcePath ? [`${prmPath()}${resourcePath}`] : [])];
-  return [...new Set([...base, ...(mount ? base.map((b) => `${mount}${b}`) : [])])];
+  // VAULT_MCP_PRM_UNDER_RESOURCE: also inside the endpoint's path, on the resource path and on /mcp
+  // (a proxy may or may not strip its mount).
+  const inside = underResource ? [...new Set(["/mcp", ...(resourcePath ? [resourcePath] : [])])].map((p) => `${p}${prmPath()}`) : [];
+  return [...new Set([...base, ...(mount ? base.map((b) => `${mount}${b}`) : []), ...inside])];
 }
 
 export function buildFront(deps: FrontDeps): express.Express {
@@ -137,7 +140,7 @@ export function buildFront(deps: FrontDeps): express.Express {
     const prm = (_req: Request, res: Response): void => {
       res.json(protectedResourceMetadata(cfg));
     };
-    for (const p of prmPaths(cfg.resourceUrl)) app.get(p, prm);
+    for (const p of prmPaths(cfg.resourceUrl, cfg.prmUnderResource === true)) app.get(p, prm);
   }
 
   // MCP endpoint — auth gate, then body parse, then presence-based routing.
