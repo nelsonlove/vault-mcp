@@ -45,7 +45,8 @@ import { buildMcpActionRegistry } from "../kernel/operations/mcp-registry.js";
 import { createOperationExecutor } from "../kernel/operations/executor.js";
 import { createCapture } from "../kernel/observations/capture.js";
 import { openSession } from "../kernel/sessions/session.js";
-import { expiryRefusal, type SessionV1 } from "@vault-mcp/core";
+import { createConnectionSession, type ConnectionSession } from "../kernel/sessions/connection-session.js";
+import type { SessionV1 } from "@vault-mcp/core";
 // The session scope digest is the HOST's own assertion about a connection
 // (condition 7: the host mints), so these two contracts are consulted here.
 // S3, condition 9: promoted into `@vault-mcp/core` — the seam never needed
@@ -163,36 +164,52 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // this session. When no session machinery is wired (tests, bare embeds)
   // the connection simply has no session, and everything downstream treats
   // null as "no session" rather than failing.
-  let session: SessionV1 | null = null;
+  //
+  // The session ROTATES on expiry while the connection stays open
+  // (`connection-session.ts`): an expired session is marked expired and a new
+  // one, `continuedFrom` the old id, is opened — unless the provider refuses
+  // the old id (a revocation), which never rotates. So `session` below is read
+  // through `conn.current()` every time, never captured.
+  let conn: ConnectionSession | null = null;
   if (ctx.sessions) {
-    const st = ctx.getSettings();
-    session = openSession(
-      {
-        vaultId: ctx.sessions.vaultId,
-        replicaId: ctx.sessions.replicaId,
-        actor: { connection: connectionId, clientClaim: opts.clientLabel ?? null },
-        journalHead: ctx.sessions.journalHead(),
-        // The effective connection scope at open: read-only + allowlist are
-        // what bound this connection's reach. Digested so the record carries
-        // a comparable fingerprint, not a second copy of settings.
-        scopeDigest: digestUtf8(canonicalize({ readOnly: st.readOnly === true, allowlist: [...(st.allowlist ?? [])].sort() })).value,
+    const sessions = ctx.sessions;
+    conn = createConnectionSession({
+      log: sessions,
+      mint: (continuedFrom, now) => {
+        const st = ctx.getSettings();
+        return openSession(
+          {
+            vaultId: sessions.vaultId,
+            replicaId: sessions.replicaId,
+            actor: { connection: connectionId, clientClaim: opts.clientLabel ?? null },
+            journalHead: sessions.journalHead(),
+            // The effective connection scope at open: read-only + allowlist are
+            // what bound this connection's reach. Digested so the record carries
+            // a comparable fingerprint, not a second copy of settings.
+            scopeDigest: digestUtf8(canonicalize({ readOnly: st.readOnly === true, allowlist: [...(st.allowlist ?? [])].sort() })).value,
+            continuedFrom,
+          },
+          now
+        );
       },
-      Date.now()
-    );
-    ctx.sessions.open(session, Date.now()).catch((e) => console.error("[vault-mcp] session open failed", e));
+      ...(ctx.seam ? { refuse: (id: string | null, purpose: "dequeue" | "rotate") => ctx.seam!.refuseSession(id, purpose) } : {}),
+    });
 
     // The session ends when the connection does. Protocol.onclose is the
     // SDK's own close callback, invoked when the transport closes; chaining
     // preserves anything a later assignment composes on top. A server that
     // never connects (the dev tool-runner) never fires this — its session is
-    // bounded by the TTL instead, which is the designed fallback.
-    const sid = session.id;
+    // bounded by the TTL instead, which is the designed fallback. The close
+    // names the session current AT CLOSE, so a rotated connection closes its
+    // newest session (the older ones are already logged expired).
+    const c = conn;
     const prevClose = (server.server as { onclose?: () => void }).onclose;
     (server.server as { onclose?: () => void }).onclose = () => {
       prevClose?.();
-      ctx.sessions?.close(sid, Date.now()).catch(() => undefined);
+      c.close();
     };
   }
+  const currentSession = (): SessionV1 | null => conn?.current() ?? null;
 
   /**
    * The dequeue refusal for this connection's session — consulted inside the
@@ -214,22 +231,20 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
    *
    * The union of the two is exactly what the single store-reading check did
    * before: expired ⇒ refused, revoked/closed ⇒ refused, otherwise proceed.
+   * The rotation happens at the top of the guarded wrapper (`sessionRefresh`),
+   * never here; this check judges the session the call was ENQUEUED under.
+   * See `connection-session.ts`.
    */
-  const sessionRefusal = async (): Promise<{ code: string; detail: string } | null> => {
-    const now = Date.now();
-    const expired = expiryRefusal(session, now);
-    if (expired) {
-      // The expiry transition is recorded, not merely observed — the durable
-      // record should not say "open" about a session nothing will honour.
-      if (expired.status === "expired" && session && ctx.sessions) {
-        ctx.sessions.markExpired(session.id, now).catch(() => undefined);
-      }
-      return { code: expired.code, detail: expired.detail };
-    }
-    return (await ctx.seam?.refuseSession(session?.id ?? null)) ?? null;
+  const sessionRefusal = async (enqueuedUnder?: string | null): Promise<{ code: string; detail: string } | null> => {
+    if (conn) return conn.refusal(enqueuedUnder);
+    return (await ctx.seam?.refuseSession(null)) ?? null;
+  };
+  const sessionRefresh = async (): Promise<void> => {
+    await conn?.refresh();
   };
 
   const actor = (): JournalActor => {
+    const session = currentSession();
     const info = (server.server as any)?.getClientVersion?.();
     // opts.clientLabel is a fallback for builds no client ever connects to
     // (the dev tool-runner): a real handshake identity always takes precedence.
@@ -332,7 +347,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
       const a = actor();
       return { binding: `${a.connection}`, clientClaim: a.client ?? null };
     },
-    sessionId: () => session?.id ?? null,
+    sessionId: () => currentSession()?.id ?? null,
     // Proposal production, now BEHIND THE SEAM (S2). The executor still
     // decides WHEN — a completed operation — and the host still decides that
     // the facts describe THIS operation. Everything after that is the
@@ -395,6 +410,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     noteExists: (p: string) => app.vault.getAbstractFileByPath(p) !== null,
     executor,
     sessionRefusal,
+    sessionRefresh,
     // `jd:<address>` addressing at the interception point: same per-call
     // freshness as registerSchemeTools's own registry() below (a scheme
     // config edit lands live), and the same notes() source it uses.

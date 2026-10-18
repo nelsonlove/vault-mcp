@@ -41,7 +41,7 @@
 
 import { Notice, Plugin, TFile, type Component } from "obsidian";
 import * as fs from "node:fs";
-import { registerGovernance, publishTools, type SeamRefusal, type WriteFacts } from "vault-mcp-api";
+import { registerGovernance, publishTools, type WriteFacts } from "vault-mcp-api";
 import { uuidv7, resolveTerritories } from "@vault-mcp/core";
 
 import { createSessionStore } from "./kernel/sessions/session-store.js";
@@ -57,6 +57,7 @@ import { proposalRef } from "./kernel/history-store/refs.js";
 import type { HistoryRepository } from "./kernel/history-store/repository.js";
 
 import { createProposalObserver } from "./wiring/write-observer.js";
+import { sessionRefusalFrom } from "./wiring/session-refusal.js";
 import { buildAdmission, type AdmissionUiDeps } from "./wiring/admission-wiring.js";
 import { buildMandateUi, type MandateUiDeps } from "./wiring/mandate-wiring.js";
 import { buildPromotionUi, type PromotionUiDeps } from "./wiring/promotion-wiring.js";
@@ -356,28 +357,14 @@ export default class GovernorPlugin extends Plugin {
             nudgeGovernanceQueue(this);
           }
         },
-        // WHAT CROSSES INWARD: a refusal, and only a refusal. Revocation is a
-        // human act landing in this plugin's own session store, so this plugin
-        // is what notices it, and the host learns only "refused, and here is the
-        // coded reason".
-        //
-        // The catch is THIS PLUGIN'S choice, not the seam's default: an
-        // unhandled throw from a refusal hook is treated as a refusal (fail
-        // closed), which is right for a hook that means to guard something. Here
-        // a store read that fails degrades to the host's own expiry floor rather
-        // than wedging every write in the vault behind a corrupted
-        // `sessions.jsonl`. Missing a revocation on a transient read error is
-        // what this code did before the seam existed; refusing every write is
-        // not.
-        sessionRefusal: async (sessionId): Promise<SeamRefusal | null> => {
-          if (!sessionId) return null;
-          try {
-            return await sessionStore.revocationRefusal(sessionId);
-          } catch (e) {
-            console.error("[governor] session store read failed; falling back to the host's expiry floor", e);
-            return null;
-          }
-        },
+        // WHAT CROSSES INWARD: a refusal, and only a refusal, answered from
+        // the STORE, where a human's Revoke lands. A store read error is
+        // silence at dequeue and a refusal before a rotation: see
+        // wiring/session-refusal.ts.
+        sessionRefusal: sessionRefusalFrom(sessionStore),
+        // The hook reads its second argument and refuses a "rotate" it cannot
+        // answer, so it declares the rotate check (vault-mcp-api 1.3).
+        sessionRefusalPurposes: ["rotate"],
       })
     );
 

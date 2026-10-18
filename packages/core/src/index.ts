@@ -144,6 +144,7 @@ export type { VaultWatcherOptions, VaultWatcherHandle } from "./fs-backend/vault
 // responsibility, not because of where a dependency happens to live.
 export {
   SESSION_TTL_MS,
+  NO_DIRECT_WRITES,
   SessionNotLiveError,
   isLive,
   livenessOf,

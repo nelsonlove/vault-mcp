@@ -45,7 +45,7 @@ import {
   type SchemeRegistry,
 } from "../kernel/scheme/registry.js";
 import { OperationRefusedError, type OperationExecutor } from "../kernel/operations/executor.js";
-import { extendInput, inputShapeOf, CHARACTER_LIMIT, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, type WholeReads } from "@vault-mcp/core";
+import { extendInput, inputShapeOf, CHARACTER_LIMIT, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, NO_DIRECT_WRITES, type WholeReads } from "@vault-mcp/core";
 
 /** Guard/queue-level failure envelope: matches the `Error [code]: message` shape guardCall already emits. */
 function codedError(code: string, message: string) {
@@ -291,7 +291,18 @@ export interface GuardedOpts {
    * host's own expiry floor with the seam's provider refusals behind this one
    * function; the guard only renders whatever refusal comes back.
    */
-  sessionRefusal?: () => Promise<{ code: string; detail: string } | null> | { code: string; detail: string } | null;
+  sessionRefusal?: (enqueuedUnder?: string | null) => Promise<{ code: string; detail: string } | null> | { code: string; detail: string } | null;
+  /**
+   * Rotate the connection's session when it has EXPIRED and nothing refuses it
+   * (server.ts, `kernel/sessions/connection-session.ts`). Awaited just before
+   * the executor builds the operation record, at the top of the wrapper, so
+   * the operation's sessionId, `actor()` (taken at enqueue for the journal)
+   * and the write observer all name the session the call actually runs
+   * under. Mutations only. Absent ⇒ no session
+   * machinery; nothing rotates. A revoked session never rotates, and the
+   * dequeue check above still refuses it.
+   */
+  sessionRefresh?: () => Promise<void>;
   /**
    * The shared operation executor (WP1). Every guarded call runs inside one
    * operation, so action identity, actor binding and phase history are the
@@ -497,7 +508,20 @@ export function makeGuarded(opts: GuardedOpts) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (def: any, handler: any, name?: string) => async (args: any, extra: any) => {
     const toolName = name ?? def?.title ?? "unknown";
-    if (!opts.executor) return runGuarded(opts, def, handler, name, args, extra, () => {});
+    // An expired session is replaced by a new one (continuedFrom the old id)
+    // HERE, before the executor builds the operation record: the operation's
+    // sessionId, the journal actor and the write observer must all name the
+    // session the write runs under. Mutations only, like the dequeue check.
+    if (def?.annotations?.readOnlyHint === false) await opts.sessionRefresh?.();
+    // The actor is taken ONCE, here, right after the rotation. The operation
+    // record, the journal actor and the dequeue check all use this one session
+    // id: a concurrent call that rotates the connection while this one awaits
+    // a guard below cannot make them name two sessions.
+    // Only a mutation that will reach the kernel journals an actor; every
+    // other call keeps its old path (some embeds pass no actor at all).
+    const callActor = def?.annotations?.readOnlyHint === false && opts.kernel ? opts.actor() : undefined;
+    const callSession = callActor?.session ?? null;
+    if (!opts.executor) return runGuarded(opts, def, handler, name, args, extra, () => {}, undefined, callActor);
     try {
       const { result } = await opts.executor.run(
         {
@@ -508,9 +532,20 @@ export function makeGuarded(opts: GuardedOpts) {
           // call through it.
           surface: { kind: "mcp", id: toolName },
           inputs: args ?? {},
+          ...(callSession !== null ? { sessionId: callSession } : {}),
         },
-        (mark, ctx) =>
-          runGuarded(opts, def, handler, name, args, extra, mark, ctx.setSources)
+        (mark, ctx) => {
+          // Defensive: the operation must name the session the journal will.
+          // Built from the same capture, they cannot differ; if they ever do,
+          // refuse rather than record one write under two sessions.
+          if (callSession !== null && ctx.sessionId !== callSession) {
+            return Promise.resolve(codedError(
+              "session_mismatch",
+              `this call's operation names session ${ctx.sessionId} but its journal actor names ${callSession}; refused. ${NO_DIRECT_WRITES}`
+            ));
+          }
+          return runGuarded(opts, def, handler, name, args, extra, mark, ctx.setSources, callActor);
+        }
       );
       return result;
     } catch (e) {
@@ -533,7 +568,7 @@ export function makeGuarded(opts: GuardedOpts) {
  * no-op when no executor is present.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: string | undefined, args: any, extra: any, mark: (phase: "queued" | "attempted") => void, setSources: (paths: string[]) => void = () => {}) {
+async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: string | undefined, args: any, extra: any, mark: (phase: "queued" | "attempted") => void, setSources: (paths: string[]) => void = () => {}, callActor?: JournalActor) {
   // READS never enter the queue, so they are not session-liveness-checked:
   // the WP5 deliverable names dequeue and admission time, and both are
   // mutation phases. The visible consequence — an expired session can read
@@ -657,12 +692,16 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
     ...resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path })),
     ...resolved.schemeResolved,
   ];
+  // Taken once, at the top of the wrapper (callActor): the journal names this
+  // actor, the operation record names its session, and the dequeue check
+  // below judges that session, not whatever is current then.
+  const enqueueActor = callActor ?? opts.actor();
   try {
     return withSyncWarning(await opts.kernel.runMutation(
       {
         op: name ?? def?.title ?? "unknown",
         args: toolArgs,
-        actor: opts.actor(),
+        actor: enqueueActor,
         ref: refOf(toolArgs),
         effectsOf: (result) => reportedEffects(toolArgs, result),
         ...(ifRev !== undefined ? { ifRev } : {}),
@@ -680,7 +719,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
         // mutation can wait in the queue across its session's expiry or
         // revocation, and executing it then would act under an authority
         // context that no longer exists (WP5).
-        const refusal = await opts.sessionRefusal?.();
+        const refusal = await opts.sessionRefusal?.(enqueueActor.session ?? null);
         if (refusal) return codedError(refusal.code, refusal.detail);
         // The whole-note-overwrite rule (#441, #443), decided here at
         // dequeue: journaled as an error when it refuses, like the kernel's

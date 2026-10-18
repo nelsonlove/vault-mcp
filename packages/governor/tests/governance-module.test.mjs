@@ -681,8 +681,12 @@ describe("main.ts: the pane is reached ONLY through wireGovernance, behind setti
     const reg = /registerGovernance\(this, \{([\s\S]*?)\n      \}\)/.exec(main);
     assert.ok(reg, "registerGovernance must be called with an object literal");
     const keys = [...reg[1].matchAll(/^\s{8}([A-Za-z][\w]*):/gm)].map((m) => m[1]);
-    assert.deepEqual(keys.sort(), ["sessionRefusal", "writeObserver"],
-      "the seam must carry exactly the observer and the refusal — a third key is a new hook class");
+    // `sessionRefusalPurposes` (vault-mcp-api 1.3) is a DECLARATION about the
+    // refusal hook, not a hook: it is a list of strings, and it can only make
+    // the host refuse more (no rotation without it).
+    assert.deepEqual(keys.sort(), ["sessionRefusal", "sessionRefusalPurposes", "writeObserver"],
+      "the seam must carry exactly the observer and the refusal (and its declaration) — another key is a new hook class");
+    assert.match(reg[1], /sessionRefusalPurposes: \["rotate"\]/, "the declaration is a plain string list");
     for (const name of ["performAccept", "performAdopt", "setBaseline", "acceptNote", "setClassEnabled"]) {
       assert.ok(!new RegExp(`\\b${name}\\b`).test(reg[1]), `the seam registration must not name ${name}`);
     }

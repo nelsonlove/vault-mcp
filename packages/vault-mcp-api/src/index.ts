@@ -262,14 +262,32 @@ export interface SeamRefusal {
 }
 
 export type WriteObserver = (facts: WriteFacts) => void | Promise<void>;
+/**
+ * Why the host asks: `"dequeue"` (inside the write queue) or `"rotate"`
+ * (before it replaces an EXPIRED session with a new one). A rotation needs a
+ * positive "not revoked", so a hook that cannot read its revocation state
+ * should refuse for `"rotate"`. Older hosts pass no second argument.
+ */
+export type SessionRefusalPurpose = "dequeue" | "rotate";
+
+/**
+ * Declared at registration (SDK 1.3). List `"rotate"` in `purposes` only when
+ * your hook reads the second argument and, for `"rotate"`, refuses whenever it
+ * cannot positively say the session is not revoked. A host refuses every
+ * rotation while a hook that does not declare it is registered.
+ */
+export interface SessionRefusalOptions {
+  purposes?: readonly SessionRefusalPurpose[];
+}
 export type SessionRefusalHook = (
   sessionId: string | null,
+  purpose?: SessionRefusalPurpose,
 ) => SeamRefusal | null | Promise<SeamRefusal | null>;
 
 /** The registration half of the seam, as it appears on the host's api object. */
 export interface GovernanceSeam {
   registerWriteObserver(id: string, observe: WriteObserver): () => void;
-  registerSessionRefusal(id: string, refuse: SessionRefusalHook): () => void;
+  registerSessionRefusal(id: string, refuse: SessionRefusalHook, options?: SessionRefusalOptions): () => void;
 }
 
 export interface GovernanceHooks {
@@ -277,6 +295,13 @@ export interface GovernanceHooks {
   writeObserver?: WriteObserver;
   /** Consulted at dequeue. A refusal aborts the mutation; a throw IS a refusal. */
   sessionRefusal?: SessionRefusalHook;
+  /**
+   * SDK 1.3: the purposes `sessionRefusal` handles beyond the default
+   * `"dequeue"`. `["rotate"]` lets the host rotate an expired session; see
+   * `SessionRefusalOptions`. Omit it and the host never rotates while your
+   * hook is registered.
+   */
+  sessionRefusalPurposes?: readonly SessionRefusalPurpose[];
 }
 
 // ── Publisher-facing spec ─────────────────────────────────────────────────────
@@ -506,7 +531,15 @@ export function registerGovernance(plugin: Plugin, hooks: GovernanceHooks): () =
     try {
       const added: Array<() => void> = [];
       if (hooks.writeObserver) added.push(seam.registerWriteObserver(id, hooks.writeObserver));
-      if (hooks.sessionRefusal) added.push(seam.registerSessionRefusal(id, hooks.sessionRefusal));
+      if (hooks.sessionRefusal) {
+        // The options argument only when declared: an older host ignores it,
+        // and a call without it is exactly the pre-1.3 call.
+        added.push(
+          hooks.sessionRefusalPurposes
+            ? seam.registerSessionRefusal(id, hooks.sessionRefusal, { purposes: [...hooks.sessionRefusalPurposes] })
+            : seam.registerSessionRefusal(id, hooks.sessionRefusal)
+        );
+      }
       disposers = added;
     } catch (e) {
       console.error(`[vault-mcp-api] governance registration failed for '${plugin.manifest.id}'`, e);

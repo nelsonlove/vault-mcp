@@ -28,6 +28,20 @@ import {
   type SyncDeclaration as HostSyncDeclaration,
 } from "../../host/src/mcp/external-tools.js";
 import type { JsonSchemaObject as HostJsonSchemaObject } from "../../host/src/mcp/json-schema-to-zod.js";
+import {
+  createGovernanceSeam,
+  type SessionRefusalHook as HostSessionRefusalHook,
+  type SessionRefusalPurpose as HostSessionRefusalPurpose,
+  type SessionRefusalOptions as HostSessionRefusalOptions,
+  type GovernanceSeam as HostGovernanceSeam,
+} from "../../host/src/mcp/seam.js";
+import { registerGovernance } from "../src/index.js";
+import type {
+  SessionRefusalHook as SdkSessionRefusalHook,
+  SessionRefusalPurpose as SdkSessionRefusalPurpose,
+  SessionRefusalOptions as SdkSessionRefusalOptions,
+  GovernanceSeam as SdkGovernanceSeam,
+} from "../src/index.js";
 
 // ── Type-level contract, checked by `tsc -p tsconfig.tests.json` ─────────────
 // (the package's test script runs it).
@@ -256,4 +270,50 @@ test("a v2 spec (no declaration) registers with no declaration on the entry", ()
   publishTools(plugin, [{ name: "plain", description: "d", inputSchema: { path: z.string() }, handler: () => ({}) }]);
   assert.equal(registry.entries()[0].declaration, undefined);
   assert.equal("protection" in registry.entries()[0].spec, false);
+});
+
+// ── SDK 1.3: the session-refusal purpose and the rotate declaration ──────────
+// The hook's second argument, the purposes it may declare, and the seam's
+// three-argument registration must agree with the host's seam exactly.
+const _purpose: MutuallyAssignable<SdkSessionRefusalPurpose, HostSessionRefusalPurpose> = true;
+const _refusalHook: MutuallyAssignable<SdkSessionRefusalHook, HostSessionRefusalHook> = true;
+const _refusalOptions: MutuallyAssignable<SdkSessionRefusalOptions, HostSessionRefusalOptions> = true;
+type SdkRegister = Parameters<SdkGovernanceSeam["registerSessionRefusal"]>;
+type HostRegister = Parameters<HostGovernanceSeam["registerSessionRefusal"]>;
+const _register: MutuallyAssignable<SdkRegister, HostRegister> = true;
+void [_purpose, _refusalHook, _refusalOptions, _register];
+
+function hostWorldWithSeam() {
+  const { seam, consult } = createGovernanceSeam();
+  const api = { apiVersion: 3, registerTools: () => () => {}, ...seam };
+  const app = {
+    workspace: { on: () => ({}), offref: () => {} },
+    plugins: { plugins: { "vault-mcp": { api } } },
+  };
+  return { app, consult };
+}
+
+test("1.3: a hook registered WITH sessionRefusalPurposes [\"rotate\"] is asked the rotate check through the real host seam", async () => {
+  const { app, consult } = hostWorldWithSeam();
+  const asked: unknown[] = [];
+  registerGovernance({ app, manifest: { id: "governor" } } as never, {
+    sessionRefusal: (_id, purpose) => { asked.push(purpose); return null; },
+    sessionRefusalPurposes: ["rotate"],
+  });
+  assert.equal(await consult.refuseSession("s-1", "rotate"), null, "silence from a declaring hook lets the host rotate");
+  assert.deepEqual(asked, ["rotate"]);
+});
+
+test("1.3: a hook registered WITHOUT the declaration refuses every rotate check, and is unchanged at dequeue", async () => {
+  const { app, consult } = hostWorldWithSeam();
+  registerGovernance({ app, manifest: { id: "old-provider" } } as never, { sessionRefusal: () => null });
+  const r = await consult.refuseSession("s-1", "rotate");
+  assert.equal(r?.code, "session_rotation_unsupported");
+  assert.equal(await consult.refuseSession("s-1", "dequeue"), null);
+  assert.equal(await consult.refuseSession("s-1"), null, "no purpose is dequeue");
+});
+
+test("1.3: with no session hook at all the rotate check is silence (nothing can revoke)", async () => {
+  const { consult } = hostWorldWithSeam();
+  assert.equal(await consult.refuseSession("s-1", "rotate"), null);
 });

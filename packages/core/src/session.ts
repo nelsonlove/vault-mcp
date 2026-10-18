@@ -110,6 +110,14 @@ export function livenessOf(session: SessionV1, now: number): SessionStatus {
 }
 
 /**
+ * The instruction every session refusal carries. When vault-mcp refuses, an
+ * agent's easy way out is to write the vault file directly, which skips the
+ * queue, the journal and the version checks (01.43 rule 7) and clashes with
+ * Linter. So the refusal says what to do instead.
+ */
+export const NO_DIRECT_WRITES = "Do not write vault files directly; stop and retry, then report to your superior.";
+
+/**
  * THE HOST'S OWN FLOOR at dequeue: a typed refusal when this connection's
  * session has run out, or `null` when it has not.
  *
@@ -134,7 +142,12 @@ export function expiryRefusal(
   const status = livenessOf(session, now);
   return {
     code: "session_not_live",
-    detail: `this connection's session (${session.id}) is ${status}; reconnect to open a new session`,
+    // Only an expiry is replaced on the next call; a closed or revoked session
+    // never is, so its text does not tell the caller to retry.
+    detail:
+      status === "expired"
+        ? `this connection's session (${session.id}) is expired; retry the call (an expired session is replaced by a new one on the next call) or reconnect to open a new session. ${NO_DIRECT_WRITES}`
+        : `this connection's session (${session.id}) is ${status}; reconnect to open a new session. Do not write vault files directly; stop and report to your superior.`,
     status,
   };
 }

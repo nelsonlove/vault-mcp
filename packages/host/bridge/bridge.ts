@@ -553,8 +553,12 @@ export interface RelayOpts {
   preamble?: string;
 }
 
-const DISCONNECT_REASON =
-  "vault-mcp: connection to Obsidian lost (restarting?) — retry shortly";
+// The second sentence is core's NO_DIRECT_WRITES, copied, not imported: the
+// bridge is bundled on its own and pulls nothing from @vault-mcp/core.
+// tests/session-rotate.test.mjs pins the two texts together.
+export const DISCONNECT_REASON =
+  "vault-mcp: connection to Obsidian lost (restarting?) — retry shortly. " +
+  "Do not write vault files directly; stop and retry, then report to your superior.";
 
 export class BridgeRelay {
   readonly state = new RelayState();
