@@ -110,7 +110,8 @@ test("#565 review 1: an added line that starts with ++ is an added line, and pat
     ["x.js", 3, "b();"],
     ["a b.md", 1, "x"],
   ]);
-  assert.equal(headerPath('"b/caf\\303\\251.md"').startsWith("caf"), true);
+  assert.equal(headerPath('"b/caf\\303\\251.md"'), "café.md");
+  assert.equal(headerPath('"b/a \\"q\\".md"'), 'a "q".md');
   assert.equal(headerPath("b/a b.md\t"), "a b.md");
 });
 

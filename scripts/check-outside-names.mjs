@@ -50,13 +50,28 @@ export function findViolations(lines, config) {
   return found;
 }
 
+/** Decode git's C-style quoted path: octal byte escapes (\303\251) as UTF-8, and \n \t \" \\ (#565 review 2). */
+export function decodeGitQuoted(q) {
+  const bytes = [];
+  const simple = { n: 10, t: 9, r: 13, '"': 34, "\\": 92, a: 7, b: 8, f: 12, v: 11 };
+  for (let i = 0; i < q.length; i++) {
+    const c = q[i];
+    if (c === "\\" && i + 1 < q.length) {
+      const o = /^[0-7]{3}/.exec(q.slice(i + 1));
+      if (o) { bytes.push(parseInt(o[0], 8)); i += 3; continue; }
+      const e = simple[q[i + 1]];
+      if (e !== undefined) { bytes.push(e); i += 1; continue; }
+    }
+    for (const byte of Buffer.from(c, "utf8")) bytes.push(byte);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
 /** A "+++" header's path: drop git's trailing TAB (paths with spaces), the C-style quotes git puts
  *  round a path with unusual characters, and the "b/" prefix (#565 review 1). */
 export function headerPath(h) {
   let p = h.replace(/\t.*$/, "");
-  if (p.startsWith('"') && p.endsWith('"')) {
-    try { p = JSON.parse(p); } catch { p = p.slice(1, -1); }
-  }
+  if (p.startsWith('"') && p.endsWith('"')) p = decodeGitQuoted(p.slice(1, -1));
   return p.replace(/^b\//, "");
 }
 
