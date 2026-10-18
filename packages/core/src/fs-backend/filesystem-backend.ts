@@ -1,5 +1,7 @@
 import { createVaultAt } from "./vault.js";
 import { IndexStore } from "./index-store.js";
+import type { FileEdit, FileEditResult } from "../file-formats.js";
+import type { FileBackend } from "../register-file-tools.js";
 import type {
   VaultBackend,
   NoteRef,
@@ -42,7 +44,7 @@ import type {
  * from the SAME implementation, instead of two guard call sites that could
  * drift apart. This class is plain delegation, unchanged from before #104.
  */
-export class FilesystemBackend implements VaultBackend {
+export class FilesystemBackend implements VaultBackend, FileBackend {
   private readonly vault: ReturnType<typeof createVaultAt>;
   private readonly index: IndexStore;
 
@@ -187,5 +189,19 @@ export class FilesystemBackend implements VaultBackend {
 
   async deleteNote(relPath: string, confirm: true): Promise<{ path: string; deleted: true }> {
     return this.vault.deleteNote(relPath, confirm);
+  }
+
+  // ── .base and .canvas files (#575): FileBackend ────────────────────────────
+
+  async writeFile(relPath: string, content: string, overwrite: boolean): Promise<{ path: string; created: boolean }> {
+    return this.vault.writeFile(relPath, content, overwrite);
+  }
+
+  async editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }> {
+    return this.vault.editFile(relPath, edit);
+  }
+
+  async moveFile(fromRel: string, toRel: string, options: { update_backlinks: boolean; overwrite: boolean }) {
+    return this.vault.moveFile(fromRel, toRel, options);
   }
 }
