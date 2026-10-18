@@ -108,8 +108,7 @@ const PROFILES: Record<Exclude<ProfileName, "none">, ConnProfile> = {
   full: { name: "full", tools: null },
   read: { name: "read", tools: new Set(READ_PROFILE_TOOLS) },
   "read+inbox": { name: "read+inbox", tools: new Set([...READ_PROFILE_TOOLS, "obsidian_write_note"]), writeScope: INBOX_WRITE_SCOPE },
-  // A hosted assistant reads through this profile, so its replies are scanned for secrets.
-  "read+message": { name: "read+message", tools: new Set(READ_MESSAGE_PROFILE_TOOLS), redactSecrets: true },
+  "read+message": { name: "read+message", tools: new Set(READ_MESSAGE_PROFILE_TOOLS) },
 };
 
 const NONE: ConnProfile = { name: "none", tools: new Set() };

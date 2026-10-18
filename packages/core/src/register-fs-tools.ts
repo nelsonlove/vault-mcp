@@ -19,6 +19,7 @@ import { z } from "zod";
 import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
 import { redactingHandler, SNIPPET_TOOLS } from "./secret-scan.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
+import { registerSendMessageTool, type MessageConfig } from "./send-message.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,12 @@ export interface RegisterFsToolsOpts {
   profile?: ConnProfile;
   /** Whether a vault-relative path exists, for the profile's create-only check. Absent ⇒ every path reads as existing, so a profile write is refused. */
   exists?: (path: string) => boolean;
+  /**
+   * The operator's message config (send-message.ts). Set ⇒ `vaultmcp_send_message` is registered too
+   * (when the profile offers it); absent ⇒ no such tool. The file-system server passes
+   * `messageConfigFromEnv()`; the plugin passes nothing.
+   */
+  message?: MessageConfig;
 }
 
 /**
@@ -170,6 +177,7 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
       handler,
     );
   }
+  registerSendMessageTool(reg, opts.message, { profile });
 }
 
 // ── Per-tool handler factory ──────────────────────────────────────────────────

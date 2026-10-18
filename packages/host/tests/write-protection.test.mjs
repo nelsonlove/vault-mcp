@@ -53,6 +53,7 @@ const TABLE = [
   { op: "snippet toggle", class: NOT, calls: [["obsidian_snippet_toggle", {}]] },
   { op: "open in editor, jump to, toggle view mode, open workspace, open bookmark", class: NOT, calls: [["obsidian_open_in_editor", {}], ["obsidian_jump_to", {}], ["obsidian_toggle_view_mode", {}], ["obsidian_open_workspace", {}], ["obsidian_open_bookmark", {}]] },
   { op: "save workspace", class: NOT, calls: [["obsidian_save_workspace", {}]] },
+  { op: "send a message", class: NOT, calls: [["vaultmcp_send_message", {}]] },
   { op: "snippet write", class: "exempt (temporary)", calls: [["obsidian_snippet_write", {}]], code: "exempt", why: "it names no path and its file is under .obsidian/snippets, which has no revision the kernel can read; a required if_rev would refuse every overwrite" },
   { op: "periodic note", class: "exempt", calls: [["obsidian_periodic_note", {}]] },
   { op: "create note from template", class: "key", calls: [["obsidian_create_note_from_template", {}], ["obsidian_create_note", {}]] },

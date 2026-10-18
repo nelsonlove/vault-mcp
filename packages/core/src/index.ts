@@ -68,6 +68,20 @@ export { strictInput, isObjectSchema, inputShapeOf, inputObjectOf, extendInput }
 export type { InputShape, InputSchema } from "./strict-input.js";
 export { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 export type { RegisterFsToolsOpts, IndexStatusSnapshot } from "./register-fs-tools.js";
+export {
+  SEND_MESSAGE_TOOL,
+  MESSAGE_ENV,
+  MESSAGE_MAX_CHARS,
+  MESSAGE_MAX_BYTES,
+  MESSAGE_TITLE_MAX_CHARS,
+  MESSAGE_DEFAULT_RATE,
+  MessageSender,
+  SlidingHourLimiter,
+  messageConfigFromEnv,
+  checkMessageConfig,
+  registerSendMessageTool,
+} from "./send-message.js";
+export type { MessageConfig, SendResult } from "./send-message.js";
 export type {
   VaultBackend,
   FrontmatterScalar,
