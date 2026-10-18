@@ -12,7 +12,16 @@ import {
   LEGACY_MCP_SERVER_NAME,
 } from "./claude-cli.js";
 import { DANGEROUS_LIST_DESC } from "./mcp/tools-cli.js";
-import { OPAQUE_ACCEPT_CLI_COMMANDS, OPAQUE_ACCEPT_COMMAND_IDS, quickAddChoicesFrom, reenabledOpaqueCommandIds } from "./mcp/cli-policy.js";
+import {
+  OPAQUE_ACCEPT_CLI_COMMANDS,
+  OPAQUE_ACCEPT_COMMAND_IDS,
+  expandOpaqueWildcards,
+  quickAddChoicesFrom,
+  reenabledOpaqueCommandIds,
+  runCommandSnapshotRefusal,
+  vaultTextReader,
+  type OpaqueSaveInput,
+} from "./mcp/cli-policy.js";
 import { CommandSuggest } from "./command-suggest.js";
 import { builtinModules } from "./mcp/modules-mount.js";
 import {
@@ -504,6 +513,40 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // typed by hand below: those aren't registered Obsidian commands, so
     // there's nothing to pick from.
     let allowOpaqueTextarea: HTMLTextAreaElement | undefined;
+    let wildcardTextarea: HTMLTextAreaElement | undefined;
+    const lines = (value: string) => value.split("\n").map((s) => s.trim()).filter(Boolean);
+    // Ids a wildcard matched at the last save but left closed because a script could not be read.
+    let unreadable: string[] = [];
+    // A human save of any of the four boxes expands the wildcards again (01.41, pick A, 2026-10-17): the
+    // stored re-enable list then holds the exact choices they open, each with a hash of its scripts. Saves
+    // run one at a time, so a slow script read cannot let an older save land after a newer one.
+    let saveChain: Promise<void> = Promise.resolve();
+    const saveOpaque = (patch: Partial<OpaqueSaveInput>): Promise<void> => {
+      saveChain = saveChain.then(async () => {
+        const cur = this.plugin.settings.cliPolicy;
+        const input: OpaqueSaveInput = {
+          allowOpaque: cur.allowOpaque,
+          wildcards: cur.opaqueWildcards,
+          neverOpaque: cur.neverOpaque,
+          deny: cur.deny,
+          ...patch,
+        };
+        // app.commands and app.plugins are not in the public obsidian types (same cast as the picker).
+        const ids = Object.keys(((this.app as any).commands?.commands ?? {}) as Record<string, unknown>);
+        const choices = quickAddChoicesFrom((this.app as any).plugins?.plugins?.quickadd?.settings);
+        const res = await expandOpaqueWildcards(input, cur.opaqueSnapshot, ids, choices, vaultTextReader(this.app));
+        unreadable = res.unreadable;
+        this.plugin.settings.cliPolicy = res.policy;
+        await this.plugin.saveSettings();
+        // Redraw the boxes this save rewrote (not the one the human is typing in: see the callers).
+        if (allowOpaqueTextarea && document.activeElement !== allowOpaqueTextarea) allowOpaqueTextarea.value = res.policy.allowOpaque.join("\n");
+        if (wildcardTextarea && document.activeElement !== wildcardTextarea) wildcardTextarea.value = res.policy.opaqueWildcards.join("\n");
+        await showReach();
+      }).catch((e) => {
+        new Notice(`Vault MCP: could not save the command policy: ${e instanceof Error ? e.message : String(e)}`);
+      });
+      return saveChain;
+    };
     new Setting(containerEl)
       .setName("Add a command")
       .setDesc(
@@ -522,12 +565,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           const current = this.plugin.settings.cliPolicy.allowOpaque;
           const next = addAllowOpaqueEntry(current, value, commands);
           if (next !== current) {
-            this.plugin.settings.cliPolicy = { ...this.plugin.settings.cliPolicy, allowOpaque: next };
-            await this.plugin.saveSettings();
-            if (allowOpaqueTextarea) {
-              allowOpaqueTextarea.value = next.join("\n");
-            }
-            showReach();
+            await saveOpaque({ allowOpaque: next });
           }
           // Clear whenever the box holds a real, currently-registered command
           // id — whether that pick just got added OR was already in the list.
@@ -548,66 +586,98 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .setDesc(
         `Opaque macro/code commands (${[...OPAQUE_ACCEPT_CLI_COMMANDS].join(", ")}; ${[...OPAQUE_ACCEPT_COMMAND_IDS].join(", ")} ` +
           "command ids) are denied by default — the acceptance guard cannot inspect what they execute. List a " +
-          "command or command id here, one per line, to re-enable it, or use the picker above. A trailing * " +
-          "re-enables QuickAdd choices only (for example quickadd:choice:*): it skips any choice that is, or " +
-          "runs, an accept verb (Verify, Reopen, Request revision, Answer, Reject), any choice on the Never " +
-          "re-enable list, CLI commands and JS Engine commands (name those exactly). Take care: a wildcard also " +
-          "opens choices added later, and a choice's script is a vault note an agent may be able to edit. Denied " +
-          "commands below still win. eval/command additionally require the dangerous-CLI toggle above. Takes " +
-          "effect immediately."
+          "command or command id here, one per line, to re-enable it, or use the picker above. A line that ends " +
+          "in * is a wildcard for QuickAdd choices (for example quickadd:choice:*): when you leave this box, it " +
+          "moves to Wildcards below, and this list then shows each choice it opens, by id. A wildcard opens a " +
+          "choice that resolves in QuickAdd and runs no accept verb (Verify, Reopen, Request revision, Answer, " +
+          "Reject), unless the choice is on Never re-enable or denied. CLI commands and JS Engine commands take " +
+          "exact lines. A choice a wildcard opened stays open only while each script it runs is the same as when " +
+          "you saved; a changed script, or a choice added later, stays closed until you save again. Denied " +
+          "commands below still win. eval/command additionally require the dangerous-CLI toggle above. Saved " +
+          "when you leave the box."
       )
       .addTextArea((ta) => {
         allowOpaqueTextarea = ta.inputEl;
         ta.setValue(this.plugin.settings.cliPolicy.allowOpaque.join("\n"));
         ta.inputEl.rows = 3;
         ta.inputEl.style.width = "100%";
-        ta.onChange(async (value) => {
-          this.plugin.settings.cliPolicy = {
-            ...this.plugin.settings.cliPolicy,
-            allowOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
-          };
-          await this.plugin.saveSettings();
-          showReach();
+        // Saved on "change" (when the box loses focus), not on each key: the save rewrites the box with the
+        // expanded list, which must not happen while the human types in it.
+        ta.inputEl.addEventListener("change", () => {
+          void saveOpaque({ allowOpaque: lines(ta.inputEl.value) }).then(() => {
+            ta.inputEl.value = this.plugin.settings.cliPolicy.allowOpaque.join("\n");
+          });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Wildcards")
+      .setDesc(
+        "The wildcards you saved (one per line, each ending in *). Each save of these four boxes lists again, " +
+          "in Re-enabled opaque commands, the choices each wildcard opens at that moment. Remove a line here to " +
+          "close what it opened. Nothing expands a wildcard but your save. Saved when you leave the box."
+      )
+      .addTextArea((ta) => {
+        wildcardTextarea = ta.inputEl;
+        ta.setValue(this.plugin.settings.cliPolicy.opaqueWildcards.join("\n"));
+        ta.inputEl.rows = 2;
+        ta.inputEl.style.width = "100%";
+        ta.inputEl.addEventListener("change", () => {
+          void saveOpaque({ wildcards: lines(ta.inputEl.value) }).then(() => {
+            ta.inputEl.value = this.plugin.settings.cliPolicy.opaqueWildcards.join("\n");
+          });
         });
       });
 
     new Setting(containerEl)
       .setName("Never re-enable")
       .setDesc(
-        "QuickAdd choice command ids that a wildcard above never re-enables, one per line (a trailing * makes a " +
-          "prefix). List here any choice that only you should run; quickadd:choice:* then opens the others, " +
-          "accept verbs excepted. An exact entry above still re-enables the same id, and Denied commands still win."
+        "QuickAdd choice command ids that a wildcard never opens, one per line (a trailing * makes a prefix). " +
+          "List here any choice that only you should run; quickadd:choice:* then opens the others, accept verbs " +
+          "excepted. It also closes a choice a wildcard opened earlier. An exact line you typed in Re-enabled " +
+          "opaque commands still opens the same id, and Denied commands still win. Takes effect immediately."
       )
       .addTextArea((ta) => {
         ta.setValue(this.plugin.settings.cliPolicy.neverOpaque.join("\n"));
         ta.inputEl.rows = 3;
         ta.inputEl.style.width = "100%";
         ta.onChange(async (value) => {
-          this.plugin.settings.cliPolicy = {
-            ...this.plugin.settings.cliPolicy,
-            neverOpaque: value.split("\n").map((s) => s.trim()).filter(Boolean),
-          };
-          await this.plugin.saveSettings();
-          showReach();
+          await saveOpaque({ neverOpaque: lines(value) });
         });
       });
 
     // What the re-enable list opens today (01.41, pick A): the count and the ids, redrawn on every save,
-    // so a wildcard's reach is seen when it is saved.
+    // with the wildcards that produced the list and any choice a wildcard opened whose script changed.
     const reachEl = containerEl.createEl("details", { cls: "setting-item-description" });
-    const showReach = () => {
+    const showReach = async () => {
+      const policy = this.plugin.settings.cliPolicy;
       // app.commands.commands is not in the public obsidian types (same cast as the picker above).
       const ids = Object.keys(((this.app as any).commands?.commands ?? {}) as Record<string, unknown>);
       const choices = quickAddChoicesFrom((this.app as any).plugins?.plugins?.quickadd?.settings);
-      const open = reenabledOpaqueCommandIds(ids, this.plugin.settings.cliPolicy, choices);
+      const read = vaultTextReader(this.app);
+      const open: string[] = [];
+      const changed: string[] = [];
+      for (const id of reenabledOpaqueCommandIds(ids, policy, choices)) {
+        if ((await runCommandSnapshotRefusal(id, policy, choices, read)) === null) open.push(id);
+        else changed.push(id);
+      }
       reachEl.empty();
       reachEl.createEl("summary", { text: `Agents can run ${open.length} QuickAdd or JS Engine command${open.length === 1 ? "" : "s"} today.` });
       if (open.length > 0) {
         const ul = reachEl.createEl("ul");
-        for (const id of open) ul.createEl("li", { text: id });
+        for (const id of open) ul.createEl("li", { text: id + (policy.opaqueSnapshot[id] ? "  (from a wildcard)" : "") });
+      }
+      if (policy.opaqueWildcards.length > 0) {
+        reachEl.createEl("p", { text: `Wildcards, listed as their choices at your last save: ${policy.opaqueWildcards.join(", ")}.` });
+      }
+      if (changed.length > 0) {
+        reachEl.createEl("p", { text: `Closed until you save again, because a script changed since the save: ${changed.join(", ")}.` });
+      }
+      if (unreadable.length > 0) {
+        reachEl.createEl("p", { text: `Left closed at the last save, because a script could not be read: ${unreadable.join(", ")}.` });
       }
     };
-    showReach();
+    void showReach();
 
     new Setting(containerEl)
       .setName("Denied commands")
@@ -620,12 +690,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         ta.inputEl.rows = 3;
         ta.inputEl.style.width = "100%";
         ta.onChange(async (value) => {
-          this.plugin.settings.cliPolicy = {
-            ...this.plugin.settings.cliPolicy,
-            deny: value.split("\n").map((s) => s.trim()).filter(Boolean),
-          };
-          await this.plugin.saveSettings();
-          showReach();
+          await saveOpaque({ deny: lines(value) });
         });
       });
 
