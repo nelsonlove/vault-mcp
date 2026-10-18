@@ -24,8 +24,16 @@ describe("token shapes are blanked, with no part of the secret kept", () => {
     ["slack-token", `xoxp-1111-2222-FAKEFAKE`],
     ["aws-key-id", `AKIA${"FAKE".repeat(4)}`],
     ["google-api-key", `AIza${"F".repeat(35)}`],
-    ["stripe-key", `sk_live_${"FAKE".repeat(6)}`],
-    ["stripe-key", `rk_live_${"FAKE".repeat(6)}`],
+    // Built at run time, so no literal key-shaped string is committed.
+    ["stripe-key", ["sk", "live", "FAKE".repeat(6)].join("_")],
+    ["stripe-key", ["rk", "live", "FAKE".repeat(6)].join("_")],
+    ["slack-token", ["xoxe", "1", "FAKEFAKEFAKE"].join("-")],
+    ["slack-token", ["xapp", "1", "AFAKE", "FAKEFAKEFAKE"].join("-")],
+    ["gitlab-token", "glpat" + "-" + "FAKE".repeat(5)],
+    ["huggingface-token", "hf" + "_" + "FAKE".repeat(9)],
+    ["npm-token", "npm" + "_" + "FAKE".repeat(10)],
+    ["tailscale-key", ["tskey", "auth", "FAKE", "FAKEFAKE"].join("-")],
+    ["sendgrid-key", ["SG", "FAKE".repeat(5), "FAKE".repeat(10)].join(".")],
     ["jwt", `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.ZmFrZXNpZ25hdHVyZQ`],
   ];
   for (const [kind, secret] of cases) {
@@ -124,13 +132,101 @@ describe("key=value and key: value pairs whose key names a secret", () => {
       "secret: false",
       "token: null",
       "password:",
-      "password:\n  - nested",
+      "pass: true",
+      "passed: 3",
+      "passing: yes",
+      "password_hint_count: 2",
+      "bypass: on",
+      "compass = north",
       "This note is about passwords and tokens.",
     ]) assert.equal(redactSecrets(s), s, s);
   });
 
+  test("markdown tables, bold keys, arrows and XML", () => {
+    assert.equal(redactSecrets("| password | fake-pass |"), "| password | [redacted:secret] |");
+    assert.equal(redactSecrets("| **DB password** | fake |\n| user | u |"), "| **DB password** | [redacted:secret] |\n| user | u |");
+    assert.equal(redactSecrets("**password**: fake words"), "**password**: [redacted:secret]");
+    assert.equal(redactSecrets("`api_key`: fake"), "`api_key`: [redacted:secret]");
+    assert.equal(redactSecrets("'token' => 'fake'"), "'token' => '[redacted:secret]'");
+    assert.equal(redactSecrets("pass => fake"), "pass => [redacted:secret]");
+    assert.equal(redactSecrets("db_pass: fake"), "db_pass: [redacted:secret]");
+    assert.equal(redactSecrets("<password>fake</password>"), "<password>[redacted:secret]</password>");
+    assert.equal(redactSecrets('<db_secret type="x">fake</db_secret>'), '<db_secret type="x">[redacted:secret]</db_secret>');
+  });
+
+  test("a YAML block scalar or list under a secret key becomes one marker", () => {
+    assert.equal(redactSecrets("a: 1\npassword: |\n  line one fake\n  line two fake\nb: 2\n"), "a: 1\npassword: [redacted:secret]\nb: 2\n");
+    assert.equal(redactSecrets("password: >-\n    folded fake\n"), "password: [redacted:secret]\n");
+    assert.equal(redactSecrets("password:\n  - fake1\n  - fake2\nother: x"), "password: [redacted:secret]\nother: x");
+    assert.equal(redactSecrets("secret:\n- fake\nnext: y"), "secret: [redacted:secret]\nnext: y");
+    assert.equal(redactSecrets("  token:\n    nested: fake\n  sibling: z"), "  token: [redacted:secret]\n  sibling: z");
+  });
+
+  test("a PGP private key block", () => {
+    const pgp = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBFAKEFAKE\n=FAKE\n-----END PGP PRIVATE KEY BLOCK-----";
+    assert.equal(redactSecrets(`a\n${pgp}\nb`), "a\n[redacted:private-key]\nb");
+  });
+
+  test("an escaped quote inside a quoted value does not leak its tail", () => {
+    assert.equal(redactSecrets('password: "fa\\"ke"'), 'password: "[redacted:secret]"');
+    const json = JSON.stringify({ note: 'password: "fa\\"ke" end' }).slice(0, -1); // cut, so it is not JSON
+    assert.ok(!redactSecrets(json).includes("ke"), redactSecrets(json));
+  });
+
+  test("an unclosed single quote does not eat the end of a JSON string", () => {
+    const cut = `{"a": "password: 'fake", "b": "keep"`; // not valid JSON: the regex rules run
+    const out = redactSecrets(cut);
+    assert.ok(!out.includes("fake"), out);
+    assert.ok(out.includes('"b": "keep"'), out);
+  });
+
   test("a value already blanked is not blanked twice", () => {
     assert.equal(redactSecrets(`token: ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`), "token: [redacted:github-token]");
+  });
+});
+
+describe("JSON text and structured content are scanned key-aware and stay valid", () => {
+  const samples = [
+    { token: 123456, secret: true, has_secret: false, name: "n" },
+    { password: ["fake1", "fake2"], api_key: { id: "fake" }, list: [1, 2] },
+    { frontmatter: { password: "fake", api_key: "fake-key", tags: ["x"], passed: 3 }, content: "---\npassword: fake\n---\nbody" },
+    [{ secret: "fake", count: 2 }, { token: null }],
+    { nested: { deeper: { client_secret: "fake", "x,y": "a, b" } }, text: "sk-test-AAAAAAAAAAAAAAAAAAAAAAAA" },
+  ];
+  for (const [i, sample] of samples.entries()) {
+    for (const indent of [undefined, 2]) {
+      test(`sample ${i}, indent ${indent ?? 0}: it parses and holds no fake value`, () => {
+        const out = redactSecrets(JSON.stringify(sample, null, indent));
+        const parsed = JSON.parse(out);
+        assert.ok(!/fake|AAAAAAAA/.test(out), out);
+        assert.equal(out, JSON.stringify(parsed, null, indent));
+      });
+    }
+  }
+
+  test("the value under a secret key is blanked whatever its type; booleans and null survive", () => {
+    const out = JSON.parse(redactSecrets(JSON.stringify(samples[0], null, 2)));
+    assert.deepEqual(out, { token: "[redacted:secret]", secret: true, has_secret: false, name: "n" });
+    const two = JSON.parse(redactSecrets(JSON.stringify(samples[1])));
+    assert.deepEqual(two, { password: "[redacted:secret]", api_key: "[redacted:secret]", list: [1, 2] });
+  });
+
+  test("JSON with nothing to blank comes back byte for byte", () => {
+    const t = '{ "a" :1,\n"b":[ 2 ] }';
+    assert.equal(redactSecrets(t), t);
+  });
+
+  test("structured content: secret keys blanked; Date, Map and class values kept as they are", () => {
+    class Thing { constructor() { this.secret = "kept-as-is"; } }
+    const when = new Date(0);
+    const map = new Map([["a", 1]]);
+    const thing = new Thing();
+    const r = redactToolResult({ content: [], structuredContent: { frontmatter: { password: "fake", apiKey: 42, dbPass: "fake", uid: "0192f0a1-7b3c-7d4e-8f5a-6b7c8d9e0f1a" }, when, map, thing } });
+    const sc = r.structuredContent;
+    assert.deepEqual(sc.frontmatter, { password: "[redacted:secret]", apiKey: "[redacted:secret]", dbPass: "[redacted:secret]", uid: "0192f0a1-7b3c-7d4e-8f5a-6b7c8d9e0f1a" });
+    assert.equal(sc.when, when);
+    assert.equal(sc.map, map);
+    assert.equal(sc.thing, thing);
   });
 });
 
@@ -172,6 +268,15 @@ describe("speed and failure", () => {
       "sk-".repeat(330_000),
       '\\"'.repeat(500_000),
       "token=\\\"" + "x".repeat(1_000_000),
+      "| password ".repeat(90_000),
+      "|".repeat(1_000_000),
+      "password:\n".repeat(100_000),
+      "password: |\n" + "  x\n".repeat(250_000),
+      "<password>".repeat(90_000),
+      "<" + "a".repeat(1_000_000),
+      "  ".repeat(500_000) + "x",
+      "pass".repeat(250_000),
+      JSON.stringify({ notes: Array.from({ length: 20_000 }, (_, i) => ({ path: `n${i}.md`, password: "fake", body: "token: fake" })) }, null, 2),
     ];
     for (const s of inputs) {
       const t0 = performance.now();
