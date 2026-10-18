@@ -159,6 +159,7 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_trash` | `if_rev` and `idempotency_key` |  |
 | `obsidian_write_note` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_notes` | per item: `if_rev` to overwrite an existing note; nothing to create one |  |
+| `vaultmcp_send_message` | nothing (not a vault write) |  |
 | satellite tools (`vaultmcp_*`) | what the tool declares (`protection`, satellite apiVersion 3); a tool that declares nothing (apiVersion 2): not enforced | Enforced like a host tool's row once declared (#550); the gap that remains is a satellite still on apiVersion 2. |
 <!-- protection-table:end -->
 

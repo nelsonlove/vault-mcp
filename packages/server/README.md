@@ -37,6 +37,7 @@ Xvfb.
 | `obsidian_write_note` | Create / overwrite a note | yes (destructive) |
 | `obsidian_append_note` | Append to (or create) a note | yes |
 | `obsidian_force_reindex` | Rebuild the in-memory index synchronously. The watcher auto-refreshes within ~1.5s; call this only for tight read-after-write loops or suspected missed events | no (cache only) |
+| `vaultmcp_send_message` | Send a short text (1 to 2,000 characters, at most 4,096 UTF-8 bytes) to the operator's ntfy topic. **Registered only when `VAULT_MCP_MESSAGE_URL` and `VAULT_MCP_MESSAGE_TOPIC` are set**; see "Message tool" below | no note changes; posts outside the vault |
 
 All path-taking inputs (`path`, `paths`, `subdir`) are defensively
 HTML-entity-decoded before resolution, so an agent passing `03 LLMs &amp; agents`
@@ -123,6 +124,33 @@ One JSON line per `/mcp` request, refusals included: `time`, `ip`, `credential` 
 
 - `VAULT_MCP_REQUEST_LOG`: the file, or `off`. Default: `$XDG_STATE_HOME/vault-mcp-remote/requests.jsonl` (`~/.local/state/vault-mcp-remote/requests.jsonl`).
 - `VAULT_MCP_REQUEST_LOG_MAX_BYTES` (default 10 MB): at the cap the file rotates to `.1`, `.2`, `.3`; three are kept.
+
+### Message tool
+
+`vaultmcp_send_message` lets a connected client send a short text to whoever reads an [ntfy](https://docs.ntfy.sh/publish/) topic. It is off by default: with no URL or no topic set, the tool is not registered and `tools/list` does not show it. It is not a vault write (no note changes, no `if_rev`). Its code is `packages/core/src/send-message.ts`. FS mode only: the Obsidian plugin does not offer it.
+
+Arguments: `text` (1 to 2,000 characters and at most 4,096 bytes in UTF-8, which is ntfy's message limit; a longer text is refused with `text_too_long`, never cut), `title` (optional, at most 200 characters, one line), `idempotency_key` (optional; a retry with the same key and text within an hour returns the first result and posts nothing; the same key with other text is refused with `idempotency_conflict`). If the first send with a key ends in `message_network`, ntfy may or may not have the message: for the rest of that hour a retry with the same key is refused with `idempotency_unknown` and posts nothing. To send again, use a new key. It returns `{ "sent": true, "id": "<ntfy message id>" }`.
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `VAULT_MCP_MESSAGE_URL` | — | the ntfy server, such as `https://ntfy.example.test`. Must be https; http is allowed only for `localhost`, `127.0.0.1` and `[::1]` |
+| `VAULT_MCP_MESSAGE_TOPIC` | — | the topic, such as `inbox` (1 to 64 letters, digits, `-`, `_`) |
+| `VAULT_MCP_MESSAGE_USER` + `VAULT_MCP_MESSAGE_PASSWORD_FILE` | — | HTTP Basic auth. The password is read from the file at each call, never logged and never returned |
+| `VAULT_MCP_MESSAGE_TOKEN_FILE` | — | a bearer token in a file, printable ASCII; the alternative to user and password (set one or the other) |
+| `VAULT_MCP_MESSAGE_TAGS` | — | ntfy tags for every message, as a comma list; each tag is printable ASCII |
+| `VAULT_MCP_MESSAGE_RATE` | `10` | the most sends in any one hour, per process (a sliding window) |
+
+A password or token file that its group or other users can access (any mode bit in `077`) is refused; use mode `600`. A symlink is refused too: point the variable at the file itself. The file is opened once, and the mode check and the read use that one handle. The front's profiles decide who sees the tool: it is outside `read` and `read+inbox`, so today only `full` connections get it.
+
+Errors, each `Error [code]: …` and none of them naming a credential: `text_too_long`, `title_too_long`, `invalid_argument`, `message_config` (a bad value, a non-ASCII tag or token, or an unreadable, open or symlinked secret file; checked before a rate slot is used), `rate_limited` (names the time the next send is allowed), `message_http` (the server answered non-2xx; names the status), `message_network` (the server was not reached or timed out after 10 s), `idempotency_conflict`, `idempotency_unknown`. In every case but `message_network` nothing was sent; after `message_network` it is unknown whether ntfy received the message.
+
+```bash
+VAULT_MCP_MESSAGE_URL=https://ntfy.example.test
+VAULT_MCP_MESSAGE_TOPIC=inbox
+VAULT_MCP_MESSAGE_USER=assistant
+VAULT_MCP_MESSAGE_PASSWORD_FILE=/etc/example/ntfy-password
+VAULT_MCP_MESSAGE_TAGS=robot
+```
 
 ## Notes / limitations
 

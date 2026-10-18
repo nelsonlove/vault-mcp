@@ -51,6 +51,7 @@ import {
   normalizeWriteScope,
   writeScopeRefusal,
   resolveProfile,
+  messageConfigFromEnv,
 } from "@vault-mcp/core";
 import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
@@ -457,6 +458,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
     includeIndexStatus: (opts?.indexStatus ?? true) ? indexStatus : undefined,
+    // vaultmcp_send_message: registered only when the operator set a message URL and topic.
+    message: messageConfigFromEnv(),
     // No `rev` hook and no whole-read memory: FS writes carry no if_rev, so
     // no read shows a rev and no proof of a whole read can be tied to a
     // caller (#443, #446). `full: true` still serves the whole note.
