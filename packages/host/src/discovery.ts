@@ -33,6 +33,35 @@ export interface Discovery {
   legacy?: boolean;
 }
 
+/**
+ * Whether a parsed JSON file is a vault discovery entry: an object with a
+ * string `socket_path`. Every reader of the state dir asks this, so a stray
+ * JSON file there (an operator's notes, another tool's file) is never read as
+ * a vault (#582 review 1).
+ */
+export function isDiscoveryEntry(d: unknown): d is Discovery {
+  return !!d && typeof d === "object" && !Array.isArray(d) && typeof (d as { socket_path?: unknown }).socket_path === "string";
+}
+
+/** How many discovery entries the folder holds: `*.json` files that parse to an entry. Unreadable ⇒ 0. */
+export function countDiscoveries(dir: string): number {
+  let files: string[];
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const f of files) {
+    try {
+      if (isDiscoveryEntry(JSON.parse(fs.readFileSync(`${dir}/${f}`, "utf8")))) n++;
+    } catch {
+      /* not an entry */
+    }
+  }
+  return n;
+}
+
 export function writeDiscovery(slug: string, d: Discovery): void {
   fs.mkdirSync(stateDir(), { recursive: true });
   fs.writeFileSync(discoveryPath(slug), JSON.stringify(d, null, 2), { mode: 0o600 });
