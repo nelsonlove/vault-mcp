@@ -183,6 +183,16 @@ const CORE_FS: McpSurfaceRow[] = [
   { tool: "obsidian_delete_note", readOnly: false, module: "core", distribution: "excluded", paths: ["path"], discovered: "none", postcondition: "Permanently delete a note; backlinks are NOT updated.", protection: "both", syncKind: "structure" },
 ];
 
+// ── packages/core — the configured message tool (send-message.ts) ───────────
+// Registered by `registerFsTools` only when the caller passes a message config: the file-system
+// server does when the operator sets VAULT_MCP_MESSAGE_URL and VAULT_MCP_MESSAGE_TOPIC; the plugin
+// never does, so the plugin's live surface does not carry it. It posts outside the vault and changes
+// no note, so it is not a vault write.
+
+const CORE_MESSAGE: McpSurfaceRow[] = [
+  { tool: "vaultmcp_send_message", readOnly: false, module: "core", distribution: "private", discovered: "none", postcondition: "Post a short text to the operator's configured ntfy topic; no note changes.", gate: "registerFsTools opts.message set (FS mode: VAULT_MCP_MESSAGE_URL + VAULT_MCP_MESSAGE_TOPIC); the plugin never sets it", protection: "not-a-write" },
+];
+
 // ── core, hand-registered in server.ts ───────────────────────────────────────
 
 const CORE_DIRECT: McpSurfaceRow[] = [
@@ -414,6 +424,7 @@ const SURVEY: McpSurfaceRow[] = [
 export const MCP_SURFACE_INVENTORY: McpSurfaceRow[] = [
   ...CORE_FS,
   ...CORE_DIRECT,
+  ...CORE_MESSAGE,
   ...NAV,
   ...INTEGRATIONS,
   ...CLI,
