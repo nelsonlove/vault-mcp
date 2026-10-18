@@ -921,7 +921,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Check Obsidian Sync before a write")
       .setDesc(
-        "On: before an agent's write, vault-mcp waits while this Mac's Obsidian Sync is disconnected or has a server change waiting at the note being written; a rename, move or delete also waits until it says Fully synced. A rename, move, delete " +
+        "On: before an agent's write, vault-mcp waits while this Mac's Obsidian Sync is disconnected or has a server change waiting at the note being written; a rename, move or delete also waits, for up to its own wait below, until Sync says Fully synced or its own flags say it is idle. A rename, move, delete " +
           "or create that is still behind after the wait is handled as the mode below says; an edit or append goes on with a " +
           "warning. It checks only this Mac: it cannot know what another device has pulled. Off: no check. Applies immediately."
       )
@@ -963,7 +963,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Wait for a rename, move or delete (seconds)")
       .setDesc(
-        `How long a rename, move or delete waits, in place of the wait above, for a moment Sync is idle (it says Fully synced). On a busy day those moments are short and far apart, so it looks again every half second and goes on at the first one. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`
+        `How long a rename, move or delete waits, in place of the wait above, for a moment Sync is idle (it says Fully synced, or its own flags say it is not syncing and has no local change waiting). On a busy day those moments are short and far apart, so it looks again every half second and goes on at the first one. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`
       )
       .addText((t) => {
         t.setValue(String(sg.strictWaitSeconds));

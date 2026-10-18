@@ -35,7 +35,7 @@ export type DeclaredProtection =
 /** How the Sync guard treats a v3 tool: its kind, and its membership in the guard's two lists. */
 export interface DeclaredSync {
   kind: SyncKindSpec;
-  /** On the strict list (`STATUS_STRICT`): a rename, move or delete that waits for "Fully synced". */
+  /** On the strict list (`STATUS_STRICT`): a rename, move or delete that waits (up to `strictWaitSeconds`) for "Fully synced" or Sync's idle flags. */
   strictStatus: boolean;
   /** On the destination-unnamed list: a server change waiting anywhere in the vault counts. */
   destinationUnnamed: boolean;
