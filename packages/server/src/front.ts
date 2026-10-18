@@ -35,8 +35,9 @@ import { createPresenceMonitor } from "./presence.js";
 import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
-import { loadProfileMap, createProfileGate, credentialOf, type ProfileMap } from "./profiles.js";
+import { loadProfileMap, createProfileGate, credentialOf, profileOf, type ProfileMap } from "./profiles.js";
 import { DEFAULT_RATE_LIMITS, loadRateLimitConfig, createIpRateLimit, createCredentialRateLimit, type RateLimitConfig } from "./rate-limit.js";
+import { createRequestLog, createLogWriter, loadRequestLogConfig } from "./request-log.js";
 
 // ── Injectable factory ────────────────────────────────────────────────────────
 
@@ -56,6 +57,8 @@ export interface FrontDeps {
   profiles?: ProfileMap;
   /** Per-IP and per-credential limits on /mcp (rate-limit.ts). Absent ⇒ the defaults. */
   rateLimits?: RateLimitConfig;
+  /** Where the request log's lines go (request-log.ts). Absent ⇒ nowhere. */
+  logWrite?: (line: string) => void;
   /** Express "trust proxy": who may name the client IP in X-Forwarded-For. Absent ⇒ "loopback" (tailscale serve, cloudflared). */
   trustProxy?: boolean | number | string;
 }
@@ -93,12 +96,13 @@ export function buildFront(deps: FrontDeps): express.Express {
   const { cfg, token, presence, fs: fsHandler, live, seamless } = deps;
 
   const authGate = createAuthGate(cfg, { token });
-  // The order on /mcp (#521): the per-IP limit before auth (a guesser is slowed), auth, the
-  // profile, the per-credential limit, then the body.
+  // The order on /mcp (#521): the request log first (so a refusal is logged too), the per-IP limit
+  // before auth (a guesser is slowed), auth, the profile, the per-credential limit, then the body.
   const profileGate = createProfileGate(deps.profiles ?? { configured: false, entries: new Map() });
   const limits = deps.rateLimits ?? DEFAULT_RATE_LIMITS;
   const ipLimit = createIpRateLimit(limits.ipPerMin);
   const credLimit = createCredentialRateLimit(limits.credPerMin, credentialOf);
+  const requestLog = createRequestLog(deps.logWrite ?? (() => undefined), { credential: credentialOf, profile: profileOf });
   const paths = endpointPaths(cfg.resourceUrl);
   // Body parsing is scoped to /mcp and applied AFTER authGate so unauthenticated
   // callers cannot force a 10 MB JSON parse before the 401.
@@ -148,7 +152,7 @@ export function buildFront(deps: FrontDeps): express.Express {
   };
 
   for (const method of ["post", "get", "delete"] as const) {
-    for (const p of paths.mcp) app[method](p, ipLimit, authGate, profileGate, credLimit, parseBody, handler);
+    for (const p of paths.mcp) app[method](p, requestLog, ipLimit, authGate, profileGate, credLimit, parseBody, handler);
   }
 
   // Turn body-parser failures (oversized payloads etc.) into JSON-RPC errors
@@ -343,6 +347,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
     seamless: semantic,
     profiles,
     rateLimits: loadRateLimitConfig(),
+    logWrite: createLogWriter(loadRequestLogConfig()),
     ...(process.env.VAULT_MCP_TRUST_PROXY !== undefined ? { trustProxy: parseTrustProxy(process.env.VAULT_MCP_TRUST_PROXY) } : {}),
   });
 
