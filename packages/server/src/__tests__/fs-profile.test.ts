@@ -30,7 +30,7 @@ before(async () => {
   await mkdir(path.join(vault, "Notes"), { recursive: true });
   await writeFile(path.join(vault, "Notes", "a.md"), "# A\n");
   // A made-up key, for the secret scanner (read+message only).
-  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\n---\nThe key is ${FAKE_KEY} here.\n`);
+  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\npassword: fake-pass\n---\nThe key is ${FAKE_KEY} here.\n`);
   buildFsServer = (await import("../fs-mode.js")).buildFsServer;
   const core = await import("@vault-mcp/core");
   READ = new Set(core.READ_PROFILE_TOOLS);
@@ -112,6 +112,13 @@ describe("FS mode under a profile", () => {
     assert.ok(!r.includes("fake-key-value"), r);
     assert.match(r, /\[redacted:api-key\]/);
     assert.match(r, /api_key: \[redacted:secret\]/);
+    // The structured copy is blanked too, and the text copy still parses as JSON.
+    const res = (await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } })) as { content: Array<{ text: string }>; structuredContent?: { content?: string } };
+    const sc = JSON.stringify(res.structuredContent);
+    assert.ok(!/fake-key-value|fake-pass/.test(sc) && !sc.includes(FAKE_KEY), sc);
+    const parsed = JSON.parse(res.content[0].text);
+    assert.equal(parsed.content, res.structuredContent?.content);
+    assert.match(parsed.content, /password: \[redacted:secret\]/);
     const s = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "key is" } }));
     assert.ok(!s.includes(FAKE_KEY), s);
     await m.close();

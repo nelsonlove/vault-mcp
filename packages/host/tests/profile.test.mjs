@@ -157,7 +157,7 @@ describe("profile read+inbox", () => {
 describe("profile read+message: the secret scanner", () => {
   // A made-up key; never a real one.
   const FAKE = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
-  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`] };
+  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`], frontmatter: { password: "fake-fm-pass", api_key: 1234567, title: "T", secret: true } };
   const call = async (profile) => {
     const client = await connect(build(profile ? { profile } : {}, result));
     const r = JSON.stringify(await client.callTool({ name: "vaultmcp_bases_list", arguments: {} }));
@@ -172,6 +172,16 @@ describe("profile read+message: the secret scanner", () => {
     assert.ok(!r.includes("fake-pass"), r);
     assert.match(r, /redacted:github-token/);
     assert.match(r, /Notes\/b\.base/);
+    assert.ok(!r.includes("fake-fm-pass") && !r.includes("1234567"), r);
+  });
+
+  test("over MCP: structured content is blanked key-aware, and the text copy still parses", async () => {
+    const client = await connect(build({ profile: "read+message" }, result));
+    const res = await client.callTool({ name: "vaultmcp_bases_list", arguments: {} });
+    await client.close();
+    const fm = res.structuredContent?.frontmatter;
+    assert.deepEqual(fm, { password: "[redacted:secret]", api_key: "[redacted:secret]", title: "T", secret: true }, JSON.stringify(res));
+    for (const c of res.content) if (c.type === "text" && /^\s*[{[]/.test(c.text)) assert.doesNotThrow(() => JSON.parse(c.text), c.text);
   });
 
   test("over MCP: under full and read the same reply is sent as it is", async () => {
