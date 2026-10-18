@@ -208,7 +208,7 @@ interface VaultMcpSettings {
    * The Sync guard (kernel/sync-guard.ts; 01.43, Nelson's pick A of
    * 2026-10-12): before a write, wait while this Mac's Obsidian Sync is
    * disconnected or has a server change waiting at the write's paths (#528),
-   * and a rename, move or delete also (up to `strictWaitSeconds`, 120 s) until it says "Fully synced" or its flags `syncing` and `dirty` are both false (#533),
+   * and a rename, move or delete also (up to `strictWaitSeconds`, 120 s) until it says "Fully synced" (#533),
    * then refuse a rename, move, delete or create that is still behind (`mode`), and let an edit or append go on with a warning. Off when
    * the plugin ships; coerced through `normalizeSyncGuard` on load.
    */
