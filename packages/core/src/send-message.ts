@@ -9,15 +9,19 @@
 // names a real server, topic or user: the operator supplies them.
 //
 // Safety:
-//   - The text is 1 to 2,000 characters. A longer text is refused, never cut.
+//   - The text is 1 to 2,000 characters and at most 4,096 bytes in UTF-8 (ntfy's message limit).
+//     A longer text is refused, never cut.
 //   - A per-process sliding one-hour window caps sends (default 10 an hour). Over the cap the call
 //     is refused with `rate_limited` and the reset time; nothing is sent.
 //   - A password or token is read from a file at call time, never logged and never returned. A
-//     file that its group or other users can read (or write) is refused.
+//     file that its group or other users can access, a symlink, and a non-ASCII token are refused.
 //   - `idempotency_key`: a retry with the same key and the same text returns the first send's
-//     result and posts nothing. The memory is per process and lasts one hour.
+//     result and posts nothing. After a network failure the outcome is unknown, so a retry with the
+//     key is refused (`idempotency_unknown`) and posts nothing. The memory is per process and lasts
+//     one hour.
 
-import { readFile, stat } from "node:fs/promises";
+import { open, type FileHandle } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { ok, fail } from "./responses.js";
 import { strictInput } from "./strict-input.js";
@@ -27,6 +31,8 @@ export const SEND_MESSAGE_TOOL = "vaultmcp_send_message";
 
 /** The longest text the tool sends, in characters (Unicode code points). */
 export const MESSAGE_MAX_CHARS = 2000;
+/** The longest text in UTF-8 bytes: ntfy's default message limit (a longer body becomes an attachment or is refused). */
+export const MESSAGE_MAX_BYTES = 4096;
 /** The longest title, in characters. */
 export const MESSAGE_TITLE_MAX_CHARS = 200;
 /** Sends per hour when `VAULT_MCP_MESSAGE_RATE` is not set. */
@@ -96,7 +102,9 @@ function codedError(code: string, message: string): Error {
 }
 
 const TOPIC_RE = /^[-_A-Za-z0-9]{1,64}$/;
-const TAG_RE = /^[^\s,\x00-\x1f\x7f]{1,64}$/;
+// Header values: printable ASCII only. A non-Latin-1 value would make fetch throw before anything is sent.
+const TAG_RE = /^[\x21-\x2b\x2d-\x7e]{1,64}$/;
+const TOKEN_RE = /^[\x21-\x7e]+$/;
 
 /** The reason the config cannot be used, or null. Names no secret. */
 export function checkMessageConfig(cfg: MessageConfig): string | null {
@@ -116,27 +124,36 @@ export function checkMessageConfig(cfg: MessageConfig): string | null {
   if (cfg.tokenFile && (cfg.user || cfg.passwordFile)) return `Set either ${MESSAGE_ENV.tokenFile} or ${MESSAGE_ENV.user} with ${MESSAGE_ENV.passwordFile}, not both.`;
   if (!!cfg.user !== !!cfg.passwordFile) return `${MESSAGE_ENV.user} and ${MESSAGE_ENV.passwordFile} go together.`;
   if (cfg.user && cfg.user.includes(":")) return `${MESSAGE_ENV.user} must not contain ':'.`;
-  for (const t of cfg.tags ?? []) if (!TAG_RE.test(t)) return `${MESSAGE_ENV.tags} holds a tag that is not 1 to 64 plain characters.`;
+  for (const t of cfg.tags ?? []) if (!TAG_RE.test(t)) return `${MESSAGE_ENV.tags} holds a tag that is not 1 to 64 printable ASCII characters (no space or comma).`;
   if (cfg.rate !== undefined && !(Number.isInteger(cfg.rate) && cfg.rate >= 1)) return `${MESSAGE_ENV.rate} must be a whole number of 1 or more.`;
   return null;
 }
 
-/** Read a secret file: refused when its group or other users have any access. The value is never logged. */
+/**
+ * Read a secret file: one open with O_NOFOLLOW (a symlink is refused), then stat and read on that
+ * one handle, so the file checked is the file read. Refused when its group or other users have any
+ * access, or when it is not a regular file. The value is never logged.
+ */
 async function readSecretFile(path: string, envName: string): Promise<string> {
-  let mode: number;
+  const unreadable = () => codedError("message_config", `The file named by ${envName} cannot be read (a symlink is refused). Nothing was sent.`);
+  let fh: FileHandle;
   try {
-    mode = (await stat(path)).mode;
+    fh = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   } catch {
-    throw codedError("message_config", `The file named by ${envName} cannot be read. Nothing was sent.`);
-  }
-  if (mode & 0o077) {
-    throw codedError("message_config", `The file named by ${envName} is open to its group or to other users; set its mode to 600. Nothing was sent.`);
+    throw unreadable();
   }
   let value: string;
   try {
-    value = (await readFile(path, "utf8")).replace(/\r?\n$/, "");
-  } catch {
-    throw codedError("message_config", `The file named by ${envName} cannot be read. Nothing was sent.`);
+    const st = await fh.stat();
+    if (!st.isFile()) throw unreadable();
+    if (st.mode & 0o077) {
+      throw codedError("message_config", `The file named by ${envName} is open to its group or to other users; set its mode to 600. Nothing was sent.`);
+    }
+    value = (await fh.readFile("utf8")).replace(/\r?\n$/, "");
+  } catch (e) {
+    throw (e as { code?: unknown })?.code === "message_config" ? e : unreadable();
+  } finally {
+    await fh.close().catch(() => {});
   }
   if (!value || /[\r\n\x00]/.test(value)) {
     throw codedError("message_config", `The file named by ${envName} must hold one non-empty line. Nothing was sent.`);
@@ -183,7 +200,8 @@ export class MessageSender {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private readonly limiter: SlidingHourLimiter;
-  private readonly keys = new Map<string, { at: number; text: string; title?: string; result: Promise<SendResult> }>();
+  /** Keys of the last hour. `unknown`: the send timed out or lost its connection, so ntfy may have it. */
+  private readonly keys = new Map<string, { at: number; text: string; title?: string; result: Promise<SendResult>; unknown?: boolean }>();
 
   constructor(private readonly cfg: MessageConfig, deps: MessageSenderDeps = {}) {
     this.fetchImpl = deps.fetch ?? fetch;
@@ -202,14 +220,21 @@ export class MessageSender {
       if (seen.text !== text || seen.title !== title) {
         throw codedError("idempotency_conflict", "This idempotency_key was used for a different message in the last hour. Nothing was sent.");
       }
+      if (seen.unknown) {
+        throw codedError("idempotency_unknown", "The first send with this idempotency_key may or may not have reached the message server (it was not reached or did not answer in time). Nothing was re-sent. To send again, use a new idempotency_key.");
+      }
       // The same send, finished or still in flight: share its result, post nothing.
       return seen.result;
     }
     const result = this.post(text, title, now);
-    this.keys.set(key, { at: now, text, title, result });
-    // A failed send is not remembered, so a retry with the key can try again.
-    result.catch(() => {
-      if (this.keys.get(key)?.result === result) this.keys.delete(key);
+    const entry: { at: number; text: string; title?: string; result: Promise<SendResult>; unknown?: boolean } = { at: now, text, title, result };
+    this.keys.set(key, entry);
+    result.catch((e: unknown) => {
+      if (this.keys.get(key) !== entry) return;
+      // After a network failure ntfy may already have the message: keep the key for its hour, marked
+      // unknown, so a retry with it never posts twice. Any other failure sent nothing: forget the key.
+      if ((e as { code?: unknown })?.code === "message_network") entry.unknown = true;
+      else this.keys.delete(key);
     });
     return result;
   }
@@ -219,6 +244,10 @@ export class MessageSender {
     const chars = [...text].length;
     if (chars > MESSAGE_MAX_CHARS) {
       throw codedError("text_too_long", `text is ${chars} characters; the most is ${MESSAGE_MAX_CHARS}. It was not cut and nothing was sent.`);
+    }
+    const bytes = Buffer.byteLength(text, "utf8");
+    if (bytes > MESSAGE_MAX_BYTES) {
+      throw codedError("text_too_long", `text is ${bytes} bytes in UTF-8; the most is ${MESSAGE_MAX_BYTES}. It was not cut and nothing was sent.`);
     }
     if (title !== undefined) {
       if (typeof title !== "string") throw codedError("invalid_argument", "title must be a string. Nothing was sent.");
@@ -234,7 +263,9 @@ export class MessageSender {
     // Read the secret before taking a rate slot, so a config fault does not use up the hour.
     const headers: Record<string, string> = { "Content-Type": "text/plain; charset=utf-8" };
     if (this.cfg.tokenFile) {
-      headers.Authorization = `Bearer ${await readSecretFile(this.cfg.tokenFile, MESSAGE_ENV.tokenFile)}`;
+      const token = await readSecretFile(this.cfg.tokenFile, MESSAGE_ENV.tokenFile);
+      if (!TOKEN_RE.test(token)) throw codedError("message_config", `The token in the file named by ${MESSAGE_ENV.tokenFile} must be printable ASCII with no spaces. Nothing was sent.`);
+      headers.Authorization = `Bearer ${token}`;
     } else if (this.cfg.user && this.cfg.passwordFile) {
       const pw = await readSecretFile(this.cfg.passwordFile, MESSAGE_ENV.passwordFile);
       headers.Authorization = `Basic ${Buffer.from(`${this.cfg.user}:${pw}`, "utf8").toString("base64")}`;
@@ -285,9 +316,9 @@ export function processMessageSender(cfg: MessageConfig): MessageSender {
 }
 
 export const SEND_MESSAGE_INPUT = {
-  text: z.string().describe(`The message text, 1 to ${MESSAGE_MAX_CHARS} characters. A longer text is refused, never cut.`),
+  text: z.string().describe(`The message text, 1 to ${MESSAGE_MAX_CHARS} characters and at most ${MESSAGE_MAX_BYTES} bytes in UTF-8. A longer text is refused, never cut.`),
   title: z.string().optional().describe(`An optional title, at most ${MESSAGE_TITLE_MAX_CHARS} characters, one line.`),
-  idempotency_key: z.string().min(1).max(200).optional().describe("A retry-safety key. A retry with the same key and text within an hour returns the first result and sends nothing."),
+  idempotency_key: z.string().min(1).max(200).optional().describe("A retry-safety key. A retry with the same key and text within an hour returns the first result and sends nothing. If the first send's outcome is unknown (a network failure), a retry with the key is refused (idempotency_unknown); use a new key to send again."),
 };
 
 // A flat literal (no Object.freeze) so the host's surface scanner can read its readOnlyHint.
@@ -321,7 +352,7 @@ export function registerSendMessageTool(
       title: SEND_MESSAGE_ANNOTATIONS.title,
       description:
         `Send a short text message to the operator's configured ntfy topic. Not a vault write: no note changes. ` +
-        `text is 1 to ${MESSAGE_MAX_CHARS} characters (longer is refused, never cut); title is optional. ` +
+        `text is 1 to ${MESSAGE_MAX_CHARS} characters and at most ${MESSAGE_MAX_BYTES} UTF-8 bytes (longer is refused, never cut); title is optional. ` +
         `Sends are limited per hour (Error [rate_limited] names the reset time). Returns {sent: true, id}.`,
       inputSchema: strictInput(SEND_MESSAGE_INPUT),
       annotations: SEND_MESSAGE_ANNOTATIONS,

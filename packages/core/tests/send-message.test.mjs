@@ -2,7 +2,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, chmodSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -107,8 +107,11 @@ describe("MessageSender", () => {
     reset();
     const s = new MessageSender(cfg());
     assert.equal(await codeOf(s.send({ text: "a".repeat(2001) })), "text_too_long");
-    // 2,000 characters counted as code points: 2,000 emoji pass.
-    assert.deepEqual(await s.send({ text: "😀".repeat(2000) }), { sent: true, id: "msg123" });
+    // Characters are code points, and the UTF-8 body is capped at 4,096 bytes (ntfy's limit).
+    assert.equal(await codeOf(s.send({ text: "😀".repeat(2000) })), "text_too_long", "2,000 emoji are 8,000 bytes");
+    assert.equal(await codeOf(s.send({ text: "漢".repeat(1400) })), "text_too_long", "1,400 CJK are 4,200 bytes");
+    assert.deepEqual(await s.send({ text: "😀".repeat(1024) }), { sent: true, id: "msg123" }, "4,096 bytes pass");
+    assert.equal(Buffer.byteLength(seen[0].body), 4096);
     assert.equal(seen.length, 1);
     assert.equal(await codeOf(s.send({ text: "x", title: "t".repeat(201) })), "title_too_long");
     assert.equal(await codeOf(s.send({ text: "x", title: "two\nlines" })), "invalid_argument");
@@ -145,6 +148,28 @@ describe("MessageSender", () => {
     assert.equal(await codeOf(new MessageSender(cfg({ tokenFile: tk })).send({ text: "x" })), "message_config");
     assert.equal(await codeOf(new MessageSender(cfg({ tokenFile: join(dir, "missing") })).send({ text: "x" })), "message_config");
     assert.equal(seen.length, 0);
+  });
+
+  test("a symlinked secret file is refused, even to a 600 file", async () => {
+    reset();
+    const real = secret("pw-real", "pw", 0o600);
+    const link = join(dir, "pw-link");
+    symlinkSync(real, link);
+    assert.equal(await codeOf(new MessageSender(cfg({ user: "assistant", passwordFile: link })).send({ text: "x" })), "message_config");
+    assert.equal(seen.length, 0);
+  });
+
+  test("a non-ASCII tag or token is message_config before a rate slot is taken", async () => {
+    reset();
+    const limiter = new SlidingHourLimiter();
+    const deps = { limiter, now: () => 5_000 };
+    assert.equal(await codeOf(new MessageSender(cfg({ tags: ["café"], rate: 1 }), deps).send({ text: "x" })), "message_config");
+    assert.equal(await codeOf(new MessageSender(cfg({ tags: ["标签"], rate: 1 }), deps).send({ text: "x" })), "message_config");
+    const tk = secret("tk-nonascii", "tök€n\n", 0o600);
+    assert.equal(await codeOf(new MessageSender(cfg({ tokenFile: tk, rate: 1 }), deps).send({ text: "x" })), "message_config");
+    assert.equal(seen.length, 0);
+    // The shared limiter still has its one slot.
+    assert.deepEqual(await new MessageSender(cfg({ rate: 1 }), deps).send({ text: "x" }), { sent: true, id: "msg123" });
   });
 
   test("a bad config is message_config at call time and nothing is sent", async () => {
@@ -193,6 +218,31 @@ describe("MessageSender", () => {
     assert.equal(seen.length, 2);
   });
 
+  test("after a network failure the key's outcome is unknown: a retry posts nothing and is told to use a new key", async () => {
+    let calls = 0;
+    const s = new MessageSender(cfg(), { fetch: async () => { calls++; throw new TypeError("fetch failed"); } });
+    assert.equal(await codeOf(s.send({ text: "x", idempotency_key: "k" })), "message_network");
+    const e = await s.send({ text: "x", idempotency_key: "k" }).catch((x) => x);
+    assert.equal(e.code, "idempotency_unknown");
+    assert.match(e.message, /Nothing was re-sent/);
+    assert.match(e.message, /new idempotency_key/);
+    assert.equal(calls, 1);
+  });
+
+  test("rate_limited through the key path: refused, nothing sent, the key not kept", async () => {
+    reset();
+    let now = 0;
+    const s = new MessageSender(cfg({ rate: 1 }), { now: () => now });
+    await s.send({ text: "a", idempotency_key: "ka" });
+    assert.equal(await codeOf(s.send({ text: "b", idempotency_key: "kb" })), "rate_limited");
+    assert.equal(seen.length, 1);
+    // The retry with the same key is the original send's result, not a new post.
+    assert.deepEqual(await s.send({ text: "a", idempotency_key: "ka" }), { sent: true, id: "msg123" });
+    now = 60 * 60 * 1000;
+    assert.deepEqual(await s.send({ text: "b", idempotency_key: "kb" }), { sent: true, id: "msg123" }, "a refused key can send later");
+    assert.equal(seen.length, 2);
+  });
+
   test("a failed send is not remembered under its key, so a retry can send", async () => {
     reset(500, "{}");
     const s = new MessageSender(cfg());
@@ -237,6 +287,7 @@ describe("messageConfigFromEnv / checkMessageConfig", () => {
     assert.equal(checkMessageConfig({ url: "https://ntfy.example.test", topic: "inbox" }), null);
     assert.equal(checkMessageConfig({ url: "http://localhost:8080", topic: "inbox" }), null);
     assert.equal(checkMessageConfig({ url: "http://127.0.0.1:8080", topic: "inbox" }), null);
+    assert.equal(checkMessageConfig({ url: "http://[::1]:8080", topic: "inbox" }), null);
     assert.match(checkMessageConfig({ url: "http://ntfy.example.test", topic: "inbox" }), /https/);
     assert.match(checkMessageConfig({ url: "https://u:p@ntfy.example.test", topic: "inbox" }), /user or password/);
     assert.match(checkMessageConfig({ url: "https://ntfy.example.test", topic: "inbox", tokenFile: "/t", user: "a", passwordFile: "/p" }), /not both/);
@@ -271,10 +322,15 @@ describe("registration", () => {
     assert.equal(t.meta.inputSchema.safeParse({ text: "x", title: "t", idempotency_key: "k" }).success, true);
   });
 
-  test("not registered under a profile that does not offer it", () => {
-    const r = recorder();
-    registerFsTools(r, noBackend, { message: { url: "https://ntfy.example.test", topic: "inbox" }, profile: resolveProfile("read") });
-    assert.equal(r.tools.has(SEND_MESSAGE_TOOL), false);
+  test("not registered under a profile that does not offer it: read, read+inbox, none", () => {
+    for (const name of ["read", "read+inbox", "none"]) {
+      const r = recorder();
+      registerFsTools(r, noBackend, { message: { url: "https://ntfy.example.test", topic: "inbox" }, profile: resolveProfile(name) });
+      assert.equal(r.tools.has(SEND_MESSAGE_TOOL), false, name);
+    }
+    const full = recorder();
+    registerFsTools(full, noBackend, { message: { url: "https://ntfy.example.test", topic: "inbox" }, profile: resolveProfile("full") });
+    assert.equal(full.tools.has(SEND_MESSAGE_TOOL), true, "full");
   });
 
   test("the handler returns {sent, id} and a coded error as `Error [code]`", async () => {
