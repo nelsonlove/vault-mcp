@@ -512,7 +512,12 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   });
   // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files, under the same
   // profile, decoding and kernel-argument rules as the note tools above.
-  registerFileTools(server, backend, {
+  // Their replies pass through the secret scanner too when it is on, as every other tool's do.
+  const fileReg = scanner
+    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { registerTool: (name: string, meta: any, h: (args: any) => any) => server.registerTool(name, meta, scanner.wrap(h)) }
+    : server;
+  registerFileTools(fileReg, backend, {
     ...(profile ? { profile, exists: existsInVault } : {}),
     decodeHtml: true,
     kernelArgs: true,

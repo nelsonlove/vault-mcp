@@ -161,6 +161,23 @@ describe("FS mode under a profile", () => {
     assert.match(await readFile(path.join(vault, "Notes", "keys.md"), "utf8"), new RegExp(FAKE_KEY));
   });
 
+  test("the .base and .canvas file tools: their replies pass through the scanner when it is on", async () => {
+    // A made-up token-shaped name, built at run time; the reply names the path it wrote.
+    const tok = ["gh", "p_", "FAKE".repeat(9)].join("");
+    const call = async (redaction: unknown, name: string) => {
+      const c = await client("full", redaction);
+      const r = text(await c.callTool({ name: "obsidian_write_file", arguments: { path: `Notes/${name}/${tok}.canvas`, content: '{"nodes":[],"edges":[]}' } }));
+      await c.close();
+      return r;
+    };
+    const on = await call(core.buildRedaction(["full"]), "on");
+    assert.doesNotMatch(on, /isError":true/, on);
+    assert.ok(!on.includes(tok), on);
+    assert.match(on, /redacted:github-token/);
+    const off = await call(null, "off");
+    assert.ok(off.includes(tok), off);
+  });
+
   test("a config extends the key names", async () => {
     const m = await client("read+message", core.buildRedaction(["read+message"], { extraKeyNames: ["license code"] }));
     const r = text(await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
