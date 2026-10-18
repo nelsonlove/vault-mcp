@@ -24,6 +24,7 @@ import { wireSchemePanes, registerSchemeCommands } from "./scheme/wiring.js";
 import { runHostAdoption, LEGACY_PLUGIN_ID, PLUGIN_ID } from "./id-migration.js";
 import { territoriesOnLoad } from "./territory-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
+import { normalizeCliPolicy, type OpaqueSnapshotEntry } from "./mcp/cli-policy.js";
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
 import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
 import { DEFAULT_WRITE_SCOPE, normalizeWriteScope, type WriteScope } from "@vault-mcp/core";
@@ -137,7 +138,7 @@ interface VaultMcpSettings {
    * surface writes plugin settings, and the surfaces that could reach one
    * indirectly are what this policy denies. See mcp/cli-policy.ts.
    */
-  cliPolicy: { deny: string[]; allowOpaque: string[]; neverOpaque: string[] };
+  cliPolicy: { deny: string[]; allowOpaque: string[]; neverOpaque: string[]; opaqueWildcards: string[]; opaqueSnapshot: Record<string, OpaqueSnapshotEntry> };
   /**
    * Enforce record immutability (#264): refuse non-append mutation of a note
    * the record identifier marks (`record: true` by default; see
@@ -290,7 +291,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   vocabularies: DEFAULT_VOCABULARIES.map((v) => ({ ...v })),
   schemes: structuredClone(DEFAULT_SCHEMES),
   modules: {},
-  cliPolicy: { deny: [], allowOpaque: [], neverOpaque: [] },
+  cliPolicy: { deny: [], allowOpaque: [], neverOpaque: [], opaqueWildcards: [], opaqueSnapshot: {} },
   enforceRecordImmutability: true,
   devToolRunner: true,
   captureObservations: false,
@@ -415,13 +416,9 @@ export default class VaultMcpPlugin extends Plugin {
     // never alias DEFAULT_SETTINGS' own arrays (the schemes structuredClone
     // discipline). Policy semantics are unaffected: a dropped malformed
     // entry can only mean MORE denied, never less.
-    const list = (v: unknown): string[] =>
-      Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : [];
-    this.settings.cliPolicy = {
-      deny: list(this.settings.cliPolicy?.deny),
-      allowOpaque: list(this.settings.cliPolicy?.allowOpaque),
-      neverOpaque: list(this.settings.cliPolicy?.neverOpaque),
-    };
+    // normalizeCliPolicy (cli-policy.ts) also keeps only well-formed script snapshots (01.41, pick A); it
+    // never expands a wildcard: that happens on a human save only.
+    this.settings.cliPolicy = normalizeCliPolicy(this.settings.cliPolicy);
     // #224: coerce the declared protected-property rows to the storable shape
     // first (a hand-edited data.json carrying a non-array or junk rows must not
     // crash the settings-tab render — the cliPolicy discipline above). Raw

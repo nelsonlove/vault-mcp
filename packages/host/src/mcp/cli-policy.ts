@@ -28,14 +28,18 @@
 //      it replaces nothing. `eval`/`command` re-enabled here still need the
 //      "Allow dangerous CLI commands" toggle — two locks, both human).
 //
-// Entries are exact command names, or prefix globs written `prefix*` (used as
-// `quickadd:*` for run_command ids). Matching is case-sensitive on purpose,
+// Deny and Never re-enable entries are exact command names, or prefix globs
+// written `prefix*`. Re-enable entries are exact only at call time: a wildcard
+// is expanded into exact ids when the human saves (expandOpaqueWildcards). Matching is case-sensitive on purpose,
 // like the danger gate: the CLI's commands are lowercase, and a
 // case-insensitive match here could diverge from the case-sensitive gates
 // downstream.
 //
-// Pure and obsidian-free: unit-tested directly; the tool handlers call the
-// two refusal functions with the settings-supplied policy.
+// Obsidian-free: unit-tested directly; the tool handlers call the
+// refusal functions with the settings-supplied policy. The one exception to
+// "pure" is the script hash check, which reads through an injected reader.
+
+import { createHash } from "node:crypto";
 
 /** The opaque-accept set for `obsidian_cli`: commands that execute arbitrary
  * macros/JS/commands and could set acceptance where no guard can inspect.
@@ -76,21 +80,32 @@ export interface CliCommandPolicy {
   /** Additional denied entries, checked first — deny beats allow. Exact
    * names or `prefix*` globs. */
   deny?: string[];
-  /** Opaque-accept entries the human re-enabled. An exact entry re-enables one CLI command or one
-   * run_command id. A trailing `*` (`quickadd:choice:*`) re-enables a family of QuickAdd CHOICE
-   * command ids only (Nelson, 2026-10-14: "can we get a PR to permit wildcards in the 'Re-enabled
-   * opaque commands' setting?"; his pick A on 01.41), and only a choice that resolves in QuickAdd's
-   * settings, is not an accept verb, does not run one (by its script or through another choice) and
-   * is not on `neverOpaque` (`globMayOpen`). A glob never re-enables a CLI command (`quickadd:*` must
-   * not reach the CLI's `quickadd:run`), a `js-engine:` id (vault-minted code, the #105 class) or any
-   * other `quickadd:` command: those take exact entries. Deny always wins, globs included. */
+  /** Opaque-accept entries the human re-enabled: exact CLI command names and exact run_command ids only.
+   * A wildcard is not honoured here at call time (Nelson's pick A on 01.41 "Should a wildcard open only the
+   * QuickAdd choices it opened when it was saved", verified 2026-10-17, with his change: "it should
+   * enumerate the choices opened rather than just list the wildcard"). The settings page expands each
+   * wildcard into the exact `quickadd:choice:<id>` ids it opens when the human saves (`expandOpaqueWildcards`),
+   * and stores those ids here. A trailing-`*` entry found here at call time (a hand-edited data.json) opens
+   * nothing: fail closed until the human saves the setting. Deny wins over every entry. */
   allowOpaque?: string[];
-  /** Command ids a trailing-`*` re-enable never reaches (Nelson's pick "A" on 01.41 "Which QuickAdd
-   * choices a wildcard in Re-enabled opaque commands may open", 2026-10-14): the human lists here any
-   * choice only he should run, so `quickadd:*` opens every other one. Exact ids, or `prefix*`. It binds
-   * glob re-enables only: an exact re-enable of the same id is a deliberate act and still opens it, and
-   * "Denied commands" still wins over both. */
+  /** Command ids a wildcard expansion skips (Nelson's pick "A" on 01.41 "Which QuickAdd choices a wildcard in
+   * Re-enabled opaque commands may open", 2026-10-14): the human lists here any choice only he should run.
+   * Exact ids, or `prefix*`. It binds the ids a wildcard added (they keep the wildcard's limits at call time)
+   * and the next expansion; an exact entry the human typed for the same id still opens it, and "Denied
+   * commands" wins over both. */
   neverOpaque?: string[];
+  /** The wildcards the human saved (`quickadd:choice:*`), kept so the settings page can show which wildcard
+   * produced the list and expand it again on the next human save. The gate does not read this field. */
+  opaqueWildcards?: string[];
+  /** For each id a wildcard expansion added to `allowOpaque`: a sha256 of each script the choice runs, taken
+   * at save. The id opens only while every script hashes the same and the choice runs the same scripts
+   * (`runCommandSnapshotRefusal`). An id the human typed by hand has no entry here. */
+  opaqueSnapshot?: Record<string, OpaqueSnapshotEntry>;
+}
+
+/** What a wildcard expansion recorded for one id: the scripts its choice runs, path to sha256 hex. */
+export interface OpaqueSnapshotEntry {
+  scripts: Record<string, string>;
 }
 
 /** Does `name` match `pattern` — exact, or prefix glob `foo*` (any trailing
@@ -123,18 +138,29 @@ export function isAcceptVerbCommandId(commandId: string): boolean {
   return ACCEPT_VERB_CHOICES.some((n) => id.endsWith(`/${n}.md#choice`) || id.endsWith(`:${n}`) || id === `quickadd:choice:${n}`);
 }
 
-/** Does the allowOpaque list re-enable `name` on this surface? An exact entry on
- *  either surface; a trailing-`*` entry for a run_command id only, and never for
- *  an accept verb (see CliCommandPolicy). */
-function allowedOpaque(name: string, policy: CliCommandPolicy | undefined, surface: "cli" | "command-id", choices?: QuickAddChoices | null): boolean {
-  return (policy?.allowOpaque ?? []).some((raw) => {
-    const p = raw.trim();
-    if (!p) return false;
-    if (p === name) return true;
-    if (!p.endsWith("*") || surface !== "command-id") return false;
-    if (!matchesCommandPattern(name, p)) return false;
-    return globMayOpen(name, policy, choices);
-  });
+/** Is this a trailing-`*` entry? */
+function isGlob(entry: string): boolean {
+  return entry.trim().endsWith("*");
+}
+
+/** How the allowOpaque list treats `name`: "open" (an exact entry the human typed, or an id a wildcard added
+ *  that still passes the wildcard's checks), "stale-glob" (only a trailing-`*` entry matches; it opens nothing
+ *  at call time), "snapshot-fails" (a wildcard added it, but it no longer passes those checks) or "closed". */
+function opaqueStatus(name: string, policy: CliCommandPolicy | undefined, surface: "cli" | "command-id", choices?: QuickAddChoices | null): "open" | "stale-glob" | "snapshot-fails" | "closed" {
+  const entries = (policy?.allowOpaque ?? []).map((e) => e.trim()).filter(Boolean);
+  if (entries.some((e) => !isGlob(e) && e === name)) {
+    if (surface !== "command-id" || !hasSnapshot(name, policy)) return "open";
+    // An id a wildcard added keeps the wildcard's limits: it must still resolve, not be or run an accept
+    // verb, and not be on Never re-enable.
+    return wildcardMayOpen(name, policy, choices) ? "open" : "snapshot-fails";
+  }
+  if (entries.some((e) => isGlob(e) && matchesCommandPattern(name, e))) return "stale-glob";
+  return "closed";
+}
+
+function hasSnapshot(name: string, policy: CliCommandPolicy | undefined): boolean {
+  const snap = policy?.opaqueSnapshot;
+  return !!snap && Object.prototype.hasOwnProperty.call(snap, name);
 }
 
 /** The prefix QuickAdd gives a choice's command id. */
@@ -163,13 +189,13 @@ export interface QuickAddChoices {
 }
 
 /**
- * May a trailing-`*` re-enable open this run_command id? (#552 review 1.) Only a `quickadd:choice:<id>`
+ * May a wildcard expansion add this run_command id, and may an id it added still open? (#552 review 1.) Only a `quickadd:choice:<id>`
  * id (with QuickAdd's `:pick-day` variant) that resolves to a registered choice which is not an accept
  * verb, does not run one, and is not on the "Never re-enable" list. Fail closed in every other case:
  * a `js-engine:` id or any other `quickadd:` command (exact entries only), an id that does not resolve,
  * or no choice lookup at all.
  */
-function globMayOpen(name: string, policy: CliCommandPolicy | undefined, choices: QuickAddChoices | null | undefined): boolean {
+export function wildcardMayOpen(name: string, policy: CliCommandPolicy | undefined, choices: QuickAddChoices | null | undefined): boolean {
   if (!name.startsWith(QUICKADD_CHOICE_PREFIX)) return false;
   const base = name.endsWith(":pick-day") ? name.slice(0, -":pick-day".length) : name;
   if (isAcceptVerbCommandId(base)) return false;
@@ -314,14 +340,28 @@ function refusal(
     return `${surface} '${name}' is denied by the Vault MCP command policy (settings › Security › "Denied commands").`;
   }
   for (const set of denySets) {
-    if (matchesAny(name, set.patterns) && !allowedOpaque(name, policy, kind, choices)) {
+    if (!matchesAny(name, set.patterns)) continue;
+    const status = opaqueStatus(name, policy, kind, choices);
+    if (status === "open") continue;
+    if (status === "stale-glob" && kind === "command-id") {
       return (
-        `${surface} '${name}' ${set.reason}, and is denied by default (fail closed). A human can re-enable ` +
-        `this command in the Vault MCP settings (Security › "Re-enabled opaque commands"; an exact entry, or a ` +
-        `trailing * for QuickAdd choices) — there ` +
-        `is no agent-writable path to that setting.`
+        `${surface} '${name}' matches a wildcard in the stored re-enable list, and a wildcard opens nothing when ` +
+        `an agent calls (fail closed). A human can save Security › "Re-enabled opaque commands" in the Vault MCP ` +
+        `settings again: the save lists the exact choices the wildcard opens.`
       );
     }
+    if (status === "snapshot-fails") {
+      return (
+        `${surface} '${name}' was opened by a wildcard, but it no longer passes the wildcard's checks (it does not ` +
+        `resolve, it is or runs an accept verb, or it is on "Never re-enable"). It stays closed (fail closed).`
+      );
+    }
+    return (
+      `${surface} '${name}' ${set.reason}, and is denied by default (fail closed). A human can re-enable ` +
+      `this command in the Vault MCP settings (Security › "Re-enabled opaque commands"; an exact entry, or a ` +
+      `trailing * for QuickAdd choices, which the save expands into the choices it opens) — there ` +
+      `is no agent-writable path to that setting.`
+    );
   }
   return null;
 }
@@ -390,9 +430,10 @@ export function runCommandRefusal(commandId: string, policy?: CliCommandPolicy, 
   return refusal(commandId.trim(), policy, [{ patterns: OPAQUE_ACCEPT_COMMAND_IDS, reason: "executes opaque macros/code that the acceptance guard cannot inspect" }], "command id", "command-id", choices);
 }
 
-/** The registered command ids that the policy re-enables today out of the opaque run_command families
- *  (`quickadd:*`, `js-engine:*`), sorted. The settings tab shows the count and the list when the human
- *  saves a re-enable, so a wildcard's reach is seen at save time (01.41, pick A). */
+/** The registered command ids that pass the sync gate today out of the opaque run_command families
+ *  (`quickadd:*`, `js-engine:*`), sorted. The settings tab shows the count and the list on each save (01.41,
+ *  pick A); it also drops the ids whose scripts changed (`runCommandSnapshotRefusal`), which this sync
+ *  function cannot see. */
 export function reenabledOpaqueCommandIds(commandIds: Iterable<string>, policy: CliCommandPolicy | undefined, choices?: QuickAddChoices | null): string[] {
   const out: string[] = [];
   for (const id of commandIds) {
@@ -400,4 +441,202 @@ export function reenabledOpaqueCommandIds(commandIds: Iterable<string>, policy: 
     if (runCommandRefusal(id, policy, choices) === null) out.push(id);
   }
   return out.sort();
+}
+
+// ── Wildcard expansion at save, and the script snapshot (01.41, pick A, 2026-10-17) ────────────────
+//
+// Nelson's ruling: at save, the settings record each choice a wildcard opens and a hash of each script it
+// runs; a choice added later, or a choice whose script changed since, stays closed until the human saves the
+// setting again, and the count then shows it. His change: "it should enumerate the choices opened rather than
+// just list the wildcard." So a wildcard is expanded HERE, on a human save, into exact ids; the call-time
+// gate reads exact ids only.
+
+/** Reads a vault file's text, or null when it is absent or unreadable. */
+export type ReadText = (path: string) => Promise<string | null>;
+
+/** A ReadText over Obsidian's vault (duck-typed, so this module stays obsidian-free). */
+export function vaultTextReader(app: unknown): ReadText {
+  const vault = (app as { vault?: { getAbstractFileByPath?: (p: string) => unknown; read?: (f: unknown) => Promise<string> } } | null | undefined)?.vault;
+  return async (path) => {
+    try {
+      const f = vault?.getAbstractFileByPath?.(path) as { extension?: unknown } | null | undefined;
+      // A folder has no extension; only a file is read.
+      if (!f || typeof f.extension !== "string" || !vault?.read) return null;
+      return await vault.read(f);
+    } catch {
+      return null;
+    }
+  };
+}
+
+/** sha256 of a text, hex. */
+export function hashScript(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The scripts a choice runs, its own and those of every choice it runs, sorted and unique. Null when the
+ *  choice or a choice it runs does not resolve. */
+export function scriptsRunBy(choiceId: string, choices: QuickAddChoices): string[] | null {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return true;
+    seen.add(id);
+    const c = choices.get(id);
+    if (!c) return false;
+    for (const sc of c.scripts) out.add(sc);
+    return c.choiceRefs.every(visit);
+  };
+  return visit(choiceId) ? [...out].sort() : null;
+}
+
+function choiceIdOf(commandId: string): string | null {
+  if (!commandId.startsWith(QUICKADD_CHOICE_PREFIX)) return null;
+  const base = commandId.endsWith(":pick-day") ? commandId.slice(0, -":pick-day".length) : commandId;
+  return base.slice(QUICKADD_CHOICE_PREFIX.length);
+}
+
+/** Hash each script; null when one cannot be read. */
+async function hashScripts(paths: string[], readText: ReadText): Promise<Record<string, string> | null> {
+  const out: Record<string, string> = {};
+  for (const p of paths) {
+    let text: string | null;
+    try {
+      text = await readText(p);
+    } catch {
+      text = null;
+    }
+    if (text === null) return null;
+    out[p] = hashScript(text);
+  }
+  return out;
+}
+
+/** What the human saved in the four settings boxes. */
+export interface OpaqueSaveInput {
+  /** The "Re-enabled opaque commands" lines. A trailing-`*` line is a wildcard; it moves to `wildcards`. */
+  allowOpaque: string[];
+  /** The saved wildcards. */
+  wildcards: string[];
+  neverOpaque: string[];
+  deny: string[];
+}
+
+/** The policy a human save stores, and the ids an expansion left out because a script could not be read. */
+export interface OpaqueSaveResult {
+  policy: Required<Pick<CliCommandPolicy, "deny" | "allowOpaque" | "neverOpaque" | "opaqueWildcards" | "opaqueSnapshot">>;
+  /** Ids a wildcard matched and would open, left closed because a script they run could not be read. */
+  unreadable: string[];
+}
+
+/**
+ * Expand the wildcards on a human save (01.41, pick A). Each wildcard becomes the exact
+ * `quickadd:choice:<id>` ids among `commandIds` that it opens now: a choice that resolves, is a Macro, is
+ * not and does not run an accept verb, is not on Never re-enable and is not denied (`wildcardMayOpen`). Each
+ * such id gets a snapshot of the scripts it runs. An exact line the human typed keeps no snapshot. A line
+ * that a previous expansion added (it has an entry in `prevSnapshot`) is dropped and found again by this
+ * expansion, so removing a wildcard removes the ids it opened. The result's `allowOpaque` holds exact ids
+ * only. Only a human save calls this; nothing calls it on a timer or at load.
+ */
+export async function expandOpaqueWildcards(
+  input: OpaqueSaveInput,
+  prevSnapshot: Record<string, OpaqueSnapshotEntry> | undefined,
+  commandIds: Iterable<string>,
+  choices: QuickAddChoices | null,
+  readText: ReadText,
+): Promise<OpaqueSaveResult> {
+  const clean = (xs: string[]) => [...new Set(xs.map((x) => x.trim()).filter(Boolean))];
+  const lines = clean(input.allowOpaque);
+  const wildcards = clean([...input.wildcards, ...lines.filter(isGlob)]).filter(isGlob);
+  const deny = clean(input.deny);
+  const neverOpaque = clean(input.neverOpaque);
+  const prev = prevSnapshot ?? {};
+  const hand = lines.filter((l) => !isGlob(l) && !Object.prototype.hasOwnProperty.call(prev, l));
+  const handSet = new Set(hand);
+  const gatePolicy: CliCommandPolicy = { deny, neverOpaque };
+  const added: string[] = [];
+  const unreadable: string[] = [];
+  const snapshot: Record<string, OpaqueSnapshotEntry> = {};
+  for (const id of [...new Set(commandIds)].sort()) {
+    if (handSet.has(id)) continue;
+    if (!wildcards.some((w) => matchesCommandPattern(id, w))) continue;
+    if (matchesAny(id, deny)) continue;
+    if (!choices || !wildcardMayOpen(id, gatePolicy, choices)) continue;
+    const choiceId = choiceIdOf(id);
+    const paths = choiceId === null ? null : scriptsRunBy(choiceId, choices);
+    if (!paths) continue;
+    const scripts = await hashScripts(paths, readText);
+    if (!scripts) {
+      unreadable.push(id);
+      continue;
+    }
+    snapshot[id] = { scripts };
+    added.push(id);
+  }
+  return {
+    policy: { deny, neverOpaque, allowOpaque: [...hand, ...added], opaqueWildcards: wildcards, opaqueSnapshot: snapshot },
+    unreadable,
+  };
+}
+
+/**
+ * The second, async half of the run_command gate (01.41, pick A): call it after `runCommandRefusal` returns
+ * null. An id with no snapshot (a CLI command, or an id the human typed by hand) passes. An id a wildcard
+ * added opens only when its choice still resolves, runs the same scripts, and each script hashes the same as
+ * at save. Otherwise the reason it stays closed.
+ */
+export async function runCommandSnapshotRefusal(
+  commandId: string,
+  policy: CliCommandPolicy | undefined,
+  choices: QuickAddChoices | null | undefined,
+  readText: ReadText,
+): Promise<string | null> {
+  const id = commandId.trim();
+  if (!hasSnapshot(id, policy)) return null;
+  const entry = policy!.opaqueSnapshot![id];
+  const changed =
+    `command id '${id}' was opened by a wildcard, and this choice's script changed since you saved the wildcard; ` +
+    `save the setting again to open it (Vault MCP settings › Security › "Re-enabled opaque commands"). It stays closed (fail closed).`;
+  const choiceId = choiceIdOf(id);
+  if (!choices || choiceId === null || !entry || typeof entry.scripts !== "object" || entry.scripts === null) return changed;
+  const now = scriptsRunBy(choiceId, choices);
+  const saved = Object.keys(entry.scripts).sort();
+  if (!now || now.length !== saved.length || now.some((p, i) => p !== saved[i])) return changed;
+  const hashes = await hashScripts(now, readText);
+  if (!hashes || now.some((p) => hashes[p] !== entry.scripts[p])) return changed;
+  return null;
+}
+
+/** Normalise a loaded `cliPolicy` (a hand-edited data.json may hold anything): fresh string arrays, and a
+ *  snapshot of well-formed entries only, kept for ids still in `allowOpaque`. A dropped value can only close
+ *  more: a malformed snapshot entry is dropped with its id, never kept as an open hand-typed id. */
+export function normalizeCliPolicy(raw: unknown): OpaqueSaveResult["policy"] {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const list = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
+  const allow = list(r.allowOpaque);
+  const snapshot: Record<string, OpaqueSnapshotEntry> = {};
+  const bad = new Set<string>();
+  const rawSnap = r.opaqueSnapshot;
+  if (rawSnap && typeof rawSnap === "object" && !Array.isArray(rawSnap)) {
+    for (const [id, v] of Object.entries(rawSnap as Record<string, unknown>)) {
+      const scripts = (v as { scripts?: unknown } | null)?.scripts;
+      const ok =
+        !!scripts &&
+        typeof scripts === "object" &&
+        !Array.isArray(scripts) &&
+        Object.values(scripts as Record<string, unknown>).every((h) => typeof h === "string" && /^[0-9a-f]{64}$/.test(h));
+      if (!ok) {
+        bad.add(id);
+        continue;
+      }
+      if (allow.includes(id)) snapshot[id] = { scripts: { ...(scripts as Record<string, string>) } };
+    }
+  }
+  return {
+    deny: list(r.deny),
+    allowOpaque: allow.filter((id) => !bad.has(id)),
+    neverOpaque: list(r.neverOpaque),
+    opaqueWildcards: list(r.opaqueWildcards).filter(isGlob),
+    opaqueSnapshot: snapshot,
+  };
 }

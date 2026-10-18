@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { assertCreateName } from "./name-checks.js";
-import { quickAddChoicesFrom, runCommandRefusal } from "./cli-policy.js";
+import { quickAddChoicesFrom, runCommandRefusal, runCommandSnapshotRefusal, vaultTextReader } from "./cli-policy.js";
 import { templateContentAcceptRefusal } from "./tools-cli.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { type App, TFile, parseYaml} from "obsidian";
@@ -432,7 +432,12 @@ export function registerIntegrationTools(server: McpServer, app: App, ctx: Serve
           //
           // Checked before `openLinkText` for the reason #76 records: opening
           // the file leaks an action for a command that is about to be refused.
-          const policyReason = runCommandRefusal(commandId, ctx.getSettings().cliPolicy, quickAddChoicesFrom((app as any).plugins?.plugins?.quickadd?.settings));
+          // Two halves (01.41, pick A): the sync gate, then the script snapshot of an id a wildcard opened.
+          const policy = ctx.getSettings().cliPolicy;
+          const choices = quickAddChoicesFrom((app as any).plugins?.plugins?.quickadd?.settings);
+          const policyReason =
+            runCommandRefusal(commandId, policy, choices) ??
+            (await runCommandSnapshotRefusal(commandId, policy, choices, vaultTextReader(app)));
           if (policyReason) {
             return codedError("cli_denied", policyReason);
           }

@@ -16,15 +16,21 @@ import { installObsidianStub } from "./obsidian-stub.mjs";
 
 installObsidianStub();
 const { registerComplementaryTools } = await import("../src/mcp/tools-complementary.ts");
+const { hashScript } = await import("../src/mcp/cli-policy.ts");
 
-function build(settings = {}, { quickadd } = {}) {
+function build(settings = {}, { quickadd, files = {} } = {}) {
   const server = fakeServer();
   const opened = [];
   const executed = [];
   const app = {
     workspace: { openLinkText: async (p) => opened.push(p) },
     commands: { executeCommandById: (id) => (executed.push(id), true) },
-    vault: { getMarkdownFiles: () => [], getName: () => "test" },
+    vault: {
+      getMarkdownFiles: () => [],
+      getName: () => "test",
+      getAbstractFileByPath: (p) => (p in files ? { path: p, extension: "md" } : null),
+      read: async (f) => files[f.path],
+    },
     metadataCache: {},
     plugins: { plugins: quickadd ? { quickadd } : {} },
   };
@@ -93,6 +99,34 @@ describe("obsidian_run_command: policy wiring in the real handler", () => {
     assert.equal(res.isError, true);
     assert.match(res.content[0].text, /cli_denied/);
     assert.deepEqual(executed, []);
+  });
+});
+
+describe("obsidian_run_command: an id a wildcard opened is checked against its script snapshot (01.41 pick A)", () => {
+  const id = "quickadd:choice:abc";
+  const settingsFor = (hash) => ({
+    cliPolicy: { deny: [], allowOpaque: [id], neverOpaque: [], opaqueWildcards: ["quickadd:choice:*"], opaqueSnapshot: { [id]: { scripts: { "S/x.md": hash } } } },
+  });
+  const quickaddWithScript = () => {
+    const q = fakeQuickAdd();
+    q.settings = { choices: [{ id: "abc", name: "My Choice", type: "Macro", macro: { commands: [{ type: "UserScript", path: "S/x.md" }] } }] };
+    return q;
+  };
+
+  test("the same script: it runs", async () => {
+    const { handler, executed } = build(settingsFor(hashScript("v1")), { quickadd: quickaddWithScript(), files: { "S/x.md": "v1" } });
+    const res = await handler({ command_id: id });
+    assert.notEqual(res.isError, true);
+    assert.deepEqual(executed, [id]);
+  });
+
+  test("a changed script: cli_denied before anything runs or opens", async () => {
+    const { handler, executed, opened } = build(settingsFor(hashScript("v1")), { quickadd: quickaddWithScript(), files: { "S/x.md": "v2" } });
+    const res = await handler({ command_id: id, file_path: "Inbox/Note.md" });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /^Error \[cli_denied\].*script changed since you saved the wildcard/);
+    assert.deepEqual(executed, []);
+    assert.deepEqual(opened, []);
   });
 });
 

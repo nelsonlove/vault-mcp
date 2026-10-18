@@ -14,7 +14,7 @@ import {
 import { ok, fail, codedError } from "./helpers.js";
 import { visiblePaths } from "../guard.js";
 import type { ServerCtx } from "./tools-core.js";
-import { quickAddChoicesFrom, runCommandRefusal } from "./cli-policy.js";
+import { quickAddChoicesFrom, runCommandRefusal, runCommandSnapshotRefusal, vaultTextReader } from "./cli-policy.js";
 
 // ── accept-forbidden guard for obsidian_append_at_heading (#109) ──────────────
 //
@@ -261,7 +261,12 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
         // file_path open, which would leak an action for a refused command).
         // Applies identically whether or not `variables` is given — passing
         // variables changes HOW an allowed command runs, never WHETHER it may.
-        const policyReason = runCommandRefusal(command_id, ctx.getSettings().cliPolicy, quickAddChoicesFrom((app as any).plugins?.plugins?.quickadd?.settings));
+        // Two halves (01.41, pick A): the sync gate, then the script snapshot of an id a wildcard opened.
+        const policy = ctx.getSettings().cliPolicy;
+        const choices = quickAddChoicesFrom((app as any).plugins?.plugins?.quickadd?.settings);
+        const policyReason =
+          runCommandRefusal(command_id, policy, choices) ??
+          (await runCommandSnapshotRefusal(command_id, policy, choices, vaultTextReader(app)));
         if (policyReason) {
           return codedError("cli_denied", policyReason);
         }

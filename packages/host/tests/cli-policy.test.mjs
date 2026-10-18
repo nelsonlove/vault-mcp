@@ -6,8 +6,9 @@
  * Load-bearing properties:
  *   • the opaque-accept set is DENIED BY DEFAULT (fail closed) on both
  *     surfaces — obsidian_cli commands and obsidian_run_command ids;
- *   • re-enable is per-command by an exact entry, or per family of command ids by a
- *     trailing-* entry, which never reaches a CLI command or an accept verb;
+ *   • re-enable is per-command by an exact entry; a trailing-* entry is expanded at the
+ *     human's save into exact QuickAdd choice ids with a script snapshot each, and a
+ *     stored wildcard opens nothing at call time;
  *   • deny ALWAYS wins — over allowOpaque, over defaults;
  *   • the policy composes with the danger gate: a re-enabled `eval` still
  *     needs allowDangerousCli;
@@ -29,6 +30,11 @@ import {
   reenabledOpaqueCommandIds,
   quickAddChoicesFrom,
   choiceIsOrRunsVerb,
+  wildcardMayOpen,
+  expandOpaqueWildcards,
+  runCommandSnapshotRefusal,
+  normalizeCliPolicy,
+  hashScript,
 } from "../src/mcp/cli-policy.ts";
 import { registerCliTools } from "../src/mcp/tools-cli.ts";
 
@@ -149,19 +155,17 @@ const QA_SETTINGS = {
 const CHOICES = quickAddChoicesFrom(QA_SETTINGS);
 const cid = (id) => `quickadd:choice:${id}`;
 
-describe("runCommandRefusal: a glob reaches resolvable, non-verb QuickAdd choices only (#552 review 1)", () => {
-  const glob = { allowOpaque: ["quickadd:*"] };
-  test("a plain choice opens; the lookup is required", () => {
-    assert.equal(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob, CHOICES), null);
-    assert.ok(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob), "no lookup: fail closed");
-    assert.ok(runCommandRefusal(cid("qan:Q/New idea.md#choice"), glob, quickAddChoicesFrom(null)), "QuickAdd absent: fail closed");
-    assert.ok(runCommandRefusal(cid("qan:Q/Gone.md#choice"), glob, CHOICES), "an id that does not resolve");
+describe("wildcardMayOpen: a wildcard reaches resolvable, non-verb QuickAdd choices only (#552 review 1)", () => {
+  test("a plain choice may open; the lookup is required", () => {
+    assert.equal(wildcardMayOpen(cid("qan:Q/New idea.md#choice"), {}, CHOICES), true);
+    assert.equal(wildcardMayOpen(cid("qan:Q/New idea.md#choice"), {}, undefined), false, "no lookup: fail closed");
+    assert.equal(wildcardMayOpen(cid("qan:Q/New idea.md#choice"), {}, quickAddChoicesFrom(null)), false, "QuickAdd absent: fail closed");
+    assert.equal(wildcardMayOpen(cid("qan:Q/Gone.md#choice"), {}, CHOICES), false, "an id that does not resolve");
   });
-  test("a glob never opens a non-choice quickadd command or a js-engine id", () => {
-    assert.ok(runCommandRefusal("quickadd:runQuickAdd", glob, CHOICES));
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", glob, CHOICES));
-    assert.ok(runCommandRefusal("js-engine:cmd-other", { allowOpaque: ["js-engine:*"] }, CHOICES));
-    assert.ok(runCommandRefusal("js-engine:execute-js-file", { allowOpaque: ["js-engine:*"] }, CHOICES));
+  test("a wildcard never opens a non-choice quickadd command or a js-engine id", () => {
+    for (const id of ["quickadd:runQuickAdd", "quickadd:toggleMacro", "js-engine:cmd-other", "js-engine:execute-js-file"]) {
+      assert.equal(wildcardMayOpen(id, {}, CHOICES), false, id);
+    }
   });
   test("a verb is caught by its name, its pick-day variant, its script and through another choice", () => {
     for (const id of [
@@ -181,12 +185,192 @@ describe("runCommandRefusal: a glob reaches resolvable, non-verb QuickAdd choice
       "qan:Q/Dup2.md#choice",
       "qan:Q/AI.md#choice",
       "qan:Q/SameId.md#choice",
-    ]) assert.ok(runCommandRefusal(cid(id), glob, CHOICES), id);
+    ]) assert.equal(wildcardMayOpen(cid(id), {}, CHOICES), false, id);
     assert.equal(choiceIsOrRunsVerb("qan:Q/New idea.md#choice", CHOICES), false);
   });
   test("an exact entry still re-enables one verb (the human naming that one command)", () => {
     const id = cid("8f1c2d3e-uuid");
     assert.equal(runCommandRefusal(id, { allowOpaque: [id] }, CHOICES), null);
+  });
+});
+
+// The scripts of the fixture choices, as a fake vault.
+function fakeVault(files) {
+  const store = new Map(Object.entries(files));
+  return {
+    store,
+    read: async (path) => (store.has(path) ? store.get(path) : null),
+  };
+}
+const SCRIPTS = { "S/new-idea.md": "module.exports = async () => 1;", "S/rent.md": "pay();", [VERB_SCRIPT]: "verify();" };
+const ALL_IDS = [
+  ...QA_SETTINGS.choices.filter((c) => c.type === "Macro").map((c) => cid(c.id)),
+  cid("qan:Q/Nested.md#choice"),
+  cid("qan:Q/Verify current note.md#choice:pick-day"),
+  "quickadd:runQuickAdd",
+  "js-engine:execute-js-file",
+  "editor:toggle-bold",
+];
+const save = (input, prev, { ids = ALL_IDS, choices = CHOICES, vault = fakeVault(SCRIPTS) } = {}) =>
+  expandOpaqueWildcards({ allowOpaque: [], wildcards: [], neverOpaque: [], deny: [], ...input }, prev, ids, choices, vault.read);
+
+describe("expandOpaqueWildcards: a save lists the choices a wildcard opens (01.41 pick A, 2026-10-17)", () => {
+  test("a wildcard line becomes the exact ids it opens, with a script snapshot each; the wildcard is kept apart", async () => {
+    const { policy, unreadable } = await save({ allowOpaque: ["quickadd:choice:*"] });
+    assert.deepEqual(policy.allowOpaque, [cid("qan:Q/A.md#choice"), cid("qan:Q/B.md#choice"), cid("qan:Q/New idea.md#choice"), cid("qan:Q/Pay the rent.md#choice")]);
+    assert.ok(policy.allowOpaque.every((e) => !e.endsWith("*")), "exact ids only");
+    assert.deepEqual(policy.opaqueWildcards, ["quickadd:choice:*"]);
+    assert.deepEqual(Object.keys(policy.opaqueSnapshot).sort(), [...policy.allowOpaque].sort());
+    assert.deepEqual(policy.opaqueSnapshot[cid("qan:Q/New idea.md#choice")], { scripts: { "S/new-idea.md": hashScript(SCRIPTS["S/new-idea.md"]) } });
+    assert.deepEqual(policy.opaqueSnapshot[cid("qan:Q/A.md#choice")], { scripts: {} });
+    assert.deepEqual(unreadable, []);
+  });
+
+  test("the expansion skips verbs, Never re-enable, denied ids, non-choice ids and js-engine ids", async () => {
+    const { policy } = await save({
+      wildcards: ["quickadd:*", "js-engine:*"],
+      neverOpaque: [cid("qan:Q/Pay the rent.md#choice")],
+      deny: [cid("qan:Q/B.md#choice")],
+    });
+    assert.deepEqual(policy.allowOpaque, [cid("qan:Q/A.md#choice"), cid("qan:Q/New idea.md#choice")]);
+  });
+
+  test("an exact line the human typed keeps no snapshot, and the save leaves it alone", async () => {
+    const hand = cid("qan:Q/New idea.md#choice");
+    const { policy } = await save({ allowOpaque: [hand, "quickadd:runQuickAdd"], wildcards: ["quickadd:choice:*"] });
+    assert.ok(policy.allowOpaque.includes(hand));
+    assert.ok(policy.allowOpaque.includes("quickadd:runQuickAdd"));
+    assert.equal(policy.opaqueSnapshot[hand], undefined);
+    assert.equal(policy.opaqueSnapshot["quickadd:runQuickAdd"], undefined);
+  });
+
+  test("removing the wildcard removes the ids it added; a line it added is found again, not kept as hand-typed", async () => {
+    const first = await save({ wildcards: ["quickadd:choice:*"] });
+    const again = await save({ allowOpaque: first.policy.allowOpaque, wildcards: [] }, first.policy.opaqueSnapshot);
+    assert.deepEqual(again.policy.allowOpaque, []);
+    assert.deepEqual(again.policy.opaqueSnapshot, {});
+  });
+
+  test("a choice whose script cannot be read stays closed and is named", async () => {
+    const vault = fakeVault({ "S/rent.md": "pay();" });
+    const { policy, unreadable } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { vault });
+    assert.ok(!policy.allowOpaque.includes(cid("qan:Q/New idea.md#choice")));
+    assert.deepEqual(unreadable, [cid("qan:Q/New idea.md#choice")]);
+  });
+
+  test("no QuickAdd: the wildcard is kept but opens nothing", async () => {
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { choices: null });
+    assert.deepEqual(policy.allowOpaque, []);
+    assert.deepEqual(policy.opaqueWildcards, ["quickadd:choice:*"]);
+  });
+});
+
+describe("the gate after a save: exact ids and snapshots (01.41 pick A)", () => {
+  test("a stored wildcard opens nothing at call time (fail closed), with a message pointing to the save", async () => {
+    const reason = runCommandRefusal(cid("qan:Q/New idea.md#choice"), { allowOpaque: ["quickadd:choice:*"] }, CHOICES);
+    assert.match(reason, /wildcard/);
+    assert.match(reason, /save/);
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }, CHOICES));
+    assert.ok(cliCommandRefusal("quickadd:run", { allowOpaque: ["quickadd:*"] }));
+  });
+
+  test("an id the save added opens while its scripts hash the same", async () => {
+    const vault = fakeVault(SCRIPTS);
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { vault });
+    const id = cid("qan:Q/New idea.md#choice");
+    assert.equal(runCommandRefusal(id, policy, CHOICES), null);
+    assert.equal(await runCommandSnapshotRefusal(id, policy, CHOICES, vault.read), null);
+  });
+
+  test("a changed script closes the id until the next save, and the next save opens it again", async () => {
+    const vault = fakeVault(SCRIPTS);
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { vault });
+    const id = cid("qan:Q/New idea.md#choice");
+    vault.store.set("S/new-idea.md", "module.exports = async () => { /* changed */ };");
+    assert.equal(runCommandRefusal(id, policy, CHOICES), null, "the sync half cannot see a hash");
+    assert.match(await runCommandSnapshotRefusal(id, policy, CHOICES, vault.read), /script changed since you saved the wildcard; save the setting again to open it/);
+    vault.store.delete("S/new-idea.md");
+    assert.ok(await runCommandSnapshotRefusal(id, policy, CHOICES, vault.read), "a script gone");
+    vault.store.set("S/new-idea.md", "v2");
+    const resaved = await save({ allowOpaque: policy.allowOpaque, wildcards: policy.opaqueWildcards }, policy.opaqueSnapshot, { vault });
+    assert.equal(await runCommandSnapshotRefusal(id, resaved.policy, CHOICES, vault.read), null);
+  });
+
+  test("a choice that now runs another script list is closed", async () => {
+    const vault = fakeVault(SCRIPTS);
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { vault });
+    const id = cid("qan:Q/A.md#choice");
+    const edited = quickAddChoicesFrom({ choices: QA_SETTINGS.choices.map((c) => (c.id === "qan:Q/A.md#choice" ? qa(c.id, "A", [{ type: "UserScript", path: "S/rent.md" }]) : c)) });
+    assert.equal(runCommandRefusal(id, policy, edited), null);
+    assert.ok(await runCommandSnapshotRefusal(id, policy, edited, vault.read));
+  });
+
+  test("a choice that now runs a verb, or is on Never re-enable, is closed by the sync half", async () => {
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] });
+    const id = cid("qan:Q/A.md#choice");
+    const edited = quickAddChoicesFrom({ choices: QA_SETTINGS.choices.map((c) => (c.id === "qan:Q/A.md#choice" ? qa(c.id, "A", [{ type: "Choice", choiceId: "qan:Q/Verify current note.md#choice" }]) : c)) });
+    assert.match(runCommandRefusal(id, policy, edited), /no longer passes the wildcard's checks/);
+    assert.ok(runCommandRefusal(id, { ...policy, neverOpaque: [id] }, CHOICES));
+    assert.ok(runCommandRefusal(id, policy, null), "QuickAdd gone");
+  });
+
+  test("a choice added after the save stays closed until the human saves again; the count then shows it", async () => {
+    const vault = fakeVault(SCRIPTS);
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] }, undefined, { vault });
+    const late = "qan:Q/Late.md#choice";
+    const settings2 = { choices: [...QA_SETTINGS.choices, qa(late, "Late")] };
+    const choices2 = quickAddChoicesFrom(settings2);
+    const ids2 = [...ALL_IDS, cid(late)];
+    assert.ok(runCommandRefusal(cid(late), policy, choices2), "not listed: closed");
+    assert.ok(!reenabledOpaqueCommandIds(ids2, policy, choices2).includes(cid(late)));
+    const resaved = await save({ allowOpaque: policy.allowOpaque, wildcards: policy.opaqueWildcards }, policy.opaqueSnapshot, { ids: ids2, choices: choices2, vault });
+    assert.equal(runCommandRefusal(cid(late), resaved.policy, choices2), null);
+    assert.ok(reenabledOpaqueCommandIds(ids2, resaved.policy, choices2).includes(cid(late)));
+  });
+
+  test("an id typed by hand keeps today's exact-entry behaviour: no snapshot, no hash check", async () => {
+    const id = cid("qan:Q/New idea.md#choice");
+    const policy = { allowOpaque: [id] };
+    assert.equal(runCommandRefusal(id, policy, CHOICES), null);
+    assert.equal(runCommandRefusal(id, policy), null, "no lookup needed for an exact entry");
+    assert.equal(await runCommandSnapshotRefusal(id, policy, CHOICES, async () => null), null);
+    assert.equal(await runCommandSnapshotRefusal("quickadd:runQuickAdd", policy, null, async () => null), null);
+  });
+
+  test("deny wins over an id the save added", async () => {
+    const { policy } = await save({ wildcards: ["quickadd:choice:*"] });
+    const id = cid("qan:Q/A.md#choice");
+    assert.ok(runCommandRefusal(id, { ...policy, deny: [id] }, CHOICES));
+  });
+});
+
+describe("normalizeCliPolicy", () => {
+  test("defaults: empty lists and an empty snapshot", () => {
+    for (const raw of [undefined, null, "x", 3, []]) {
+      assert.deepEqual(normalizeCliPolicy(raw), { deny: [], allowOpaque: [], neverOpaque: [], opaqueWildcards: [], opaqueSnapshot: {} });
+    }
+  });
+  test("drops malformed values and keeps well-formed ones", () => {
+    const h = hashScript("x");
+    const out = normalizeCliPolicy({
+      deny: ["a", 3],
+      allowOpaque: ["quickadd:choice:ok", "quickadd:choice:bad", "quickadd:choice:hand", null],
+      neverOpaque: "nope",
+      opaqueWildcards: ["quickadd:choice:*", "not-a-glob", 7],
+      opaqueSnapshot: {
+        "quickadd:choice:ok": { scripts: { "S/x.md": h } },
+        "quickadd:choice:bad": { scripts: { "S/x.md": "not-a-hash" } },
+        "quickadd:choice:gone": { scripts: {} },
+      },
+    });
+    assert.deepEqual(out.deny, ["a"]);
+    assert.deepEqual(out.neverOpaque, []);
+    assert.deepEqual(out.opaqueWildcards, ["quickadd:choice:*"]);
+    assert.deepEqual(out.opaqueSnapshot, { "quickadd:choice:ok": { scripts: { "S/x.md": h } } });
+    assert.deepEqual(out.allowOpaque, ["quickadd:choice:ok", "quickadd:choice:hand"], "an id with a malformed snapshot is dropped, never kept as hand-typed");
+  });
+  test("a snapshot that is an array is dropped", () => {
+    assert.deepEqual(normalizeCliPolicy({ allowOpaque: ["x"], opaqueSnapshot: [1] }).opaqueSnapshot, {});
   });
 });
 
@@ -197,48 +381,40 @@ describe("runCommandRefusal: command ids", () => {
     assert.equal(runCommandRefusal("daily-notes", {}), null);
   });
 
-  test("allowOpaque: an exact entry re-enables one id; a trailing-* entry re-enables a family of command ids", () => {
+  test("allowOpaque: an exact entry re-enables one id; a trailing-* entry opens nothing at call time", () => {
     assert.equal(runCommandRefusal("quickadd:runQuickAdd", { allowOpaque: ["quickadd:runQuickAdd"] }), null);
     assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:runQuickAdd"] }));
-    // A glob is honoured for QuickAdd choice ids (Nelson, 2026-10-14), resolved through QuickAdd's settings.
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }, CHOICES), "not a choice");
-    assert.equal(runCommandRefusal(cid("qan:Q/New idea.md#choice"), { allowOpaque: ["quickadd:choice:*"] }, CHOICES), null);
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:choice:*"] }, CHOICES), "outside the family");
+    // A wildcard is expanded at the human's save (01.41 pick A, 2026-10-17); a stored one is not honoured.
+    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"] }, CHOICES));
+    assert.ok(runCommandRefusal(cid("qan:Q/New idea.md#choice"), { allowOpaque: ["quickadd:choice:*"] }, CHOICES));
   });
 
-  test("a glob never re-enables an accept verb's QuickAdd choice; only an exact entry can", () => {
-    const policy = { allowOpaque: ["quickadd:*", "quickadd:choice:*"] };
+  test("an accept verb's QuickAdd choice: no wildcard reaches it; only an exact entry can", () => {
     for (const verb of ["Verify current note", "Reopen current note", "Request revision", "Answer current note", "Reject current note"]) {
       const id = `quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/${verb}.md#choice`;
-      assert.ok(runCommandRefusal(id, policy), verb);
+      assert.ok(runCommandRefusal(id, { allowOpaque: ["quickadd:*", "quickadd:choice:*"] }), verb);
       assert.equal(isAcceptVerbCommandId(id), true, verb);
+      assert.equal(wildcardMayOpen(id, {}, CHOICES), false, verb);
     }
     const exact = "quickadd:choice:qan:00-09 System/00 System management/00.14 QuickAdd choices/Verify current note.md#choice";
     assert.equal(runCommandRefusal(exact, { allowOpaque: [exact] }), null, "an exact entry is the human naming that one command");
     assert.equal(isAcceptVerbCommandId("quickadd:choice:qan:Notes/Verify current note draft.md#choice"), false);
   });
 
-  test("Never re-enable stops a glob, not an exact entry (01.41 pick A)", () => {
+  test("Never re-enable stops a wildcard, not an exact entry (01.41 pick A)", () => {
     const priv = cid("qan:Q/Pay the rent.md#choice");
-    const other = cid("qan:Q/New idea.md#choice");
-    const policy = { allowOpaque: ["quickadd:*"], neverOpaque: [priv] };
-    assert.ok(runCommandRefusal(priv, policy, CHOICES), "a never-listed id stays refused under a glob");
-    assert.ok(runCommandRefusal(`${priv}:pick-day`, policy, CHOICES), "and its pick-day variant");
-    assert.equal(runCommandRefusal(other, policy, CHOICES), null, "the glob still opens the others");
-    assert.equal(runCommandRefusal(priv, { allowOpaque: ["quickadd:*", priv], neverOpaque: [priv] }, CHOICES), null, "an exact re-enable is a deliberate act");
-    assert.ok(runCommandRefusal(priv, { allowOpaque: ["quickadd:*"], neverOpaque: ["quickadd:choice:qan:Q/Pay*"] }, CHOICES), "a prefix on the never list");
-    assert.ok(runCommandRefusal(other, { allowOpaque: ["quickadd:*"], neverOpaque: [priv], deny: [other] }, CHOICES), "deny still wins");
+    assert.equal(wildcardMayOpen(priv, { neverOpaque: [priv] }, CHOICES), false);
+    assert.equal(wildcardMayOpen(`${priv}:pick-day`, { neverOpaque: [priv] }, CHOICES), false, "and its pick-day variant");
+    assert.equal(wildcardMayOpen(priv, { neverOpaque: ["quickadd:choice:qan:Q/Pay*"] }, CHOICES), false, "a prefix on the never list");
+    assert.equal(runCommandRefusal(priv, { allowOpaque: [priv], neverOpaque: [priv] }, CHOICES), null, "an exact re-enable is a deliberate act");
   });
 
   test("reenabledOpaqueCommandIds lists what the policy opens today, sorted, opaque families only", () => {
     const ids = [cid("qan:Q/B.md#choice"), cid("qan:Q/A.md#choice"), cid("qan:Q/Verify current note.md#choice"), "js-engine:run", "editor:toggle-bold"];
     assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: [] }, CHOICES), []);
-    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["quickadd:*", "js-engine:*"], neverOpaque: [cid("qan:Q/B.md#choice")] }, CHOICES), [cid("qan:Q/A.md#choice")]);
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["quickadd:*", "js-engine:*"] }, CHOICES), [], "stored wildcards open nothing");
+    assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: [cid("qan:Q/B.md#choice"), cid("qan:Q/A.md#choice")] }, CHOICES), [cid("qan:Q/A.md#choice"), cid("qan:Q/B.md#choice")]);
     assert.deepEqual(reenabledOpaqueCommandIds(ids, { allowOpaque: ["js-engine:run"] }, CHOICES), ["js-engine:run"]);
-  });
-
-  test("deny still wins over a glob re-enable", () => {
-    assert.ok(runCommandRefusal("quickadd:toggleMacro", { allowOpaque: ["quickadd:*"], deny: ["quickadd:toggleMacro"] }));
   });
 
   test("no cross-surface leak: a run_command-shaped allowOpaque entry does not re-enable CLI commands", () => {
