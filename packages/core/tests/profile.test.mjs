@@ -30,7 +30,12 @@ describe("profiles", () => {
     const p = resolveProfile("read+message");
     assert.equal(READ_MESSAGE_PROFILE_TOOLS.length, 16);
     assert.equal(MESSAGE_TOOL, "vaultmcp_send_message");
-    assert.deepEqual([...p.tools].sort(), [...READ_MESSAGE_PROFILE_TOOLS].sort());
+    assert.deepEqual([...p.tools].sort(), [
+      "obsidian_check_links", "obsidian_find_by_tag", "obsidian_get_backlinks", "obsidian_get_outlinks",
+      "obsidian_list_folders", "obsidian_list_notes", "obsidian_read_note", "obsidian_read_note_parsed",
+      "obsidian_read_notes", "obsidian_resolve", "obsidian_resolve_uid", "obsidian_search_by_frontmatter",
+      "obsidian_search_notes", "obsidian_tags_list", "vaultmcp_bases_list", "vaultmcp_send_message",
+    ], "the exact set, written out, so a changed list is a visible change");
     for (const t of READ_MESSAGE_PROFILE_TOOLS) if (t !== MESSAGE_TOOL) assert.ok(READ_PROFILE_TOOLS.includes(t), `${t} is also a read-profile tool`);
     for (const t of [
       "obsidian_write_note", "obsidian_write_notes", "obsidian_append_note", "obsidian_patch_note", "obsidian_create_note",
