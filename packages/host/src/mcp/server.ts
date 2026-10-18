@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -78,6 +78,12 @@ export interface BuildOpts {
    * never be mislabeled.
    */
   clientLabel?: string;
+  /**
+   * The connection profile's NAME, from the connection preamble (#521; core's profile.ts). Absent ⇒
+   * `full`, the surface a local connection always had. Any other name builds only that profile's
+   * tools; an unknown name builds none.
+   */
+  profile?: string;
 }
 
 // `BuildOpts.providerTools` and its `ProviderToolContext` are GONE (S3c).
@@ -122,7 +128,29 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // registry instead of registering it; the three meta-tools registered at the
   // end are the only tools the session sees. The guard wrapper travels with
   // the captured handler, so read-only/allowlist bind identically in both modes.
-  const origRegister: any = server.registerTool.bind(server);
+  // THE CONNECTION PROFILE (#521) sits HERE, at origRegister, the one registrar every path ends
+  // in: the patched registerTool below (fs tools, hand-registered tools, modules, satellites through
+  // registerExternalTools), obsidian_write_notes and the Code Mode meta-tools. A name outside the
+  // profile is never registered: absent from tools/list, "not found" on call. The handler of a name
+  // inside it keeps a call-time check (profileCallRefusal), outside the guard, so a refused call
+  // reaches neither the queue nor the journal. `full` (no profile in the preamble) is unchanged.
+  const profile = resolveProfile(opts.profile);
+  const sdkRegister: any = server.registerTool.bind(server);
+  const origRegister: any =
+    profile.tools === null
+      ? sdkRegister
+      : (name: string, def: any, handler: any) => {
+          if (!profileAllows(profile, name)) return undefined;
+          const mutating = def?.annotations?.readOnlyHint === false;
+          return sdkRegister(name, def, (args: unknown, extra: unknown) => {
+            const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
+            return refused ? codedError(refused.code, refused.message) : handler(args, extra);
+          });
+        };
+  // Code Mode under a profile: the meta-tools are outside every profile, so they are not
+  // registered, and a captured registry would hide the filter behind obsidian_call_tool. The safe
+  // pick: a profiled connection gets the plain, filtered surface, whatever its preamble asked.
+  if (profile.tools !== null) opts = { ...opts, codeMode: false };
   // Resolved per call, not once: the MCP client's identity only exists after
   // the initialize handshake, which happens well after the server is built.
   // `server` is the transport's own assertion — which vault, which install,

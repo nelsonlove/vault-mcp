@@ -16,6 +16,7 @@ import { CHARACTER_LIMIT, decodeHtmlEntities } from "./fs-backend/vault.js";
 import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
 import { z } from "zod";
+import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -85,6 +86,15 @@ export interface RegisterFsToolsOpts {
    * the same serializer `obsidian_write_notes` uses. Absent ⇒ `jsonFlowYaml`.
    */
   stringifyYaml?: (obj: Record<string, unknown>) => string;
+  /**
+   * The connection profile (profile.ts, #521). A tool outside it is not registered, and the
+   * handler of one inside it keeps a call-time check (the profile's own write scope for a write).
+   * Absent ⇒ `full`, as before. The plugin needs none: its patched registerTool filters every
+   * registration, these included; the file-system server passes it here.
+   */
+  profile?: ConnProfile;
+  /** Whether a vault-relative path exists, for the profile's create-only check. Absent ⇒ every path reads as existing, so a profile write is refused. */
+  exists?: (path: string) => boolean;
 }
 
 /**
@@ -122,8 +132,17 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
 
   const dec = (s: string): string => (decodeHtml ? decodeHtmlEntities(s) : s);
 
+  const profile = opts.profile;
   for (const tool of FS_TOOLS) {
-    const handler = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
+    if (profile && !profileAllows(profile, tool.name)) continue;
+    const inner = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
+    const mutating = tool.annotations?.readOnlyHint === false;
+    const handler = profile
+      ? (args: any) => {
+          const refused = profileCallRefusal(profile, tool.name, mutating, args, opts.exists ?? (() => true));
+          return refused ? fail(Object.assign(new Error(refused.message), { code: refused.code })) : inner(args);
+        }
+      : inner;
     reg.registerTool(
       tool.name,
       {
