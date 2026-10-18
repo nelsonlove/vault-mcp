@@ -74,6 +74,54 @@ Phase 1 of the deployment plan (HANDOFF.md):
 
 Path safety: all filesystem access goes through `resolveInVault`, which refuses — typed `invalid_path` — a path that climbs out of the vault (`../x.md` is not folded back in; #444), an absolute path, a backslash, and a path into an ignored folder (`.obsidian`, `.trash`, `.git`, `node_modules`), and checks that no symlink leads outside `VAULT_PATH`.
 
+## Remote front: connection profiles, rate limit, request log
+
+The presence-aware front (`src/front.ts`, `npm start`) gates `/mcp` with the static bearer (`VAULT_MCP_TOKEN`) or OAuth 2.1 (`AUTH_*`). Since #521 it also decides, per credential, which tools the connection gets, limits the request rate, and writes a request log.
+
+Where it runs: the Pro's Tailscale Funnel road serves the claude.ai connector; ChatGPT (typed and voice) is served from vaultd on Orange, per the ChatGPT plan (#524, #525). The per-connection profile is the same code on both.
+
+### Connection profiles
+
+A profile is an allowlist of tool names, defined in `@vault-mcp/core` (`packages/core/src/profile.ts`). A tool that is not on it is never registered: it is absent from `tools/list` and "not found" on call. A call-time check stays behind it. A new tool is outside every profile except `full` until it is added there.
+
+| Profile | Tools |
+| --- | --- |
+| `full` | Every tool. What a local connection (the Claude Code bridge) gets, and what every credential gets when no mapping is set. |
+| `read` | The 23 read tools in `READ_PROFILE_TOOLS` (reads, search, links, uids, tags, bookmarks, workspaces, snippets, command ids, plugin and environment info, `vaultmcp_conformance_debt`, `vaultmcp_bases_list`). No write, no command, no Code Mode meta-tool. |
+| `read+inbox` | The `read` set plus `obsidian_write_note`, which may only create a new note directly inside a `.01` slot folder (`XX.01` or `XX.01 <name>`, at any depth). An overwrite, an existing note, a missing folder and every other write are refused (`write_scope`). This connection-level scope is checked on top of the vault-wide write scope, never instead of it. |
+
+`VAULT_MCP_PROFILES` maps a credential id to a profile, as JSON. A credential id names a credential without carrying it, so no secret is in the value: `token` is the static bearer, `sub:<subject>` an OAuth subject.
+
+```bash
+VAULT_MCP_PROFILES='{"token":"full","sub:user_2abc":"read"}'
+```
+
+- Unset or empty: every authenticated request gets `full` (the behaviour before profiles).
+- Set: a credential with no entry is refused with 403.
+- A value that does not parse, a key that is not `token` or `sub:…`, or an unknown profile name: the front refuses to start.
+
+How the profile travels: the front gives each spawned bridge `VAULT_MCP_PROFILE` (set per session, never copied from the front's own environment; `full` sends nothing). The bridge sends it in the connection preamble, only to a plugin whose discovery file advertises the `profile` capability; against an older plugin it refuses to connect, at start and on reconnect. The plugin builds the connection's server from it (`buildMcpServer`'s `profile` option, filtered at `origRegister`, which every registration path ends in, satellites included). An unknown name builds no tools. Under a profile, Code Mode is ignored: the connection gets the plain, filtered surface. A session id opened under one profile answers as unknown under another. FS mode applies the same filter in `registerFsTools`.
+
+### Paths from `MCP_RESOURCE_URL`
+
+The endpoint answers on `/mcp` and on the path of `MCP_RESOURCE_URL` (for `https://host/vault-mcp/mcp`, also `/vault-mcp/mcp`), so a `tailscale serve --set-path` mount works whether or not it strips its prefix. The protected-resource metadata (RFC 9728) is served at `/.well-known/oauth-protected-resource`, its `/mcp` suffix, the resource path's suffix (`/.well-known/oauth-protected-resource/vault-mcp/mcp`), and each of those under the mount. The `WWW-Authenticate` `resource_metadata` URL is the RFC 9728 form for the resource URL.
+
+### Rate limit
+
+A fixed window per minute, in memory. A refused request gets 429 with `Retry-After`.
+
+- `VAULT_MCP_RATE_IP_PER_MIN` (default 300): per client IP, checked before auth.
+- `VAULT_MCP_RATE_CRED_PER_MIN` (default 120): per credential id, checked after auth.
+- `0` turns a limit off.
+- `VAULT_MCP_TRUST_PROXY` (default `loopback`): Express's "trust proxy", which decides who may name the client IP in `X-Forwarded-For`. The default trusts only a loopback peer (tailscale serve, cloudflared).
+
+### Request log
+
+One JSON line per `/mcp` request, refusals included: `time`, `ip`, `credential` (the credential id, never the token), `profile`, `http` (the verb), `rpc` (the JSON-RPC method), `tool` (the tool name of a `tools/call`), `status`, `ms`. No note content and no arguments are written.
+
+- `VAULT_MCP_REQUEST_LOG`: the file, or `off`. Default: `$XDG_STATE_HOME/vault-mcp-remote/requests.jsonl` (`~/.local/state/vault-mcp-remote/requests.jsonl`).
+- `VAULT_MCP_REQUEST_LOG_MAX_BYTES` (default 10 MB): at the cap the file rotates to `.1`, `.2`, `.3`; three are kept.
+
 ## Notes / limitations
 
 - Search returns **one matching line per note** to keep results broad and the
