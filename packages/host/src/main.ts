@@ -4,7 +4,17 @@ import { UnixSocketListener } from "./socket-transport.js";
 import { buildMcpServer } from "./mcp/server.js";
 import type { CapturedRegistry } from "./mcp/tools-code-mode.js";
 import { openToolRunner } from "./tool-runner.js";
-import { vaultSlug, socketPath, stateDir, bridgeDestPath, configurePaths } from "./paths.js";
+import { vaultSlug, socketPath, stateDir, baseStateDir, bridgeDestPath, configurePaths } from "./paths.js";
+import {
+  forSyncedFile,
+  localSettingsLocation,
+  localSettingsReport,
+  mergeOverride,
+  normalizedMismatches,
+  readLocalSettings,
+  reapplyOverride,
+  type LocalSettingsLoad,
+} from "./local-settings.js";
 import { writeDiscovery, removeDiscovery, writeBridge, type Discovery } from "./discovery.js";
 import { ConnectionSetupModal, VaultMcpSettingTab } from "./connection-ui.js";
 import { findClaudeBinary, claudeIsRegistered, claudeRegister, claudeRemove, claudeEnsureConnectPlugin } from "./claude-cli.js";
@@ -319,6 +329,9 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   host: { ...DEFAULT_HOST_SETTINGS },
 };
 
+/** A machine-local override the plugin cannot take (#579): onload stops serving on it. */
+class LocalSettingsError extends Error {}
+
 class DiagnosticsModal extends Modal {
   constructor(app: any, private readonly lines: string[]) { super(app); }
   onOpen() {
@@ -338,6 +351,24 @@ export default class VaultMcpPlugin extends Plugin {
    * adoption is not lost if nothing ever calls `saveSettings`.
    */
   private adoptedSettings: Record<string, unknown> | null = null;
+  /**
+   * The machine-local settings override (#579, local-settings.ts): read at the
+   * very start of onload, before anything else is done. `null` only before
+   * that read. An `error` state means the plugin does not serve.
+   */
+  localSettings: LocalSettingsLoad | null = null;
+  /**
+   * The settings as they stood at load BEFORE the override was merged: the
+   * synced file's values, defaults and one-time seeds. A save writes these (or
+   * the synced file's newer value) for every overridden key, never the
+   * override's (`forSyncedFile`).
+   */
+  private syncedBase: Record<string, unknown> | null = null;
+
+  /** The dotted setting paths this machine's override sets (names, not values); empty with no override. */
+  overriddenKeys(): string[] {
+    return this.localSettings?.state === "loaded" ? [...this.localSettings.keys] : [];
+  }
   // Live-mount handle for the scheme Inbox pane (jd-dashboard fold Stage B,
   // governor#286): one shared Component for the scheme panes, gated by the
   // "scheme" module toggle. (The Drift pane, Stage C, left with the conformance
@@ -393,6 +424,17 @@ export default class VaultMcpPlugin extends Plugin {
     // install that predates the key is seeded once with what #455 hard-coded.
     const recordFoldersLoad = recordFoldersOnLoad(own, seed);
     this.settings.recordFolders = recordFoldersLoad.recordFolders;
+    // #579 — the machine-local override, merged over the synced settings key by
+    // key (objects deep-merge, everything else replaces), BEFORE the
+    // normalizers below, so an overridden value is coerced like any other.
+    // The pre-merge settings are kept for saves (`syncedBase`).
+    const local = this.localSettings;
+    if (local?.state === "loaded") {
+      this.syncedBase = structuredClone(this.settings) as unknown as Record<string, unknown>;
+      this.settings = mergeOverride(this.settings as unknown as Record<string, unknown>, local.override) as unknown as VaultMcpSettings;
+    } else {
+      this.syncedBase = null;
+    }
     // The record identifier: coerce a partial or malformed value to the default
     // rather than crashing the probe or the settings tab. The rule is the
     // kernel's (`normalizeRecordIdentification`), tested there.
@@ -448,12 +490,38 @@ export default class VaultMcpPlugin extends Plugin {
     // data.json can extend the perimeter but never shrink or restate the
     // hardcoded accepted-family floor).
     setDeclaredProtectedProperties(this.settings.protectedProperties);
+    // #579 — an overridden value a normalizer above changed is a value the
+    // setting does not take (an unknown mode, a relative path, …). It must not
+    // be replaced by a default in silence: an override often makes a machine
+    // stricter, so the plugin stops instead. Checked before the persist below,
+    // so a refused override never reaches a save.
+    if (local?.state === "loaded") {
+      const bad = normalizedMismatches(this.settings, local.override, local.keys);
+      if (bad.length > 0) {
+        throw new LocalSettingsError(
+          `${local.location.path}: the plugin does not take the value given for ${bad.join(", ")} (an unknown value, or one the setting would change)`,
+        );
+      }
+    }
     // Persist NOW if the territories key was absent (seeded or fresh), so the
     // seeding branch above can never run a second time for this install.
     if (territories.persist || recordFoldersLoad.persist) await this.saveSettings();
   }
   async saveSettings() {
-    await this.saveData(this.settings);
+    const local = this.localSettings;
+    if (local?.state === "loaded" && local.keys.length > 0) {
+      // #579 — the override never reaches the synced data.json: every
+      // overridden key is written with the synced file's own value (as it is
+      // now, else as it was at load), never this machine's. Then the override
+      // is set again in memory, so a settings-tab edit of an overridden key
+      // (the tab locks those controls) cannot take effect here either.
+      const syncedNow = ((await this.loadData()) as Record<string, unknown> | null) ?? null;
+      const settings = this.settings as unknown as Record<string, unknown>;
+      await this.saveData(forSyncedFile(settings, local.keys, syncedNow, this.syncedBase));
+      reapplyOverride(settings, local.override, local.keys);
+    } else {
+      await this.saveData(this.settings);
+    }
     // Adoption is spent the moment the host owns a data.json of its own.
     this.adoptedSettings = null;
     // Keep the core guard registry live with settings-tab edits (#224).
@@ -562,7 +630,37 @@ export default class VaultMcpPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("delete", (file) => index.onDeleted(file.path)));
   }
 
+  /**
+   * Stop before serving, loudly (#579): a sticky Notice beside the console
+   * line, the same discipline as the adoption notices below. Nothing is bound,
+   * written or registered after this.
+   */
+  private refuseToServe(msg: string): void {
+    console.error(`[vault-mcp] ${msg}`);
+    try { new Notice(`Vault MCP: ${msg}`, 0); } catch { /* pre-layout; the console line stands */ }
+  }
+
   async onload() {
+    // ── the machine-local settings override (#579), FIRST ─────────────────────
+    //
+    // Looked up through the environment only (VAULT_MCP_LOCAL_SETTINGS, else
+    // <VAULT_MCP_STATE_DIR or ~/.claude/vault-mcp>/settings.local.json), never
+    // through the host.stateDir setting, so no synced value can move it. A file
+    // that is present but cannot be used FAILS CLOSED: the plugin does not
+    // serve, rather than run on the synced values the override was there to
+    // replace. An absent file is no override.
+    this.localSettings = readLocalSettings(
+      localSettingsLocation(baseStateDir()),
+      DEFAULT_SETTINGS as unknown as Record<string, unknown>,
+    );
+    if (this.localSettings.state === "error") {
+      this.refuseToServe(
+        `NOT SERVING: the machine-local settings override cannot be used — ${this.localSettings.error}. ` +
+          "Nothing falls back to the synced settings. Fix or remove the file, then reload the plugin.",
+      );
+      return;
+    }
+
     // ── the host's one-shot adoption from the pre-split plugin folder ────────
     //
     // The suite split gave the host back the id `vault-mcp` and left the
@@ -625,7 +723,16 @@ export default class VaultMcpPlugin extends Plugin {
     }
 
     // Load settings FIRST so the enabled gate and guard settings are available.
-    await this.loadSettings();
+    try {
+      await this.loadSettings();
+    } catch (e) {
+      if (!(e instanceof LocalSettingsError)) throw e;
+      this.refuseToServe(
+        `NOT SERVING: the machine-local settings override cannot be used — ${e.message}. ` +
+          "Nothing falls back to the synced settings. Fix or remove the file, then reload the plugin.",
+      );
+      return;
+    }
     // Persist an adoption immediately rather than waiting for a settings edit:
     // an adopted-but-unsaved allowlist would be lost on the next reload, and
     // "the guard config silently reset to OPEN" is the failure this whole
@@ -812,6 +919,8 @@ export default class VaultMcpPlugin extends Plugin {
       syncGuard: () => this.settings.syncGuard,
       createNoteFlow: () => this.settings.createNoteFlow,
       host: () => this.settings.host,
+      // #579 — where this machine's override is looked up, whether it was found, and the key NAMES it sets.
+      localSettings: () => localSettingsReport(this.localSettings!),
       serverIdentity,
       sessions: {
         // LIFECYCLE ONLY (condition 7 — the host mints). `get` is deliberately
@@ -1013,6 +1122,7 @@ export default class VaultMcpPlugin extends Plugin {
 
   async onunload() {
     await this.listener?.close();
-    removeDiscovery(this.slug);
+    // No slug: onload stopped before naming the vault (#579, an override it could not take), so there is nothing to remove.
+    if (this.slug) removeDiscovery(this.slug);
   }
 }
