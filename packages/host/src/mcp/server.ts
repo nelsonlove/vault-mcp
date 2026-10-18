@@ -141,21 +141,32 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // profile. When they do, every reply, refusals included, passes through it here, so no
   // registration path skips it. FAIL CLOSED: settings the scanner refuses (an unknown profile
   // name, a bad config) while a profile is listed give every remote connection, and a local one
-  // when `full` is listed, no tools at all, and the reason is logged. They never fall back to sending replies unscanned.
+  // when `full` is listed, no tools at all, and the reason is logged. A list that cannot be parsed
+  // refuses every connection, local ones included. They never fall back to sending replies unscanned.
   let scanner: SecretScanner | undefined;
   let redactRefused = false;
   {
     const st = ctx.getSettings();
-    const listed = st.redactProfiles ?? [];
+    const raw = (st.redactProfiles ?? []).filter((e) => typeof e === "string" && e.trim() !== "");
     const rawConfig = st.redactConfig?.trim() ?? "";
-    if (listed.length > 0 || rawConfig) {
+    if (raw.length > 0 || rawConfig) {
+      // The list is PARSED first (an entry may be a comma list or a JSON array), and the fail-closed
+      // check reads the parsed names. If it cannot be parsed, every connection it could have meant,
+      // `full` included, is refused.
+      let listed: string[] | null = null;
       try {
+        listed = raw.flatMap((e) => parseProfileList(e));
+      } catch {
+        listed = null;
+      }
+      try {
+        if (listed === null) throw new Error("the redaction profile list cannot be parsed");
         const config = rawConfig ? JSON.parse(rawConfig) : undefined;
-        scanner = scannerFor(buildRedaction(parseProfileList(listed.join("\n")), config), profile.name);
+        scanner = scannerFor(buildRedaction(listed, config), profile.name);
       } catch (e) {
         // A bad config with no profile listed leaves the scanner off and refuses nothing.
-        const covers = listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
-        console.error(`[vault-mcp] secret scanner settings refused (${(e as Error).message}); ${covers ? "this connection gets no tools" : "this local connection is not covered"}`);
+        const covers = listed === null ? true : listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
+        console.error(`[vault-mcp] secret scanner settings refused (${(e as Error).message}); ${covers ? "this connection gets no tools" : "this connection is not covered"}`);
         redactRefused = covers;
       }
     }

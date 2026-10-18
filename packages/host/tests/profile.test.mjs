@@ -212,6 +212,17 @@ describe("the secret scanner: off by default, on by setting", () => {
       assert.deepEqual(names(build({ profile: "read" }, result, bad)), [], JSON.stringify(bad));
       assert.ok(names(build({}, result, bad)).includes("obsidian_write_note"), JSON.stringify(bad));
     }
+    // The fail-closed check reads the PARSED list: a comma line or a JSON array that names `full`
+    // refuses the local connection too, and a list that cannot be parsed refuses every connection.
+    for (const bad of [
+      { redactProfiles: ["full, read+message"], redactConfig: "{not json" },
+      { redactProfiles: ['["full","bogus"]'], redactConfig: "{not json" },
+      { redactProfiles: ['["full","bogus"]'] },
+      { redactProfiles: ['["full"'] },
+    ]) {
+      assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+    }
     // A bad config with no profile listed leaves the scanner off and refuses nothing.
     assert.ok(names(build({ profile: "read+message" }, result, { redactConfig: "{not json" })).length > 0);
   });
