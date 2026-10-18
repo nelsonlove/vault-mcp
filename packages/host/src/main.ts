@@ -671,7 +671,7 @@ export default class VaultMcpPlugin extends Plugin {
     // ── the machine-local settings override (#579), FIRST ─────────────────────
     //
     // Looked up through the environment only (VAULT_MCP_LOCAL_SETTINGS, else
-    // <VAULT_MCP_STATE_DIR or ~/.claude/vault-mcp>/settings.local.json), never
+    // <VAULT_MCP_STATE_DIR or ~/.claude/vault-mcp>/local/settings.json), never
     // through the host.stateDir setting, so no synced value can move it. A file
     // that is present but cannot be used FAILS CLOSED: the plugin does not
     // serve, rather than run on the synced values the override was there to
