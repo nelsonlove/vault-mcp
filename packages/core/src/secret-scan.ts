@@ -280,37 +280,60 @@ function blankCell(cell: string): string {
 
 // ── the line pass: markdown tables and YAML blocks ──────────────────────────
 
-const TABLE_ROW = /^[ \t]*\|/;
 const TABLE_SEP = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
 // A YAML key that names a secret, with its value on the lines below (nothing after the colon but
 // a block indicator or a comment). Run on one line at a time, anchored at its start.
 const YAML_HEAD = new RegExp(String.raw`^([ \t]*)((?:- )?[^:\r\n]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])${WRAP}["']?[ \t]*:)[ \t]*(?:[|>][+-]?[0-9]?[ \t]*)?(?:#.*)?\r?$`, "i");
+// A blockquote or callout prefix (`> `, `>> `, `> > `), nested quotes included.
+const QUOTE_PREFIX = /^(?:[ \t]{0,3}>[ \t]?)+/;
+// A table cell boundary: a pipe that is not escaped (`[[Note\|alias]]` keeps its pipe).
+const PIPE = /(?<!\\)\|/;
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 const cellText = (c: string): string => c.trim().replace(/^[*_`]+|[*_`]+$/g, "").trim();
+const isSep = (body: string | undefined): boolean => body !== undefined && body.includes("-") && PIPE.test(body) && TABLE_SEP.test(body);
+
+interface QLine {
+  prefix: string;
+  depth: number;
+  body: string;
+}
+
+function splitQuote(line: string): QLine {
+  const m = line.length && (line[0] === ">" || line[0] === " " || line[0] === "\t") ? QUOTE_PREFIX.exec(line) : null;
+  if (!m) return { prefix: "", depth: 0, body: line };
+  let depth = 0;
+  for (const c of m[0]) if (c === ">") depth++;
+  return { prefix: m[0], depth, body: line.slice(m[0].length) };
+}
 
 /**
- * One pass over the lines. A YAML key that names a secret has its block or list below collapsed
- * into one marker. In a markdown table, a cell that names a secret blanks the cell after it, and a
- * header cell that names a secret blanks its column in every body row to the end of the table.
+ * One pass over the lines, inside blockquotes and callouts too (each line's `>` prefix is set
+ * aside, and the state resets when the quote depth changes). A YAML key that names a secret has
+ * its block or list below collapsed into one marker. In a markdown table (with or without outer
+ * pipes; an escaped `\|` is not a cell boundary), a cell that names a secret blanks the cell after
+ * it, and a header cell that names a secret blanks its column in every body row to the end of the
+ * table.
  */
 function scanLines(text: string): string {
   if (!text.includes("\n") && !text.includes("|")) return text;
-  const lines = text.split("\n");
+  const lines = text.split("\n").map(splitQuote);
   const out: string[] = [];
-  let secretCols: Set<number> | null = null;
+  // The open table: its quote depth, its secret columns, and whether its rows have outer pipes.
+  let table: { depth: number; cols: Set<number> } | null = null;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const { prefix, depth, body } = lines[i];
+    if (table && table.depth !== depth) table = null;
     // A YAML block or list under a secret key. Only lines that hold a colon are tried, and only
-    // up to a length, so the anchored pattern stays cheap.
-    const y = line.length <= 512 && line.includes(":") ? YAML_HEAD.exec(line) : null;
+    // up to a length, so the anchored pattern stays cheap. The block stays at the same quote depth.
+    const y = body.length <= 512 && body.includes(":") ? YAML_HEAD.exec(body) : null;
     if (y) {
       const indent = y[1].length;
-      const headIsItem = /^[ \t]*- /.test(line);
+      const headIsItem = /^[ \t]*- /.test(body);
       let j = i + 1;
       let lastIn = -1;
-      while (j < lines.length) {
-        const l = lines[j];
+      while (j < lines.length && lines[j].depth === depth) {
+        const l = lines[j].body;
         if (l.trim() === "") {
           j++;
           continue;
@@ -324,44 +347,49 @@ function scanLines(text: string): string {
         break;
       }
       if (lastIn > i) {
-        out.push(`${y[1]}${y[2]} ${SECRET_MARK}${line.endsWith("\r") ? "\r" : ""}`);
+        out.push(`${prefix}${y[1]}${y[2]} ${SECRET_MARK}${body.endsWith("\r") ? "\r" : ""}`);
         i = lastIn;
-        secretCols = null;
+        table = null;
         continue;
       }
     }
-    if (TABLE_ROW.test(line)) {
-      if (TABLE_SEP.test(line) && line.includes("-")) {
-        out.push(line);
-        continue;
-      }
-      const parts = line.split("|");
-      const first = 1; // the text before the first pipe is indentation
-      const lastEx = parts.length > 2 && parts[parts.length - 1].trim() === "" ? parts.length - 1 : parts.length;
-      const next = lines[i + 1];
-      if (next !== undefined && TABLE_SEP.test(next) && next.includes("-")) {
-        // A header row: remember the columns that name a secret.
-        secretCols = new Set();
-        for (let k = first; k < lastEx; k++) if (isSecretKeyName(cellText(parts[k]))) secretCols.add(k - first);
-        out.push(line);
-        continue;
-      }
-      let changed = false;
-      for (let k = first; k < lastEx; k++) {
-        const blankThis = (secretCols?.has(k - first) ?? false) || (k > first && isSecretKeyName(cellText(parts[k - 1])));
-        if (blankThis) {
-          const b = blankCell(parts[k]);
-          if (b !== parts[k]) {
-            parts[k] = b;
-            changed = true;
-          }
-        }
-      }
-      out.push(changed ? parts.join("|") : line);
+    const hasPipe = PIPE.test(body);
+    const next = lines[i + 1];
+    const isHeader = hasPipe && !isSep(body) && next !== undefined && next.depth === depth && isSep(next.body);
+    const inTable = hasPipe && (table !== null || /^[ \t]*\|/.test(body));
+    if (!isHeader && !inTable) {
+      table = null;
+      out.push(prefix + body);
       continue;
     }
-    secretCols = null;
-    out.push(line);
+    if (isSep(body)) {
+      out.push(prefix + body);
+      continue;
+    }
+    const parts = body.split(PIPE);
+    // With an outer pipe, the text before it is indentation; without one, the first cell starts the line.
+    const first = parts[0].trim() === "" ? 1 : 0;
+    const lastEx = parts.length > first + 1 && parts[parts.length - 1].trim() === "" ? parts.length - 1 : parts.length;
+    if (isHeader) {
+      const cols = new Set<number>();
+      for (let k = first; k < lastEx; k++) if (isSecretKeyName(cellText(parts[k]))) cols.add(k - first);
+      table = { depth, cols };
+      out.push(prefix + body);
+      continue;
+    }
+    let changed = false;
+    for (let k = first; k < lastEx; k++) {
+      const blankThis = (table?.cols.has(k - first) ?? false) || (k > first && isSecretKeyName(cellText(parts[k - 1])));
+      if (blankThis) {
+        const b = blankCell(parts[k]);
+        if (b !== parts[k]) {
+          parts[k] = b;
+          changed = true;
+        }
+      }
+    }
+    if (!table) table = { depth, cols: new Set() };
+    out.push(prefix + (changed ? parts.join("|") : body));
   }
   return out.join("\n");
 }
@@ -379,22 +407,50 @@ function scanPlain(text: string): string {
 
 // ── search snippets ─────────────────────────────────────────────────────────
 
+// Both search backends trim each snippet, so these rules see a line with no indentation.
 const BASE64_LINE = /^[A-Za-z0-9+/]{24,}={0,2}$/;
 const HEX_LINE = /^[0-9a-fA-F]{24,}$/;
-// An indented one-token value (a YAML list item or scalar under a key out of view): six or more
-// characters, holding a digit or a symbol, and not a link, tag, path or URL.
-const ONE_TOKEN = /^[ \t]+(?:- )?(\S{6,})[ \t]*$/;
+// The short last line of a PEM body (`Fq0b==`) and a PGP checksum line (`=AbCd`).
+const BASE64_TAIL = /^(?:[A-Za-z0-9+/]{2,}={1,2}|=[A-Za-z0-9+/]{4})$/;
+// A one-token line: a YAML list item or block line, its key out of view.
+const ONE_TOKEN = /^(?:- )?(\S{6,})$/;
 
-/** A search snippet with a secret body line blanked, even when its key is out of view. */
+/**
+ * Whether one token looks like a secret value: 6 or more characters, no spaces, a digit or an
+ * inner symbol, and not an email, URL, path, link, tag, file name, plain word with hyphens, or a
+ * pure number, date, time or version.
+ */
+function looksSecret(tok: string): boolean {
+  if (tok.length < 6 || tok.length > 512 || /\s/.test(tok) || isRedacted(tok)) return false;
+  if (!(/[0-9]/.test(tok) || /[A-Za-z0-9][^A-Za-z0-9\s][A-Za-z0-9]/.test(tok))) return false;
+  if (/^(?:\[|#|!|`|<|>|\*\*?[A-Za-z]|[a-z][a-z0-9+.-]*:\/\/|mailto:|https?:)/i.test(tok)) return false;
+  if (tok.includes("/") || tok.includes("](") || tok.includes("[[")) return false;
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(tok)) return false;
+  if (/^[A-Za-z]+(?:[-'][A-Za-z]+)+[.,;:!?]?$/.test(tok)) return false;
+  if (/^[+$€£]?[0-9][0-9.,:\-+%()]*$/.test(tok)) return false;
+  if (/^v?[0-9]+(?:\.[0-9]+)+(?:[-+][A-Za-z0-9.]+)?$/.test(tok)) return false;
+  if (/\.(?:md|markdown|png|jpe?g|gif|svg|webp|pdf|txt|csv|json|ya?ml|base|canvas|html?|js|ts|py)$/i.test(tok)) return false;
+  return true;
+}
+
+/** A search snippet (one trimmed line) with a secret body blanked, even when its key is out of view. */
 function scanSnippet(s: string): string {
   const t = s.trim();
-  if (t.length <= 8192 && ((BASE64_LINE.test(t) && /[0-9+/=]/.test(t)) || HEX_LINE.test(t))) return s.slice(0, indentOf(s)) + SECRET_MARK;
-  const one = s.length <= 512 ? ONE_TOKEN.exec(s) : null;
-  if (one) {
-    const tok = one[1];
-    if (/[^A-Za-z]/.test(tok) && !/^(?:\[\[|#|!|`|https?:)/.test(tok) && !tok.includes("/") && !isRedacted(tok)) {
-      return s.slice(0, s.indexOf(tok)) + SECRET_MARK;
+  if (t.length <= 8192 && ((BASE64_LINE.test(t) && /[0-9+/=]/.test(t)) || HEX_LINE.test(t) || BASE64_TAIL.test(t))) return SECRET_MARK;
+  const one = t.length <= 512 ? ONE_TOKEN.exec(t) : null;
+  if (one && looksSecret(one[1])) return t.slice(0, t.length - one[1].length) + SECRET_MARK;
+  // A table row: blank each cell that holds one secret-looking token.
+  if (t.length <= 8192 && t.startsWith("|") && t.endsWith("|") && t.length > 1) {
+    const parts = t.split(PIPE);
+    let changed = false;
+    for (let k = 1; k < parts.length - 1; k++) {
+      const c = parts[k].trim();
+      if (looksSecret(c)) {
+        parts[k] = parts[k].replace(c, SECRET_MARK);
+        changed = true;
+      }
     }
+    if (changed) return parts.join("|");
   }
   return s;
 }

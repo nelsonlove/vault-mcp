@@ -321,19 +321,34 @@ describe("review round 2: more key forms", () => {
   });
 });
 
-describe("search snippets", () => {
-  const hits = (snippets) => ({ content: [{ type: "text", text: JSON.stringify({ hits: snippets.map((s, i) => ({ path: "a.md", line: i + 1, snippet: s })) }, null, 2) }], structuredContent: { hits: snippets.map((s, i) => ({ path: "a.md", line: i + 1, snippet: s })) } });
+describe("search snippets (trimmed, as both search backends make them)", () => {
+  // Both backends trim each snippet; these inputs are trimmed the same way.
+  const hits = (snippets) => {
+    const h = snippets.map((s, i) => ({ path: "a.md", line: i + 1, snippet: s.trim() }));
+    return { content: [{ type: "text", text: JSON.stringify({ hits: h }, null, 2) }], structuredContent: { hits: h } };
+  };
+  const SECRET = cat("Qx7S3", "CRETv9!");
 
-  test("a body line or an indented one-token value is blanked under snippets", () => {
-    const secretLines = [BODY, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822c", "  - fake-hunter2", "    s3cr3t!x"];
-    const r = redactToolResult(hits(secretLines), { snippets: true });
-    for (const h of r.structuredContent.hits) assert.match(h.snippet, /^\s*(- )?\[redacted:secret\]$/, h.snippet);
-    const text = JSON.parse(r.content[0].text);
-    assert.deepEqual(text.hits, r.structuredContent.hits);
+  test("a body line, a list item, a block line, a short PEM tail and a PGP checksum are blanked", () => {
+    const lines = [BODY, "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822c", `- ${SECRET}`, SECRET, "    s3cr3t!x", "Fq0bAB==", "=AbCd"];
+    const r = redactToolResult(hits(lines), { snippets: true });
+    for (const h of r.structuredContent.hits) assert.match(h.snippet, /^(- )?\[redacted:secret\]$/, h.snippet);
+    assert.deepEqual(JSON.parse(r.content[0].text).hits, r.structuredContent.hits);
   });
 
-  test("ordinary snippets pass under snippets", () => {
-    const keep = ["  - [[Some note]]", "- item123", "  - plain words here", "  - #tag/sub", "Body text with words", "  - https://example.test/x", "  ok", "  - Folder/Note"];
+  test("a credentials-table body row with its header out of view: the secret-looking cell is blanked", () => {
+    const r = redactToolResult(hits([`| Gmail | me@example.test | ${SECRET} |`, `| [[Gmail\\|Google]] | bob | ${SECRET} |`]), { snippets: true });
+    assert.equal(r.structuredContent.hits[0].snippet, "| Gmail | me@example.test | [redacted:secret] |");
+    assert.equal(r.structuredContent.hits[1].snippet, "| [[Gmail\\|Google]] | bob | [redacted:secret] |");
+  });
+
+  test("ordinary snippets pass", () => {
+    const keep = [
+      "- [[Some note]]", "- item", "- plain words here", "- #tag/sub", "Body text with words", "- https://example.test/x", "ok", "- Folder/Note",
+      "- well-known", "- 2026-10-18", "- 12:30", "- v2.1.0", "- $1,234.56", "- note.md", "- someone@example.test", "**Heading**",
+      "| Name | Date | Amount |", "| Bob | 2026-10-18 | $12.50 |", "| read-only | follow-up | n/a |", "| [[A\\|B]] | Folder/Note | photo.png |",
+      "Done.", "---",
+    ];
     const r = redactToolResult(hits(keep), { snippets: true });
     assert.deepEqual(r.structuredContent.hits.map((h) => h.snippet), keep);
   });
@@ -341,6 +356,33 @@ describe("search snippets", () => {
   test("without snippets, a body line passes (only search replies get the rule)", () => {
     const r = redactToolResult(hits([BODY]));
     assert.equal(r.structuredContent.hits[0].snippet, BODY);
+  });
+});
+
+describe("tables with escaped pipes or no outer pipes, and blockquotes and callouts", () => {
+  test("an alias wikilink (escaped pipe) in a body row or a header does not shift the columns", () => {
+    assert.equal(redactSecrets("| Service | Password |\n|---|---|\n| [[Gmail\\|Google]] | fake-1 |"), "| Service | Password |\n|---|---|\n| [[Gmail\\|Google]] | [redacted:secret] |");
+    assert.equal(redactSecrets("| [[Svc\\|Service]] | Password |\n|---|---|\n| mail | fake-2 |"), "| [[Svc\\|Service]] | Password |\n|---|---|\n| mail | [redacted:secret] |");
+    assert.equal(redactSecrets("| [[Key\\|alias]] | x |"), "| [[Key\\|alias]] | x |");
+  });
+
+  test("a table with no outer pipes", () => {
+    assert.equal(redactSecrets("Service | Password\n--- | ---\nmail | fake-3\nbank | fake-4\n\nafter | x"), "Service | Password\n--- | ---\nmail | [redacted:secret]\nbank | [redacted:secret]\n\nafter | x");
+  });
+
+  test("a credentials table in a callout, and nested quotes", () => {
+    const callout = "> [!note] Logins\n> | Service | Password |\n> |---|---|\n> | mail | fake-5 |\n> | bank | fake-6 |\n\nafter";
+    assert.equal(redactSecrets(callout), "> [!note] Logins\n> | Service | Password |\n> |---|---|\n> | mail | [redacted:secret] |\n> | bank | [redacted:secret] |\n\nafter");
+    assert.equal(redactSecrets("> > | Password |\n> > |---|\n> > | fake-7 |"), "> > | Password |\n> > |---|\n> > | [redacted:secret] |");
+  });
+
+  test("a key-cell row and a YAML list inside a blockquote", () => {
+    assert.equal(redactSecrets("> | password | fake-8 |"), "> | password | [redacted:secret] |");
+    assert.equal(redactSecrets("> password:\n>   - fake-9\n>   - fake-10\n> other: y"), "> password: [redacted:secret]\n> other: y");
+  });
+
+  test("the table state resets when the quote depth changes", () => {
+    assert.equal(redactSecrets("> | Password |\n> |---|\n> | fake-11 |\n| keep |"), "> | Password |\n> |---|\n> | [redacted:secret] |\n| keep |");
   });
 });
 
@@ -397,6 +439,9 @@ describe("speed and failure", () => {
       "| Password |\n|---|\n" + "| x |\n".repeat(150_000),
       '<x name="password" '.repeat(50_000),
       "password - ".repeat(90_000),
+      "> | Service | Password |\n> |---|---|\n" + "> | mail | x |\n".repeat(330_000),
+      ">".repeat(1_000_000),
+      "> ".repeat(500_000) + "| x |",
       JSON.stringify({ notes: Array.from({ length: 20_000 }, (_, i) => ({ path: `n${i}.md`, password: "fake", body: "token: fake" })) }, null, 2),
     ];
     for (const s of inputs) {
