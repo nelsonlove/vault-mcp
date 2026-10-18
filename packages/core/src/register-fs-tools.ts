@@ -17,6 +17,7 @@ import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
 import { z } from "zod";
 import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
+import { redactingHandler } from "./secret-scan.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -137,7 +138,7 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
     if (profile && !profileAllows(profile, tool.name)) continue;
     const inner = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
     const mutating = tool.annotations?.readOnlyHint === false;
-    const handler = profile
+    const gated = profile
       ? (args: any) => {
           // Check the arguments the handler will USE (#562 review 1): with decodeHtml on, the handler
           // decodes `&#47;` to `/`, so a check on the raw text could pass a path that leaves the scope.
@@ -146,6 +147,9 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
           return refused ? fail(Object.assign(new Error(refused.message), { code: refused.code })) : inner(args);
         }
       : inner;
+    // A profile that asks for it (read+message) has every reply passed through the secret scanner;
+    // the arguments and anything written to disk are unchanged.
+    const handler = profile?.redactSecrets ? redactingHandler(gated) : gated;
     reg.registerTool(
       tool.name,
       {

@@ -97,13 +97,19 @@ export interface ConnProfile {
   tools: ReadonlySet<string> | null;
   /** A write rule for this connection alone, checked on top of the vault-wide one. */
   writeScope?: WriteScope;
+  /**
+   * Pass every tool reply through the secret scanner (secret-scan.ts) before it is sent: key- and
+   * token-shaped strings become `[redacted:<kind>]`. Absent ⇒ false; replies are sent as they are.
+   */
+  redactSecrets?: boolean;
 }
 
 const PROFILES: Record<Exclude<ProfileName, "none">, ConnProfile> = {
   full: { name: "full", tools: null },
   read: { name: "read", tools: new Set(READ_PROFILE_TOOLS) },
   "read+inbox": { name: "read+inbox", tools: new Set([...READ_PROFILE_TOOLS, "obsidian_write_note"]), writeScope: INBOX_WRITE_SCOPE },
-  "read+message": { name: "read+message", tools: new Set(READ_MESSAGE_PROFILE_TOOLS) },
+  // A hosted assistant reads through this profile, so its replies are scanned for secrets.
+  "read+message": { name: "read+message", tools: new Set(READ_MESSAGE_PROFILE_TOOLS), redactSecrets: true },
 };
 
 const NONE: ConnProfile = { name: "none", tools: new Set() };

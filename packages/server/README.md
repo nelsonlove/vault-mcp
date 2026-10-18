@@ -89,7 +89,17 @@ A profile is an allowlist of tool names, defined in `@vault-mcp/core` (`packages
 | `full` | Every tool. What a local connection (the Claude Code bridge) gets, and what every credential gets when no mapping is set. |
 | `read` | The 23 read tools in `READ_PROFILE_TOOLS` (reads, search, links, uids, tags, bookmarks, workspaces, snippets, command ids, plugin and environment info, `vaultmcp_conformance_debt`, `vaultmcp_bases_list`). No write, no command, no Code Mode meta-tool. |
 | `read+inbox` | The `read` set plus `obsidian_write_note`, which may only create a new note directly inside a `.01` slot folder (`XX.01` or `XX.01 <name>`, at any depth). An overwrite, an existing note, a missing folder and every other write are refused (`write_scope`). This connection-level scope is checked on top of the vault-wide write scope, never instead of it. |
-| `read+message` | A narrower read set (15 tools: the note, search, link, tag and Base-list reads; no machine state, app settings, bookmarks, snippets or command lists) plus `vaultmcp_send_message`, which posts a short text to a message service the operator configured (the tool is offered only where it is configured). No note can be written. |
+| `read+message` | A narrower read set (15 tools: the note, search, link, tag and Base-list reads; no machine state, app settings, bookmarks, snippets or command lists) plus `vaultmcp_send_message`, which posts a short text to a message service the operator configured (the tool is offered only where it is configured). No note can be written. Every reply passes through the secret scanner (below). |
+
+#### Secret scanner (`read+message`)
+
+A profile can ask for its replies to be scanned (`redactSecrets` on `ConnProfile`; today only `read+message` does). Every tool reply on such a connection passes through `@vault-mcp/core`'s secret scanner (`packages/core/src/secret-scan.ts`) before it is sent: the text of each content item and every string in structured content. The plugin applies it at `origRegister`, FS mode in `registerFsTools`. Tool arguments and anything written to disk are not changed.
+
+- What it blanks: common key and token shapes (`sk-…`, `sk-ant-…`, `ghp_…`/`gho_…`/`github_pat_…`, `xox[abposr]-…`, `AKIA…`/`ASIA…`, `AIza…`, Stripe `sk_live_`/`rk_live_`, JWTs, PEM private key blocks), `Authorization` header values and bearer tokens, the `user:pass` part of a URL (scheme and host are kept), and the value of a `key: value` or `key=value` pair whose key names a secret (password, passwd, pwd, passphrase, secret, token, credentials, api_key, access_key, private_key, secret_key and the like; any case, quoted or not, in frontmatter, prose, env lines or JSON). A bare value runs to the end of its line.
+- What it never blanks on its own: a long or random-looking string. Uids, uuids, hashes and commit shas pass. Booleans and null after a secret key pass too.
+- The replacement is a fixed marker, `[redacted:<kind>]`; no part of the secret is kept.
+- It is linear in its input and never throws. On an internal error it sends `[redacted:scan-failed]` in place of the text (fail closed).
+- It is a best-effort filter. It cannot catch every form: a bare password in prose, a key split over lines, or an encoded secret passes through. Keep secrets out of the folders a hosted assistant can read.
 
 `VAULT_MCP_PROFILES` maps a credential id to a profile, as JSON. A credential id names a credential without carrying it, so no secret is in the value: `token` is the static bearer, `sub:<subject>` an OAuth subject.
 

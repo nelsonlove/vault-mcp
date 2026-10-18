@@ -13,7 +13,7 @@ const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 
 const FOLDERS = new Set(["00 Inbox area", "00 Inbox area/00.01 Inbox", "Notes"]);
-function build(opts = {}) {
+function build(opts = {}, basesResult = { bases: [] }) {
   const app = {
     vault: {
       adapter: { basePath: "/nonexistent-vault" },
@@ -35,7 +35,7 @@ function build(opts = {}) {
     pluginVersion: "0.0.0", socketPath: "/tmp/none.sock", vaultName: "test", enabledPlugins: () => [],
     getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [] }),
     getExternalTools: () => [
-      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }, handler: async () => ({ bases: [] }) },
+      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }, handler: async () => basesResult },
       { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_create", spec: { description: "make a base", inputSchema: { type: "object", properties: { path: { type: "string" } } }, annotations: { readOnlyHint: false } }, handler: async () => ({}) },
     ],
   };
@@ -150,5 +150,31 @@ describe("profile read+inbox", () => {
   test("a new note in a .01 folder passes the profile check (and reaches the guard)", async () => {
     const r = await tools.obsidian_write_note.handler({ path: "00 Inbox area/00.01 Inbox/x.md", content: "x" }, {});
     assert.doesNotMatch(r.content[0].text, /write_scope|profile_refused/, JSON.stringify(r));
+  });
+});
+
+describe("profile read+message: the secret scanner", () => {
+  // A made-up key; never a real one.
+  const FAKE = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
+  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`] };
+
+  test("a reply under read+message is blanked; under full and read it is sent as it is", async () => {
+    const m = build({ profile: "read+message" }, result)._registeredTools;
+    const r = JSON.stringify(await m.vaultmcp_bases_list.handler({}, {}));
+    assert.ok(!r.includes(FAKE), r);
+    assert.ok(!r.includes("fake-pass"), r);
+    assert.match(r, /redacted:github-token/);
+    assert.match(r, /Notes\/b\.base/);
+    for (const p of [undefined, "read"]) {
+      const t = build(p ? { profile: p } : {}, result)._registeredTools;
+      assert.ok(JSON.stringify(await t.vaultmcp_bases_list.handler({}, {})).includes(FAKE), String(p));
+    }
+  });
+
+  test("over MCP under read+message: the reply the client receives is blanked", async () => {
+    const client = await connect(build({ profile: "read+message" }, result));
+    const r = JSON.stringify(await client.callTool({ name: "vaultmcp_bases_list", arguments: {} }));
+    assert.ok(!r.includes(FAKE), r);
+    await client.close();
   });
 });

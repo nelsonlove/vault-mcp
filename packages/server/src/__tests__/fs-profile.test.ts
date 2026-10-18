@@ -5,7 +5,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +19,7 @@ let READ_MESSAGE: Set<string>;
 let FS_NAMES: string[];
 let vault: string;
 let journal: string;
+const FAKE_KEY = "sk-test-AAAAAAAAAAAAAAAAAAAAAAAA";
 
 before(async () => {
   vault = await mkdtemp(path.join(tmpdir(), "fs-profile-"));
@@ -28,6 +29,8 @@ before(async () => {
   await mkdir(path.join(vault, "00 Area", "00.01 Inbox"), { recursive: true });
   await mkdir(path.join(vault, "Notes"), { recursive: true });
   await writeFile(path.join(vault, "Notes", "a.md"), "# A\n");
+  // A made-up key, for the secret scanner (read+message only).
+  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\n---\nThe key is ${FAKE_KEY} here.\n`);
   buildFsServer = (await import("../fs-mode.js")).buildFsServer;
   const core = await import("@vault-mcp/core");
   READ = new Set(core.READ_PROFILE_TOOLS);
@@ -100,6 +103,27 @@ describe("FS mode under a profile", () => {
     const again = await c.callTool({ name: "obsidian_write_note", arguments: { path: "00 Area/00.01 Inbox/new.md", content: "x" } });
     assert.match(text(again), /write_scope|exists/);
     await c.close();
+  });
+
+  test("read+message blanks a key-shaped string in a reply; full sends the note unchanged; the file is untouched", async () => {
+    const m = await client("read+message");
+    const r = text(await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
+    assert.ok(!r.includes(FAKE_KEY), r);
+    assert.ok(!r.includes("fake-key-value"), r);
+    assert.match(r, /\[redacted:api-key\]/);
+    assert.match(r, /api_key: \[redacted:secret\]/);
+    const s = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "key is" } }));
+    assert.ok(!s.includes(FAKE_KEY), s);
+    await m.close();
+    const f = await client("full");
+    const raw = text(await f.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
+    assert.ok(raw.includes(FAKE_KEY), raw);
+    assert.ok(raw.includes("fake-key-value"), raw);
+    await f.close();
+    const r2 = await client("read");
+    assert.ok(text(await r2.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } })).includes(FAKE_KEY));
+    await r2.close();
+    assert.match(await readFile(path.join(vault, "Notes", "keys.md"), "utf8"), new RegExp(FAKE_KEY));
   });
 
   test("an unknown profile: no tools at all", async () => {

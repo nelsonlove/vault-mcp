@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, redactingHandler } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -137,16 +137,19 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // reaches neither the queue nor the journal. `full` (no profile in the preamble) is unchanged.
   const profile = resolveProfile(opts.profile);
   const sdkRegister: any = server.registerTool.bind(server);
+  // A profile that asks for it (read+message) also has every reply, refusals included, passed
+  // through the secret scanner (core's secret-scan.ts) here, so no registration path skips it.
   const origRegister: any =
-    profile.tools === null
+    profile.tools === null && !profile.redactSecrets
       ? sdkRegister
       : (name: string, def: any, handler: any) => {
           if (!profileAllows(profile, name)) return undefined;
           const mutating = def?.annotations?.readOnlyHint === false;
-          return sdkRegister(name, def, (args: unknown, extra: unknown) => {
+          const gated = (args: unknown, extra: unknown) => {
             const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
             return refused ? codedError(refused.code, refused.message) : handler(args, extra);
-          });
+          };
+          return sdkRegister(name, def, profile.redactSecrets ? redactingHandler(gated) : gated);
         };
   // Code Mode under a profile: the meta-tools are outside every profile, so they are not
   // registered, and a captured registry would hide the filter behind obsidian_call_tool. The safe
