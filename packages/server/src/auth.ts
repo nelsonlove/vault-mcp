@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
+import { CREDENTIAL_LOCAL } from "./profiles.js";
 
 /**
  * Resource-Server auth for the MCP endpoint (Phase 2).
@@ -79,8 +80,12 @@ export function prmPath(): string {
  * value would steer the RFC 9728 discovery flow to an attacker-chosen AS.
  */
 export function resourceMetadataUrl(cfg: AuthConfig): string {
-  const origin = cfg.resourceUrl ? new URL(cfg.resourceUrl).origin : "";
-  return `${origin}${prmPath()}`;
+  if (!cfg.resourceUrl) return prmPath();
+  const u = new URL(cfg.resourceUrl);
+  // RFC 9728 §3.1: the well-known path goes between the host and the resource's own path, so a
+  // resource at https://host/vault-mcp/mcp names /.well-known/oauth-protected-resource/vault-mcp/mcp.
+  const suffix = u.pathname.replace(/\/+$/, "");
+  return `${u.origin}${prmPath()}${suffix}`;
 }
 
 /** RFC 6750 WWW-Authenticate challenge pointing at this server's (pinned) PRM. */
@@ -297,6 +302,8 @@ export function createAuthGate(cfg: AuthConfig, opts: { token?: string }): Reque
     }
     // Static owner token — the owner's own secret; exempt from the OAuth allowlist.
     if (tok && TOKEN && tok.length === TOKEN_BUF.length && timingSafeEqual(Buffer.from(tok), TOKEN_BUF)) {
+      // The credential's ID, never the credential (profiles.ts, #521): what the profile gate maps and the request log records.
+      res.locals[CREDENTIAL_LOCAL] = "token";
       return next();
     }
 
@@ -330,6 +337,7 @@ export function createAuthGate(cfg: AuthConfig, opts: { token?: string }): Reque
 
     // AUTHORIZE: one allowlist check for both token types.
     if (!subjectAllowed(claims)) return send403(res);
+    if (typeof claims.sub === "string" && claims.sub) res.locals[CREDENTIAL_LOCAL] = `sub:${claims.sub}`;
     return next();
   }
 

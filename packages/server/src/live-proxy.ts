@@ -25,6 +25,7 @@ import type { Request, Response } from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { bridgeEnv } from "./bridge-env.js";
+import { profileOf } from "./profiles.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 // ── Internal transport interfaces ─────────────────────────────────────────────
@@ -67,6 +68,8 @@ interface Session {
   http: HttpTransportLike;
   backend: BackendTransportLike;
   lastSeen: number;
+  /** The connection profile the session was opened under (#521); a request under another one cannot use it. */
+  profile: string;
   /** Idempotent teardown — clears the session from the map and closes both transports. */
   _teardown: () => void;
 }
@@ -100,6 +103,7 @@ export interface LiveProxy {
     sid: string,
     http: HttpTransportLike,
     backend: BackendTransportLike,
+    profile?: string,
   ): void;
 }
 
@@ -123,7 +127,7 @@ export function createLiveProxy(opts: {
    * Factory for the stdio backend transport.  Defaults to spawning bridge.mjs.
    * Override in tests to inject a stub and avoid spawning real processes.
    */
-  makeBackend?: () => BackendTransportLike;
+  makeBackend?: (session: { profile: string }) => BackendTransportLike;
 }): LiveProxy {
   const maxSessions = opts.maxSessions ?? 32;
   const idleMs = opts.idleMs ?? 30 * 60 * 1000;
@@ -143,11 +147,12 @@ export function createLiveProxy(opts: {
     return Array.isArray(body) ? body.some(one) : one(body);
   }
 
-  function makeDefaultBackend(): BackendTransportLike {
+  function makeDefaultBackend(session: { profile: string }): BackendTransportLike {
     return new StdioClientTransport({
       command: process.execPath, // node
       args: [opts.bridgePath],
-      env: bridgeEnv(),
+      // The session's profile rides the bridge's environment into the connection preamble.
+      env: bridgeEnv(process.env, { profile: session.profile }),
       stderr: "inherit",
     });
   }
@@ -160,8 +165,8 @@ export function createLiveProxy(opts: {
    * registered in `sessions` via onsessioninitialized once the client sends
    * its initialize request.
    */
-  async function makeSession(): Promise<HttpTransportLike> {
-    const backend = (opts.makeBackend ?? makeDefaultBackend)();
+  async function makeSession(profile: string): Promise<HttpTransportLike> {
+    const backend = (opts.makeBackend ?? makeDefaultBackend)({ profile });
     liveBackends++;
 
     // Cast required: StreamableHTTPServerTransport satisfies HttpTransportLike
@@ -171,7 +176,7 @@ export function createLiveProxy(opts: {
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid: string) => {
         clearTimeout(initTimer);
-        sessions.set(sid, { http: http as unknown as HttpTransportLike, backend, lastSeen: Date.now(), _teardown: teardown });
+        sessions.set(sid, { http: http as unknown as HttpTransportLike, backend, lastSeen: Date.now(), profile, _teardown: teardown });
         console.error(`[live-proxy] session ${sid} opened (${liveBackends} live)`);
       },
     }) as unknown as HttpTransportLike;
@@ -232,11 +237,14 @@ export function createLiveProxy(opts: {
 
   async function route(
     req: Request,
+    profile: string,
   ): Promise<HttpTransportLike | { error: number; message: string }> {
     const sid = req.header("mcp-session-id");
     if (sid) {
       const s = sessions.get(sid);
-      if (!s) return { error: 404, message: "unknown or expired session" };
+      // A session id opened under one profile is not usable under another (a `read` credential
+      // must not ride a `full` session): it answers as an unknown session, naming nothing.
+      if (!s || s.profile !== profile) return { error: 404, message: "unknown or expired session" };
       s.lastSeen = Date.now();
       return s.http;
     }
@@ -244,7 +252,7 @@ export function createLiveProxy(opts: {
       if (liveBackends >= maxSessions) {
         return { error: 503, message: "too many active sessions; try again shortly" };
       }
-      return makeSession();
+      return makeSession(profile);
     }
     return { error: 400, message: "missing Mcp-Session-Id (no active session)" };
   }
@@ -272,7 +280,8 @@ export function createLiveProxy(opts: {
   return {
     async handle(req: Request, res: Response): Promise<void> {
       try {
-        const r = await route(req);
+        // No profile gate in front of this proxy (a bare embed, the tests) is `full`, as before.
+        const r = await route(req, profileOf(res) ?? "full");
         if ("error" in r) {
           res.status(r.error).json({
             jsonrpc: "2.0",
@@ -342,6 +351,7 @@ export function createLiveProxy(opts: {
       sid: string,
       http: HttpTransportLike,
       backend: BackendTransportLike,
+      profile = "full",
     ): void {
       liveBackends++;
       let torndown = false;
@@ -353,7 +363,7 @@ export function createLiveProxy(opts: {
         backend.close().catch(() => {});
         http.close().catch(() => {});
       };
-      sessions.set(sid, { http, backend, lastSeen: Date.now(), _teardown: teardown });
+      sessions.set(sid, { http, backend, lastSeen: Date.now(), profile, _teardown: teardown });
     },
   };
 }

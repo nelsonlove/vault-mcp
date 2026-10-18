@@ -16,6 +16,7 @@ import { CHARACTER_LIMIT, decodeHtmlEntities } from "./fs-backend/vault.js";
 import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
 import { z } from "zod";
+import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -85,6 +86,15 @@ export interface RegisterFsToolsOpts {
    * the same serializer `obsidian_write_notes` uses. Absent ⇒ `jsonFlowYaml`.
    */
   stringifyYaml?: (obj: Record<string, unknown>) => string;
+  /**
+   * The connection profile (profile.ts, #521). A tool outside it is not registered, and the
+   * handler of one inside it keeps a call-time check (the profile's own write scope for a write).
+   * Absent ⇒ `full`, as before. The plugin needs none: its patched registerTool filters every
+   * registration, these included; the file-system server passes it here.
+   */
+  profile?: ConnProfile;
+  /** Whether a vault-relative path exists, for the profile's create-only check. Absent ⇒ every path reads as existing, so a profile write is refused. */
+  exists?: (path: string) => boolean;
 }
 
 /**
@@ -122,8 +132,20 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
 
   const dec = (s: string): string => (decodeHtml ? decodeHtmlEntities(s) : s);
 
+  const profile = opts.profile;
   for (const tool of FS_TOOLS) {
-    const handler = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
+    if (profile && !profileAllows(profile, tool.name)) continue;
+    const inner = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
+    const mutating = tool.annotations?.readOnlyHint === false;
+    const handler = profile
+      ? (args: any) => {
+          // Check the arguments the handler will USE (#562 review 1): with decodeHtml on, the handler
+          // decodes `&#47;` to `/`, so a check on the raw text could pass a path that leaves the scope.
+          const seen = decodeHtml ? decodeArgsDeep(args, dec) : args;
+          const refused = profileCallRefusal(profile, tool.name, mutating, seen, opts.exists ?? (() => true));
+          return refused ? fail(Object.assign(new Error(refused.message), { code: refused.code })) : inner(args);
+        }
+      : inner;
     reg.registerTool(
       tool.name,
       {
@@ -547,4 +569,17 @@ function makeHandler(
       // Should never happen if FS_TOOLS is in sync with this switch.
       throw new Error(`registerFsTools: no handler for tool "${name}"`);
   }
+}
+
+/** Decode every string in an argument tree, as the handlers do one by one (#562 review 1). */
+function decodeArgsDeep(v: unknown, dec: (s: string) => string, depth = 0): unknown {
+  if (depth > 20) return v;
+  if (typeof v === "string") return dec(v);
+  if (Array.isArray(v)) return v.map((x) => decodeArgsDeep(x, dec, depth + 1));
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = decodeArgsDeep(x, dec, depth + 1);
+    return out;
+  }
+  return v;
 }

@@ -50,7 +50,9 @@ import {
   resolveInVault,
   normalizeWriteScope,
   writeScopeRefusal,
+  resolveProfile,
 } from "@vault-mcp/core";
+import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
 import type { VaultBackend, VaultWatcherHandle } from "@vault-mcp/core";
 import path from "node:path";
@@ -81,6 +83,11 @@ export interface FsHandler {
 }
 
 export interface FsHandlerOpts {
+  /**
+   * The connection profile's name (#521; core's profile.ts). Absent ⇒ `full`. The handler sets it
+   * per request from the front's profile gate; an unknown name builds no tools at all.
+   */
+  profile?: string;
   /**
    * When true (the default), pass `indexStatus` to registerFsTools so every
    * read-tool response includes an `index_status` block. Set to false to
@@ -420,6 +427,15 @@ export function makeBackend(
   };
 }
 
+/** Whether a vault-relative path exists; one the vault's resolver refuses reads as existing, so a create there is refused. */
+function existsInVault(rel: string): boolean {
+  try {
+    return existsSync(resolveInVault(rel));
+  } catch {
+    return true;
+  }
+}
+
 // ── Server factory ────────────────────────────────────────────────────────────
 //
 // Exported so tests can build a server and wire it over InMemoryTransport
@@ -433,7 +449,10 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     { capabilities: { tools: { listChanged: true } } },
   );
 
+  const profile = opts?.profile === undefined ? undefined : resolveProfile(opts.profile);
   registerFsTools(server, makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel }), {
+    // The same per-connection filter the plugin applies at origRegister (#521).
+    ...(profile ? { profile, exists: existsInVault } : {}),
     decodeHtml: true,
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
@@ -502,7 +521,9 @@ export function createFsHandler(opts?: FsHandlerOpts): FsHandler {
       // Lazily build the index on first FS-mode use. In LIVE mode the FS
       // machinery (and its watcher) never starts, keeping the bridge spawn safe.
       await ready();
-      const server = buildFsServer(opts);
+      // Stateless: each request carries its own credential, so its own profile (#521).
+      const profile = profileOf(res);
+      const server = buildFsServer(profile === undefined ? opts : { ...opts, profile });
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,

@@ -30,13 +30,15 @@ export async function connectLiveBackend(opts: {
   bridgePath: string;
   /** TEST SEAM: inject a client Transport; defaults to spawning bridge.mjs. */
   makeTransport?: () => Transport;
+  /** The connection profile (#521) this backend's bridge asks the plugin for; absent ⇒ `full`. */
+  profile?: string;
 }): Promise<LiveBackend> {
   const transport =
     opts.makeTransport?.() ??
     new StdioClientTransport({
       command: process.execPath, // node
       args: [opts.bridgePath],
-      env: bridgeEnv(),
+      env: bridgeEnv(process.env, { profile: opts.profile }),
       // "ignore", NOT "inherit": inheriting a redirected stderr under launchd
       // EBADFs the spawn (see the Phase 2a lazy-FS fix + deploy notes).
       stderr: "ignore",
@@ -68,13 +70,14 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { buildFsServer } from "./fs-mode.js";
+import { profileOf } from "./profiles.js";
 
 export interface SemanticProxy {
   handle(req: Request, res: Response): Promise<void>;
   sessionCount(): number;
   stop(): Promise<void>;
   /** TEST SEAM — create a session's Server without HTTP routing. @internal */
-  _createSessionForTest(): Promise<{ server: Server }>;
+  _createSessionForTest(profile?: string): Promise<{ server: Server }>;
 }
 
 export function createSemanticProxy(opts: {
@@ -85,31 +88,42 @@ export function createSemanticProxy(opts: {
   /** TEST SEAM: transport to the live plugin; defaults to bridge.mjs stdio. */
   makeLiveTransport?: () => Transport;
   /** TEST SEAM: the FS McpServer; defaults to fs-mode's buildFsServer(). */
-  makeFsServer?: () => McpServer;
+  makeFsServer?: (profile: string) => McpServer;
 }): SemanticProxy {
   // ── Shared backends (lazy) ──────────────────────────────────────────────────
   // One live client + one in-process FS client serve all sessions. The plugin
   // socket multiplexes tools/call fine over a single bridge connection, and the
   // FS server is stateless. On presence "down" the live backend is closed so
   // the next LIVE use reconnects fresh.
-  let liveBackend: Promise<LiveBackend> | null = null;
-  let fsClient: Promise<Client> | null = null;
+  //
+  // ONE PAIR PER PROFILE (#521): a backend is built for one connection profile, so sessions share
+  // a backend only with sessions of the same profile — a `read` session never calls through a
+  // `full` bridge.
+  const liveBackends = new Map<string, Promise<LiveBackend>>();
+  const fsClients = new Map<string, Promise<Client>>();
 
-  function getLiveBackend(): Promise<LiveBackend> {
-    liveBackend ??= connectLiveBackend({
-      bridgePath: opts.bridgePath,
-      makeTransport: opts.makeLiveTransport,
-    }).catch((e: unknown) => {
-      liveBackend = null; // allow retry on next use
-      throw e;
-    });
-    return liveBackend;
+  function getLiveBackend(profile: string): Promise<LiveBackend> {
+    let b = liveBackends.get(profile);
+    if (!b) {
+      b = connectLiveBackend({
+        bridgePath: opts.bridgePath,
+        makeTransport: opts.makeLiveTransport,
+        profile,
+      }).catch((e: unknown) => {
+        liveBackends.delete(profile); // allow retry on next use
+        throw e;
+      });
+      liveBackends.set(profile, b);
+    }
+    return b;
   }
 
-  function getFsClient(): Promise<Client> {
-    fsClient ??= (async () => {
+  function getFsClient(profile: string): Promise<Client> {
+    let c = fsClients.get(profile);
+    if (c) return c;
+    c = (async () => {
       await opts.fsReady?.();
-      const server = (opts.makeFsServer ?? buildFsServer)();
+      const server = opts.makeFsServer ? opts.makeFsServer(profile) : buildFsServer(profile === "full" ? undefined : { profile });
       const [clientEnd, serverEnd] = InMemoryTransport.createLinkedPair();
       await server.connect(serverEnd);
       const client = new Client(
@@ -119,23 +133,25 @@ export function createSemanticProxy(opts: {
       await client.connect(clientEnd);
       return client;
     })();
-    return fsClient;
+    fsClients.set(profile, c);
+    return c;
   }
 
-  async function backendClient(): Promise<Client> {
-    if (opts.presence.isLive()) return (await getLiveBackend()).client;
-    return getFsClient();
+  async function backendClient(profile: string): Promise<Client> {
+    if (opts.presence.isLive()) return (await getLiveBackend(profile)).client;
+    return getFsClient(profile);
   }
 
   // ── Sessions ────────────────────────────────────────────────────────────────
   interface Session {
     server: Server;
     transport?: StreamableHTTPServerTransport;
+    profile: string;
   }
   const sessions = new Map<string, Session>();
   const testSessions: Session[] = [];
 
-  function buildSessionServer(): Server {
+  function buildSessionServer(profile: string): Server {
     const server = new Server(
       { name: "vault-mcp-front", version: "0" },
       { capabilities: { tools: { listChanged: true } } },
@@ -144,14 +160,14 @@ export function createSemanticProxy(opts: {
       if (opts.presence.isLive()) {
         // Re-list from the live client each time: the plugin's surface can vary
         // (integration plugins), and a cached list would go stale across flips.
-        const { client } = await getLiveBackend();
+        const { client } = await getLiveBackend(profile);
         return await client.listTools();
       }
-      const client = await getFsClient();
+      const client = await getFsClient(profile);
       return await client.listTools();
     });
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
-      const client = await backendClient();
+      const client = await backendClient(profile);
       return (await client.callTool({
         name: req.params.name,
         arguments: req.params.arguments ?? {},
@@ -176,17 +192,20 @@ export function createSemanticProxy(opts: {
   });
   opts.presence.on("down", () => {
     // Drop the shared live backend — its socket is gone. Next LIVE use reconnects.
-    liveBackend?.then((b) => b.close()).catch(() => {});
-    liveBackend = null;
+    for (const b of liveBackends.values()) b.then((x) => x.close()).catch(() => {});
+    liveBackends.clear();
     notifyAllSessions();
   });
 
   // ── HTTP plumbing (mirrors live-proxy's session routing) ────────────────────
   async function handle(req: Request, res: Response): Promise<void> {
+    // No profile gate in front (a bare embed, the tests) is `full`, as before.
+    const profile = profileOf(res) ?? "full";
     const sid = req.header("mcp-session-id");
     if (sid) {
       const s = sessions.get(sid);
-      if (!s?.transport) {
+      // A session opened under another profile answers as not found (#521).
+      if (!s?.transport || s.profile !== profile) {
         res.status(404).json({
           jsonrpc: "2.0",
           error: { code: -32001, message: "session not found" },
@@ -210,11 +229,11 @@ export function createSemanticProxy(opts: {
       });
       return;
     }
-    const server = buildSessionServer();
+    const server = buildSessionServer(profile);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (newSid: string) => {
-        sessions.set(newSid, { server, transport });
+        sessions.set(newSid, { server, transport, profile });
         console.error(`[semantic-proxy] session ${newSid} opened (${sessions.size})`);
       },
     });
@@ -236,14 +255,14 @@ export function createSemanticProxy(opts: {
       }
       sessions.clear();
       testSessions.length = 0;
-      await liveBackend?.then((b) => b.close()).catch(() => {});
-      liveBackend = null;
-      await fsClient?.then((c) => c.close()).catch(() => {});
-      fsClient = null;
+      for (const b of liveBackends.values()) await b.then((x) => x.close()).catch(() => {});
+      liveBackends.clear();
+      for (const c of fsClients.values()) await c.then((x) => x.close()).catch(() => {});
+      fsClients.clear();
     },
-    async _createSessionForTest(): Promise<{ server: Server }> {
-      const server = buildSessionServer();
-      testSessions.push({ server });
+    async _createSessionForTest(profile = "full"): Promise<{ server: Server }> {
+      const server = buildSessionServer(profile);
+      testSessions.push({ server, profile });
       return { server };
     },
   };

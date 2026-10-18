@@ -305,6 +305,21 @@ export function supportsPreamble(d: Discovery): boolean {
   return Array.isArray(caps) && caps.includes("preamble");
 }
 
+// A connection profile (#521) may only be sent to a plugin that applies it: a plugin with the
+// preamble but not the profile would read the line, drop the profile and build the FULL surface.
+// So a bridge that was given a profile refuses to connect to such a plugin, at start and on every
+// reconnect — it fails closed, never open.
+export function supportsProfile(d: Discovery): boolean {
+  const caps = (d as { capabilities?: unknown }).capabilities;
+  return Array.isArray(caps) && caps.includes("preamble") && caps.includes("profile");
+}
+
+/** The profile this bridge was told to ask for (VAULT_MCP_PROFILE, set by the remote front), or undefined for a local bridge. */
+export function profileFromEnv(env: string | undefined): string | undefined {
+  const v = env?.trim();
+  return v ? v : undefined;
+}
+
 type JsonRpcId = string | number;
 
 interface JsonRpcMsg {
@@ -860,13 +875,23 @@ if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
   // Code Mode: register this session with the compact search/describe/call
   // meta-tool surface instead of the full tool set (token-lean; see preamble.ts).
   const codeModeWanted = parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE);
+  // The remote front's connection profile (#521); a local bridge has none and is unchanged.
+  const profileWanted = profileFromEnv(process.env.VAULT_MCP_PROFILE);
   (async () => {
     const { sock, chosen } = await waitForVault(pick, Date.now() + WAIT_MS);
     // Pin reconnects to the vault we first connected to, so another vault
     // appearing mid-session can neither divert nor ambiguate the reconnect.
     const pinned = chosen.vault_name;
     let preamble: string | undefined;
-    if (codeModeWanted) {
+    if (profileWanted !== undefined) {
+      if (!supportsProfile(chosen)) {
+        throw new Error(
+          `vault-mcp: profile '${profileWanted}' requested but vault '${chosen.vault_name}' runs plugin ` +
+            `${chosen.plugin_version ?? "unknown"} without profile support — refusing to connect`
+        );
+      }
+      preamble = buildPreamble({ codeMode: false, profile: profileWanted });
+    } else if (codeModeWanted) {
       if (supportsPreamble(chosen)) {
         preamble = buildPreamble({ codeMode: true });
         fs.writeSync(2, "vault-mcp: code mode on\n");
@@ -891,7 +916,15 @@ if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
         },
         exit: (code) => process.exit(code),
       },
-      async () => (await waitForVault(pinned, Date.now() + RECONNECT_MS)).sock,
+      async () => {
+        const again = await waitForVault(pinned, Date.now() + RECONNECT_MS);
+        // A plugin reloaded mid-session as an older build must not receive the profile and ignore it.
+        if (profileWanted !== undefined && !supportsProfile(again.chosen)) {
+          again.sock.destroy();
+          throw new Error(`vault-mcp: vault '${pinned}' no longer advertises profile support — refusing to reconnect`);
+        }
+        return again.sock;
+      },
       { queueGraceMs: QUEUE_GRACE_MS, maxPending: MAX_PENDING, preamble }
     );
     relay.start(sock);

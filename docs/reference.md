@@ -14,6 +14,8 @@ README can stay an introduction. Every heading keeps its original anchor. Deeper
 
 Registering ~40+ tool schemas costs context in every session. A connection whose bridge runs with **`--code-mode`** (append it to the registered command: `… node ~/.claude/vault-mcp/bridge.mjs --vault <name> --code-mode`, or set `VAULT_MCP_CODE_MODE=1`) gets just **3 meta-tools** over the same registry: `obsidian_search_tools` (keyword discovery), `obsidian_describe_tool` (input JSON Schema), `obsidian_call_tool` (invoke by name, args validated against the target's schema). Read-only mode and the path allowlist bind on the target tool exactly as on the full surface. The mode is chosen per connection via a one-line preamble the bridge sends before the MCP stream — old bridges and full-surface sessions are wire-compatible, and both kinds of session can run concurrently against the same vault. If the vault's plugin build predates preamble support, the bridge warns on stderr and falls back to the full surface rather than failing.
 
+The same preamble carries a **connection profile** for remote connections (#521): the remote front picks it per credential (`VAULT_MCP_PROFILES`), and the plugin registers only that profile's tools (`full`, `read`, `read+inbox`; an unknown name registers none). A local bridge sends no profile and gets `full`. Under a profile, Code Mode is ignored. See "Remote front" in `packages/server/README.md`.
+
 ## Addressing notes by uid
 
 **A path is not an identity.** Rename a note, move it into a folder, let a template reorganize it — and every path you were holding is silently wrong, usually without an error, because a path that no longer exists reads as "create a new note here". A note's frontmatter `uid` doesn't move.

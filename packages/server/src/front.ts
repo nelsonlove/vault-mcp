@@ -35,6 +35,9 @@ import { createPresenceMonitor } from "./presence.js";
 import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
+import { loadProfileMap, createProfileGate, credentialOf, profileOf, type ProfileMap } from "./profiles.js";
+import { DEFAULT_RATE_LIMITS, loadRateLimitConfig, createIpRateLimit, createCredentialRateLimit, type RateLimitConfig } from "./rate-limit.js";
+import { createRequestLog, createLogWriter, loadRequestLogConfig } from "./request-log.js";
 
 // ── Injectable factory ────────────────────────────────────────────────────────
 
@@ -50,17 +53,64 @@ export interface FrontDeps {
    * 44↔17 mid-session via tools/list_changed. Default off — Phase 2a routing.
    */
   seamless?: { handle(req: Request, res: Response): Promise<void> };
+  /** Credential → connection profile (profiles.ts, #521). Absent ⇒ unconfigured: every credential gets `full`. */
+  profiles?: ProfileMap;
+  /** Per-IP and per-credential limits on /mcp (rate-limit.ts). Absent ⇒ the defaults. */
+  rateLimits?: RateLimitConfig;
+  /** Where the request log's lines go (request-log.ts). Absent ⇒ nowhere. */
+  logWrite?: (line: string) => void;
+  /** Express "trust proxy": who may name the client IP in X-Forwarded-For. Absent ⇒ "loopback" (tailscale serve, cloudflared). */
+  trustProxy?: boolean | number | string;
+}
+
+/**
+ * The paths the endpoint answers on, derived from MCP_RESOURCE_URL (never hard-coded): `/mcp`
+ * always, and the resource URL's own path too (e.g. `/vault-mcp/mcp` behind a `tailscale serve
+ * --set-path /vault-mcp` mount that may or may not strip its prefix). `mount` is that path less a
+ * trailing `/mcp` (`/vault-mcp`), or "" when there is none.
+ */
+export function endpointPaths(resourceUrl: string): { resourcePath: string; mount: string; mcp: string[] } {
+  let resourcePath = "";
+  try {
+    resourcePath = resourceUrl ? new URL(resourceUrl).pathname.replace(/\/+$/, "") : "";
+  } catch {
+    resourcePath = "";
+  }
+  const mount = resourcePath.endsWith("/mcp") ? resourcePath.slice(0, -"/mcp".length) : "";
+  const mcp = [...new Set(["/mcp", ...(resourcePath ? [resourcePath] : [])])];
+  return { resourcePath, mount, mcp };
+}
+
+/**
+ * Every path the protected-resource metadata is served at (RFC 9728 §3.1): the bare well-known
+ * path, its `/mcp` suffix (today's form), the resource path's suffix (`…/vault-mcp/mcp`), and each
+ * of those again under the mount, for a proxy that does not strip it.
+ */
+export function prmPaths(resourceUrl: string): string[] {
+  const { resourcePath, mount } = endpointPaths(resourceUrl);
+  const base = [prmPath(), `${prmPath()}/mcp`, ...(resourcePath ? [`${prmPath()}${resourcePath}`] : [])];
+  return [...new Set([...base, ...(mount ? base.map((b) => `${mount}${b}`) : [])])];
 }
 
 export function buildFront(deps: FrontDeps): express.Express {
   const { cfg, token, presence, fs: fsHandler, live, seamless } = deps;
 
   const authGate = createAuthGate(cfg, { token });
+  // The order on /mcp (#521): the request log first (so a refusal is logged too), the per-IP limit
+  // before auth (a guesser is slowed), auth, the profile, the per-credential limit, then the body.
+  const profileGate = createProfileGate(deps.profiles ?? { configured: false, entries: new Map() });
+  const limits = deps.rateLimits ?? DEFAULT_RATE_LIMITS;
+  const ipLimit = createIpRateLimit(limits.ipPerMin);
+  const credLimit = createCredentialRateLimit(limits.credPerMin, credentialOf);
+  const requestLog = createRequestLog(deps.logWrite ?? (() => undefined), { credential: credentialOf, profile: profileOf });
+  const paths = endpointPaths(cfg.resourceUrl);
   // Body parsing is scoped to /mcp and applied AFTER authGate so unauthenticated
   // callers cannot force a 10 MB JSON parse before the 401.
   const parseBody = express.json({ limit: "10mb" });
 
   const app = express();
+  // req.ip (the rate limit, the log) names the client only as far as a trusted proxy says.
+  app.set("trust proxy", deps.trustProxy ?? "loopback");
 
   // Health — no auth, no body parse.
   // `mode` tells a monitor whether the proxy is in live or fallback mode.
@@ -87,8 +137,7 @@ export function buildFront(deps: FrontDeps): express.Express {
     const prm = (_req: Request, res: Response): void => {
       res.json(protectedResourceMetadata(cfg));
     };
-    app.get(prmPath(), prm);
-    app.get(`${prmPath()}/mcp`, prm);
+    for (const p of prmPaths(cfg.resourceUrl)) app.get(p, prm);
   }
 
   // MCP endpoint — auth gate, then body parse, then presence-based routing.
@@ -103,7 +152,7 @@ export function buildFront(deps: FrontDeps): express.Express {
   };
 
   for (const method of ["post", "get", "delete"] as const) {
-    app[method]("/mcp", authGate, parseBody, handler);
+    for (const p of paths.mcp) app[method](p, requestLog, ipLimit, authGate, profileGate, credLimit, parseBody, handler);
   }
 
   // Turn body-parser failures (oversized payloads etc.) into JSON-RPC errors
@@ -166,6 +215,15 @@ export function wireFailover(deps: {
   });
 }
 
+/** VAULT_MCP_TRUST_PROXY: "true"/"false", a hop count, or Express's own words ("loopback", a CIDR list). */
+export function parseTrustProxy(raw: string): boolean | number | string {
+  const v = raw.trim().toLowerCase();
+  if (v === "true") return true;
+  if (v === "false" || v === "") return false;
+  if (/^\d+$/.test(v)) return Number(v);
+  return raw.trim();
+}
+
 // ── Socket path resolution ────────────────────────────────────────────────────
 //
 // The plugin writes its Unix socket at `~/.claude/vault-mcp/<slug>.sock` where
@@ -217,6 +275,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
   const MAX_SESSIONS = Number(process.env.VAULT_MCP_MAX_SESSIONS ?? 32);
 
   const cfg = loadAuthConfig();
+
+  // Fail-closed: a profile mapping that does not parse must not fall back to `full` (#521).
+  let profiles: ProfileMap;
+  try {
+    profiles = loadProfileMap();
+  } catch (e) {
+    console.error(`[front] refusing to start: ${(e as Error).message}`);
+    process.exit(1);
+  }
 
   // Fail-closed: a public endpoint must NEVER run unauthenticated.
   if (!TOKEN && !cfg.enabled) {
@@ -278,6 +345,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
     fs: fsHandler,
     live: liveProxy,
     seamless: semantic,
+    profiles,
+    rateLimits: loadRateLimitConfig(),
+    logWrite: createLogWriter(loadRequestLogConfig()),
+    ...(process.env.VAULT_MCP_TRUST_PROXY !== undefined ? { trustProxy: parseTrustProxy(process.env.VAULT_MCP_TRUST_PROXY) } : {}),
   });
 
   presence.start();
