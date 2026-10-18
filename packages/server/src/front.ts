@@ -35,6 +35,7 @@ import { createPresenceMonitor } from "./presence.js";
 import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
+import { loadProfileMap, createProfileGate, type ProfileMap } from "./profiles.js";
 
 // ── Injectable factory ────────────────────────────────────────────────────────
 
@@ -50,12 +51,46 @@ export interface FrontDeps {
    * 44↔17 mid-session via tools/list_changed. Default off — Phase 2a routing.
    */
   seamless?: { handle(req: Request, res: Response): Promise<void> };
+  /** Credential → connection profile (profiles.ts, #521). Absent ⇒ unconfigured: every credential gets `full`. */
+  profiles?: ProfileMap;
+}
+
+/**
+ * The paths the endpoint answers on, derived from MCP_RESOURCE_URL (never hard-coded): `/mcp`
+ * always, and the resource URL's own path too (e.g. `/vault-mcp/mcp` behind a `tailscale serve
+ * --set-path /vault-mcp` mount that may or may not strip its prefix). `mount` is that path less a
+ * trailing `/mcp` (`/vault-mcp`), or "" when there is none.
+ */
+export function endpointPaths(resourceUrl: string): { resourcePath: string; mount: string; mcp: string[] } {
+  let resourcePath = "";
+  try {
+    resourcePath = resourceUrl ? new URL(resourceUrl).pathname.replace(/\/+$/, "") : "";
+  } catch {
+    resourcePath = "";
+  }
+  const mount = resourcePath.endsWith("/mcp") ? resourcePath.slice(0, -"/mcp".length) : "";
+  const mcp = [...new Set(["/mcp", ...(resourcePath ? [resourcePath] : [])])];
+  return { resourcePath, mount, mcp };
+}
+
+/**
+ * Every path the protected-resource metadata is served at (RFC 9728 §3.1): the bare well-known
+ * path, its `/mcp` suffix (today's form), the resource path's suffix (`…/vault-mcp/mcp`), and each
+ * of those again under the mount, for a proxy that does not strip it.
+ */
+export function prmPaths(resourceUrl: string): string[] {
+  const { resourcePath, mount } = endpointPaths(resourceUrl);
+  const base = [prmPath(), `${prmPath()}/mcp`, ...(resourcePath ? [`${prmPath()}${resourcePath}`] : [])];
+  return [...new Set([...base, ...(mount ? base.map((b) => `${mount}${b}`) : [])])];
 }
 
 export function buildFront(deps: FrontDeps): express.Express {
   const { cfg, token, presence, fs: fsHandler, live, seamless } = deps;
 
   const authGate = createAuthGate(cfg, { token });
+  // The order on /mcp (#521): auth, the profile, then the body.
+  const profileGate = createProfileGate(deps.profiles ?? { configured: false, entries: new Map() });
+  const paths = endpointPaths(cfg.resourceUrl);
   // Body parsing is scoped to /mcp and applied AFTER authGate so unauthenticated
   // callers cannot force a 10 MB JSON parse before the 401.
   const parseBody = express.json({ limit: "10mb" });
@@ -87,8 +122,7 @@ export function buildFront(deps: FrontDeps): express.Express {
     const prm = (_req: Request, res: Response): void => {
       res.json(protectedResourceMetadata(cfg));
     };
-    app.get(prmPath(), prm);
-    app.get(`${prmPath()}/mcp`, prm);
+    for (const p of prmPaths(cfg.resourceUrl)) app.get(p, prm);
   }
 
   // MCP endpoint — auth gate, then body parse, then presence-based routing.
@@ -103,7 +137,7 @@ export function buildFront(deps: FrontDeps): express.Express {
   };
 
   for (const method of ["post", "get", "delete"] as const) {
-    app[method]("/mcp", authGate, parseBody, handler);
+    for (const p of paths.mcp) app[method](p, authGate, profileGate, parseBody, handler);
   }
 
   // Turn body-parser failures (oversized payloads etc.) into JSON-RPC errors
@@ -218,6 +252,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
 
   const cfg = loadAuthConfig();
 
+  // Fail-closed: a profile mapping that does not parse must not fall back to `full` (#521).
+  let profiles: ProfileMap;
+  try {
+    profiles = loadProfileMap();
+  } catch (e) {
+    console.error(`[front] refusing to start: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
   // Fail-closed: a public endpoint must NEVER run unauthenticated.
   if (!TOKEN && !cfg.enabled) {
     console.error(
@@ -278,6 +321,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
     fs: fsHandler,
     live: liveProxy,
     seamless: semantic,
+    profiles,
   });
 
   presence.start();

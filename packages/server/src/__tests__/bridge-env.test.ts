@@ -15,12 +15,12 @@ test("an unset or empty variable is not passed on", () => {
   assert.equal(env.VAULT_MCP_STATE_DIR, undefined);
 });
 
-test("both places that start a bridge pass bridgeEnv()", async () => {
+test("both places that start a bridge pass bridgeEnv(), with the session's profile (#521)", async () => {
   const fs = await import("node:fs");
   for (const f of ["live-proxy.ts", "semantic-proxy.ts"]) {
     const src = fs.readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8");
     const spawns = src.split("new StdioClientTransport(").slice(1);
     assert.ok(spawns.length > 0, `${f} starts no bridge?`);
-    for (const s of spawns) assert.match(s.slice(0, 400), /env:\s*bridgeEnv\(\)/, `${f}: a bridge started without bridgeEnv()`);
+    for (const s of spawns) assert.match(s.slice(0, 400), /env:\s*bridgeEnv\(process\.env, \{ profile: [\w.]+ \}\)/, `${f}: a bridge started without bridgeEnv() and its profile`);
   }
 });
