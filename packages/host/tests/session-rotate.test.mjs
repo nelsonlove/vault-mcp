@@ -30,6 +30,9 @@ import { createConnectionSession } from "../src/kernel/sessions/connection-sessi
 import { openSession, expiryRefusal, revokeSession, SESSION_TTL_MS } from "../src/kernel/sessions/session.ts";
 import { createGovernanceSeam } from "../src/mcp/seam.ts";
 import { makeGuarded } from "../src/mcp/guarded.ts";
+import { createOperationExecutor } from "../src/kernel/operations/executor.ts";
+import { createActionRegistry } from "../src/kernel/operations/registry.ts";
+import { NO_DIRECT_WRITES } from "@vault-mcp/core";
 import { Kernel, WriteJournal, WriteQueue, IdempotencyStore, LockStore } from "../src/kernel/index.ts";
 import { DISCONNECT_REASON } from "../bridge/bridge.ts";
 
@@ -112,6 +115,39 @@ describe("an expired session on an open connection rotates", () => {
     assert.deepEqual(f.lines.at(-1), { kind: "closed", at: AFTER_TTL, sessionId: now.id });
   });
 
+  test("a CLOSED connection never rotates, even for a call still in flight", async () => {
+    const f = fixture();
+    const old = f.conn.current();
+    f.set(AFTER_TTL);
+    f.conn.close();
+    await f.conn.refresh();
+    assert.equal(f.conn.current().id, old.id, "no session opened after the close");
+    assert.equal(f.mints(), 1);
+    const r = await f.conn.refusal();
+    assert.equal(r.code, "session_not_live", "the call refuses instead");
+  });
+
+  test("a close DURING the rotation's provider check also stops it", async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const f = fixture({ refuse: async () => { await gate; return null; } });
+    f.set(AFTER_TTL);
+    const p = f.conn.refresh();
+    f.conn.close();
+    release();
+    await p;
+    assert.equal(f.mints(), 1);
+  });
+
+  test("the rotation asks the provider with purpose \"rotate\", the dequeue check with \"dequeue\"", async () => {
+    const asked = [];
+    const f = fixture({ refuse: async (id, purpose) => { asked.push(purpose); return null; } });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    await f.conn.refusal();
+    assert.deepEqual(asked, ["rotate", "dequeue"]);
+  });
+
   test("two concurrent calls share ONE rotation", async () => {
     let release;
     const gate = new Promise((r) => { release = r; });
@@ -176,6 +212,49 @@ describe("a revoked session never rotates", () => {
   });
 });
 
+describe("a store read error refuses a rotation, but not a call", () => {
+  // The governor answers the seam's hook from its session store. At dequeue a
+  // store read error is silence (the host's expiry floor still holds); before a
+  // ROTATION it must refuse, because a rotation needs a positive "not revoked".
+  test("the governor's hook: read error ⇒ refusal for \"rotate\", silence for \"dequeue\"", async () => {
+    const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
+    const hook = sessionRefusalFrom({ revocationRefusal: async () => { throw new Error("sessions.jsonl unreadable"); } });
+    const r = await hook("s-1", "rotate");
+    assert.equal(r.code, "session_store_unreadable");
+    assert.equal(await hook("s-1", "dequeue"), null, "the normal call path is unchanged");
+    assert.equal(await hook("s-1"), null, "an older host passes no purpose: unchanged too");
+  });
+
+  test("the governor's hook still refuses a REVOKED id for both purposes", async () => {
+    const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
+    const hook = sessionRefusalFrom({ revocationRefusal: async (id) => ({ code: "session_revoked", detail: id }) });
+    assert.equal((await hook("s-1", "rotate")).code, "session_revoked");
+    assert.equal((await hook("s-1", "dequeue")).code, "session_revoked");
+  });
+
+  test("end to end through the seam: a store read error means NO rotation", async () => {
+    const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
+    const { seam, consult } = createGovernanceSeam();
+    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => { throw new Error("unreadable"); } }));
+    const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
+    const old = f.conn.current();
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.conn.current().id, old.id, "the possibly-revoked session was not rotated");
+    assert.equal(f.mints(), 1);
+  });
+
+  test("MUTATION CHECK: the same seam with a readable store rotates", async () => {
+    const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
+    const { seam, consult } = createGovernanceSeam();
+    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => null }));
+    const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.mints(), 2);
+  });
+});
+
 describe("through the write path: the call succeeds under the new session", () => {
   function fixtureKernel() {
     const files = new Map();
@@ -193,19 +272,108 @@ describe("through the write path: the call succeeds under the new session", () =
     return { kernel: new Kernel(new WriteQueue(), journal, undefined, new IdempotencyStore(), new LockStore()), records };
   }
 
-  function wired(f, { refresh = true } = {}) {
+  function noteWriteRegistry() {
+    const registry = createActionRegistry();
+    registry.register({
+      id: "note.write",
+      version: 1,
+      title: "Write a note",
+      postcondition: "Replace the content of one note.",
+      owner: "core",
+      distribution: "public-default",
+      modes: ["proposal-mutation"],
+      changeClasses: ["content"],
+      observations: { defaultCapture: "ephemeral", supportsProposal: false },
+      effects: { direct: ["note-content"], discovered: "none" },
+      authority: { governorOnly: false, automaticAdmission: "never" },
+      scope: { argumentKeys: ["path"], resolvesAddresses: true, enumeration: "not-applicable", whenScoped: "available" },
+      retention: { operation: "durable-for-mutation" },
+      inputs: ["path", "content"],
+      native: true,
+    });
+    registry.bind({ kind: "mcp", id: "obsidian_write_note", action: "note.write", actionVersion: 1 });
+    registry.validate();
+    return registry;
+  }
+
+  function wired(f, { refresh = true, executor = false, handler } = {}) {
     const { kernel, records } = fixtureKernel();
     let ran = 0;
+    const operations = [];
     const guarded = makeGuarded({
       getSettings: () => ({ readOnly: false, allowlist: [] }),
       kernel,
       actor: () => ({ transport: "mcp", connection: "c-1", session: f.conn.current().id }),
-      sessionRefusal: () => f.conn.refusal(),
+      sessionRefusal: (id) => f.conn.refusal(id),
       ...(refresh ? { sessionRefresh: () => f.conn.refresh() } : {}),
+      ...(executor
+        ? {
+            executor: createOperationExecutor({
+              registry: noteWriteRegistry(),
+              actor: () => ({ binding: "c-1", clientClaim: null }),
+              sessionId: () => f.conn.current().id,
+              propose: (operation) => { operations.push(operation.sessionId); },
+            }),
+          }
+        : {}),
     });
-    const call = guarded({ annotations: RW, inputSchema: {} }, async () => { ran++; return { content: [{ type: "text", text: "wrote" }] }; }, "obsidian_write_note");
-    return { call, records, ran: () => ran };
+    const call = guarded(
+      { annotations: RW, inputSchema: {} },
+      handler ?? (async () => { ran++; return { content: [{ type: "text", text: "wrote" }] }; }),
+      "obsidian_write_note"
+    );
+    return { call, records, ran: () => ran, operations };
   }
+
+  test("the operation record, the journal actor and the observer all name the NEW session", async () => {
+    const f = fixture();
+    const old = f.conn.current();
+    const w = wired(f, { executor: true });
+    f.set(AFTER_TTL);
+    const res = await w.call({ path: "a.md" });
+    assert.equal(res.isError, undefined);
+    const now = f.conn.current();
+    assert.notEqual(now.id, old.id);
+    assert.deepEqual(w.operations, [now.id], "the operation (and so the write observer) names the new session");
+    assert.equal(w.records[0].actor.session, now.id, "the journal names the new session");
+  });
+
+  test("a call QUEUED under a session that expires and rotates meanwhile refuses once; its retry runs under the new one", async () => {
+    const f = fixture();
+    const s1 = f.conn.current();
+    // Call A is enqueued under live S1 and parked inside the queue (the kernel
+    // serializes, so a first write that blocks holds A behind it).
+    let unblock;
+    const blocker = new Promise((r) => { unblock = r; });
+    const w = wired(f, {
+      handler: async (args) => {
+        if (args.path === "block.md") await blocker;
+        return { content: [{ type: "text", text: "wrote" }] };
+      },
+    });
+    const first = w.call({ path: "block.md" });
+    const a = w.call({ path: "a.md" });
+    await new Promise((r) => setTimeout(r, 5));
+    // S1 expires, and call B rotates the connection to S2.
+    f.set(AFTER_TTL);
+    const b = w.call({ path: "b.md" });
+    await new Promise((r) => setTimeout(r, 5));
+    const s2 = f.conn.current();
+    assert.equal(s2.continuedFrom, s1.id, "B rotated the connection");
+    unblock();
+    await first;
+    const resA = await a;
+    assert.equal(resA.isError, true, "A was enqueued under S1, which is expired: it must not run under S2's check");
+    assert.match(resA.content.map((c) => c.text).join("\n"), /session_not_live/);
+    assert.ok(resA.content.map((c) => c.text).join("\n").includes(NO_DIRECT), "with the new text");
+    const recA = w.records.find((r) => r.target?.path === "a.md");
+    assert.equal(recA.actor.session, s1.id, "A is journaled under S1, the session it was refused for");
+    const resB = await b;
+    assert.equal(resB.isError, undefined, "B runs under S2");
+    const retry = await w.call({ path: "a.md" });
+    assert.equal(retry.isError, undefined, "A's retry runs under S2");
+    assert.equal(w.records.at(-1).actor.session, s2.id);
+  });
 
   test("an expired session rotates and the write lands, journaled under the NEW session id", async () => {
     const f = fixture();
@@ -242,5 +410,10 @@ describe("the refusal texts say: do not write vault files directly", () => {
 
   test("the bridge's disconnect message carries the instruction", () => {
     assert.ok(DISCONNECT_REASON.includes(NO_DIRECT), DISCONNECT_REASON);
+  });
+
+  test("the bridge's copy and core's NO_DIRECT_WRITES are the same text", () => {
+    assert.equal(NO_DIRECT_WRITES, NO_DIRECT);
+    assert.ok(DISCONNECT_REASON.endsWith(NO_DIRECT_WRITES), "the bridge copies core's text exactly");
   });
 });

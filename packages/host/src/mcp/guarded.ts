@@ -291,12 +291,14 @@ export interface GuardedOpts {
    * host's own expiry floor with the seam's provider refusals behind this one
    * function; the guard only renders whatever refusal comes back.
    */
-  sessionRefusal?: () => Promise<{ code: string; detail: string } | null> | { code: string; detail: string } | null;
+  sessionRefusal?: (enqueuedUnder?: string | null) => Promise<{ code: string; detail: string } | null> | { code: string; detail: string } | null;
   /**
    * Rotate the connection's session when it has EXPIRED and nothing refuses it
    * (server.ts, `kernel/sessions/connection-session.ts`). Awaited just before
-   * the mutation is queued, so `actor()` (taken at enqueue for the journal)
-   * names the session the call actually runs under. Absent ⇒ no session
+   * the executor builds the operation record, at the top of the wrapper, so
+   * the operation's sessionId, `actor()` (taken at enqueue for the journal)
+   * and the write observer all name the session the call actually runs
+   * under. Mutations only. Absent ⇒ no session
    * machinery; nothing rotates. A revoked session never rotates, and the
    * dequeue check above still refuses it.
    */
@@ -506,6 +508,11 @@ export function makeGuarded(opts: GuardedOpts) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (def: any, handler: any, name?: string) => async (args: any, extra: any) => {
     const toolName = name ?? def?.title ?? "unknown";
+    // An expired session is replaced by a new one (continuedFrom the old id)
+    // HERE, before the executor builds the operation record: the operation's
+    // sessionId, the journal actor and the write observer must all name the
+    // session the write runs under. Mutations only, like the dequeue check.
+    if (def?.annotations?.readOnlyHint === false) await opts.sessionRefresh?.();
     if (!opts.executor) return runGuarded(opts, def, handler, name, args, extra, () => {});
     try {
       const { result } = await opts.executor.run(
@@ -652,9 +659,6 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   const sync = opts.syncGuard && !keyKnown ? await opts.syncGuard(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, declared?.sync) : null;
   if (sync && "refuse" in sync) return codedError(sync.refuse.code, sync.refuse.message);
   const syncWarning = sync && "warn" in sync ? { text: sync.warn, code: sync.code } : undefined;
-  // An expired session is replaced by a new one (continuedFrom the old id)
-  // BEFORE the actor is taken below, so the journal names the live session.
-  await opts.sessionRefresh?.();
   // The operation reaches the write queue here. Marked rather than assumed:
   // every refusal above this line — read-only mode, the allowlist, an
   // unresolved uid or address, an unenforceable if_rev — returns without ever
@@ -669,12 +673,15 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
     ...resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path })),
     ...resolved.schemeResolved,
   ];
+  // Taken once, at enqueue: the journal names this actor, and the dequeue
+  // check below judges the session it names, not whatever is current then.
+  const enqueueActor = opts.actor();
   try {
     return withSyncWarning(await opts.kernel.runMutation(
       {
         op: name ?? def?.title ?? "unknown",
         args: toolArgs,
-        actor: opts.actor(),
+        actor: enqueueActor,
         ref: refOf(toolArgs),
         effectsOf: (result) => reportedEffects(toolArgs, result),
         ...(ifRev !== undefined ? { ifRev } : {}),
@@ -692,7 +699,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
         // mutation can wait in the queue across its session's expiry or
         // revocation, and executing it then would act under an authority
         // context that no longer exists (WP5).
-        const refusal = await opts.sessionRefusal?.();
+        const refusal = await opts.sessionRefusal?.(enqueueActor.session ?? null);
         if (refusal) return codedError(refusal.code, refusal.detail);
         // The whole-note-overwrite rule (#441, #443), decided here at
         // dequeue: journaled as an error when it refuses, like the kernel's

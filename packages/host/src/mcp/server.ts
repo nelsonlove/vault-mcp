@@ -192,7 +192,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
           now
         );
       },
-      ...(ctx.seam ? { refuse: (id: string | null) => ctx.seam!.refuseSession(id) } : {}),
+      ...(ctx.seam ? { refuse: (id: string | null, purpose: "dequeue" | "rotate") => ctx.seam!.refuseSession(id, purpose) } : {}),
     });
 
     // The session ends when the connection does. Protocol.onclose is the
@@ -231,11 +231,12 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
    *
    * The union of the two is exactly what the single store-reading check did
    * before: expired ⇒ refused, revoked/closed ⇒ refused, otherwise proceed.
-   * The rotation happens BEFORE the call is queued (`sessionRefresh`), not
-   * here: see `connection-session.ts`.
+   * The rotation happens at the top of the guarded wrapper (`sessionRefresh`),
+   * never here; this check judges the session the call was ENQUEUED under.
+   * See `connection-session.ts`.
    */
-  const sessionRefusal = async (): Promise<{ code: string; detail: string } | null> => {
-    if (conn) return conn.refusal();
+  const sessionRefusal = async (enqueuedUnder?: string | null): Promise<{ code: string; detail: string } | null> => {
+    if (conn) return conn.refusal(enqueuedUnder);
     return (await ctx.seam?.refuseSession(null)) ?? null;
   };
   const sessionRefresh = async (): Promise<void> => {

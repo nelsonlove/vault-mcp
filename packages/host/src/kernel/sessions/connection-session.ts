@@ -13,10 +13,12 @@
 // session expired while the connection is still open:
 //
 //   1. the old session is marked expired in the session log (as before);
-//   2. the governance provider is asked, through the seam, whether it refuses
-//      the OLD id. If it does (a revocation), nothing rotates: the old session
-//      stays current, so every later mutation keeps refusing. Only an expiry
-//      rotates; a revocation never does;
+//   2. the governance provider is asked, through the seam with purpose
+//      "rotate", whether it refuses the OLD id. If it does (a revocation, or a
+//      store it cannot read: a rotation needs a positive "not revoked"), or its
+//      hook throws, nothing rotates: the old session stays current, so every
+//      later mutation keeps refusing. Only an expiry rotates; a revocation
+//      never does;
 //   3. otherwise a NEW session is minted with `openSession`, its `continuedFrom`
 //      set to the old id, and logged as opened. The connection's later calls,
 //      its journal actor, and its close all use the new session.
@@ -37,9 +39,16 @@
 //
 // Two concurrent calls that both see the expiry share one rotation: the first
 // one's promise is reused, and a call that sees the session already replaced
-// does nothing.
+// does nothing. A closed connection never rotates.
+//
+// WHEN it runs: `refresh` is awaited at the top of the guarded wrapper, before
+// the operation executor builds its record, so the operation's sessionId, the
+// journal actor and the write observer all name the same (new) session. The
+// DEQUEUE check never rotates: it checks the session the call was ENQUEUED
+// under (`refusal(enqueuedUnder)`), so a call queued under a session that then
+// expired refuses once, and its retry runs under the new one.
 
-import { livenessOf, expiryRefusal } from "@vault-mcp/core";
+import { livenessOf, expiryRefusal, NO_DIRECT_WRITES } from "@vault-mcp/core";
 import type { SessionId, SessionV1 } from "@vault-mcp/core";
 
 type Refusal = { code: string; detail: string };
@@ -54,7 +63,7 @@ export interface ConnectionSessionDeps {
   /** Mint a session. `continuedFrom` is null for the connection's first one. */
   mint(continuedFrom: SessionId | null, now: number): SessionV1;
   /** The provider's refusal for a session id, through the seam. Absent: no provider. */
-  refuse?: (sessionId: string | null) => Promise<Refusal | null>;
+  refuse?: (sessionId: string | null, purpose: "dequeue" | "rotate") => Promise<Refusal | null>;
   /** The clock. Defaults to Date.now. */
   now?: () => number;
 }
@@ -69,11 +78,11 @@ export interface ConnectionSession {
    */
   refresh(): Promise<void>;
   /**
-   * The dequeue refusal: the host's expiry floor, then the provider's refusal.
-   * It rotates first, so a call queued across the expiry runs under the new
-   * session only when nothing refuses; see `refusal` in the body.
+   * The dequeue refusal: the host's expiry floor, then the provider's refusal,
+   * for the session the call was ENQUEUED under (by id; the current one when
+   * none is named). It never rotates.
    */
-  refusal(): Promise<Refusal | null>;
+  refusal(enqueuedUnder?: string | null): Promise<Refusal | null>;
   /** Record that the connection closed, against the session current now. */
   close(): void;
 }
@@ -82,10 +91,15 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   const clock = deps.now ?? Date.now;
   let session = deps.mint(null, clock());
   deps.log.open(session, clock()).catch((e) => console.error("[vault-mcp] session open failed", e));
+  // Every session this connection has held, by id, so the dequeue check can
+  // judge a call by the session it was enqueued under.
+  const held = new Map<string, SessionV1>([[session.id, session]]);
+  let closed = false;
 
   let rotating: Promise<void> | null = null;
 
   const rotate = async (): Promise<void> => {
+    if (closed) return;
     const old = session;
     const now = clock();
     // Only an EXPIRY rotates. A session whose own record says closed or
@@ -97,14 +111,15 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     // throws is treated the same way (fail closed): no rotation.
     let refused: Refusal | null;
     try {
-      refused = (await deps.refuse?.(old.id)) ?? null;
+      refused = (await deps.refuse?.(old.id, "rotate")) ?? null;
     } catch {
       return;
     }
     if (refused) return;
-    if (session !== old) return;
+    if (session !== old || closed) return;
     const next = deps.mint(old.id, clock());
     session = next;
+    held.set(next.id, next);
     deps.log.open(next, clock()).catch((e) => console.error("[vault-mcp] session open failed", e));
   };
 
@@ -120,24 +135,30 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   return {
     current: () => session,
     refresh,
-    async refusal() {
-      // A mutation can wait in the queue across its session's expiry. The
-      // journal actor was taken at enqueue and names the session that was live
-      // then, so a rotation HERE would run the write under a session the
-      // record does not name. So the dequeue check does not rotate: it refuses
-      // as before (the next call rotates at enqueue), and the refusal text
-      // says to retry.
+    async refusal(enqueuedUnder) {
+      // Judged against the session the call was ENQUEUED under: the journal
+      // actor was taken then and names it. A rotation that happened while the
+      // call waited does not lend the call the new session: the old one is
+      // expired, so the call refuses once, and its retry runs under the new
+      // session. An id this connection never held refuses outright.
+      const target = enqueuedUnder == null ? session : held.get(enqueuedUnder);
+      if (!target) {
+        return { code: "session_not_live", detail: `session ${enqueuedUnder} is not this connection's session. ${NO_DIRECT_WRITES}` };
+      }
       const now = clock();
-      const expired = expiryRefusal(session, now);
+      const expired = expiryRefusal(target, now);
       if (expired) {
         // The expiry transition is recorded, not merely observed: the durable
         // record should not say "open" about a session nothing will honour.
-        if (expired.status === "expired") deps.log.markExpired(session.id, now).catch(() => undefined);
+        if (expired.status === "expired") deps.log.markExpired(target.id, now).catch(() => undefined);
         return { code: expired.code, detail: expired.detail };
       }
-      return (await deps.refuse?.(session.id)) ?? null;
+      return (await deps.refuse?.(target.id, "dequeue")) ?? null;
     },
     close() {
+      // No rotation after this: a call still in flight when the connection
+      // closed must not open a session nothing will ever close.
+      closed = true;
       deps.log.close(session.id, clock()).catch(() => undefined);
     },
   };
