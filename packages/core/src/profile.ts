@@ -118,7 +118,14 @@ export function profileCallRefusal(
   // profile's write scope refuse a read such as vaultmcp_bases_list.
   if (mutating && profile.writeScope && !READ_SET.has(tool)) {
     const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
-    return writeScopeRefusal(tool, a, collectPaths(a), profile.writeScope, exists);
+    const paths = collectPaths(a);
+    // A path that still holds an HTML entity is refused under a profile's write scope (#562 review 1):
+    // some handlers decode entities, so `&#47;` could become a '/' after the scope was checked.
+    const entity = paths.find((p) => /&(#\d+|#x[0-9a-f]+|[a-z]+);/i.test(p));
+    if (entity !== undefined) {
+      return { code: "write_scope", message: `'${tool}' names '${entity}', which holds an HTML entity; on this connection a path is written plainly. Nothing was written.` };
+    }
+    return writeScopeRefusal(tool, a, paths, profile.writeScope, exists);
   }
   return null;
 }

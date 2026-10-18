@@ -139,7 +139,10 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
     const mutating = tool.annotations?.readOnlyHint === false;
     const handler = profile
       ? (args: any) => {
-          const refused = profileCallRefusal(profile, tool.name, mutating, args, opts.exists ?? (() => true));
+          // Check the arguments the handler will USE (#562 review 1): with decodeHtml on, the handler
+          // decodes `&#47;` to `/`, so a check on the raw text could pass a path that leaves the scope.
+          const seen = decodeHtml ? decodeArgsDeep(args, dec) : args;
+          const refused = profileCallRefusal(profile, tool.name, mutating, seen, opts.exists ?? (() => true));
           return refused ? fail(Object.assign(new Error(refused.message), { code: refused.code })) : inner(args);
         }
       : inner;
@@ -566,4 +569,17 @@ function makeHandler(
       // Should never happen if FS_TOOLS is in sync with this switch.
       throw new Error(`registerFsTools: no handler for tool "${name}"`);
   }
+}
+
+/** Decode every string in an argument tree, as the handlers do one by one (#562 review 1). */
+function decodeArgsDeep(v: unknown, dec: (s: string) => string, depth = 0): unknown {
+  if (depth > 20) return v;
+  if (typeof v === "string") return dec(v);
+  if (Array.isArray(v)) return v.map((x) => decodeArgsDeep(x, dec, depth + 1));
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) out[k] = decodeArgsDeep(x, dec, depth + 1);
+    return out;
+  }
+  return v;
 }

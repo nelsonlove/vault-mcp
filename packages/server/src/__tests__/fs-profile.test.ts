@@ -91,4 +91,15 @@ describe("FS mode under a profile", () => {
     assert.deepEqual((await c.listTools().catch(() => ({ tools: [] }))).tools, []);
     await c.close();
   });
+  test("#562 review 1: an HTML-encoded path cannot leave the inbox (the check sees what the handler writes)", async () => {
+    const c = await client("read+inbox");
+    for (const p of ["00 Area/00.01 Inbox/x&#47;..&#47;..&#47;..&#47;Notes&#47;escaped.md", "00 Area/00.01 Inbox/sub&#47;nested.md"]) {
+      const r = await c.callTool({ name: "obsidian_write_note", arguments: { path: p, content: "x" } });
+      assert.equal((r as { isError?: boolean }).isError, true, p);
+    }
+    assert.equal(existsSync(path.join(vault, "Notes", "escaped.md")), false);
+    assert.equal(existsSync(path.join(vault, "00 Area", "00.01 Inbox", "sub")), false);
+    await c.close();
+  });
 });
+
