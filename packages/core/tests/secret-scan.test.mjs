@@ -297,6 +297,11 @@ describe("review round 2: more key forms", () => {
     assert.match(out, /after the block$/);
   });
 
+  test("an escape before a blank line: the value is blanked to the block's end and the next block is kept", () => {
+    assert.equal(redactSecrets('password: ["fake-a\\\n\nafter'), "password: [redacted:secret]\n\nafter");
+    assert.equal(redactSecrets('token = {"fake-b\\\n  more fake-c\n\nnext: ok'), "token = [redacted:secret]\n\nnext: ok");
+  });
+
   test("no value is capped: a long value leaks no tail", () => {
     const long = "f".repeat(10_000);
     for (const t of [`password: ${long}`, `password: "${long}"`, `password: '${long}'`, `| password | ${long} |`, `<password>${long}</password>`]) {
@@ -464,6 +469,9 @@ describe("speed and failure", () => {
       "token: [\n\n".repeat(100_000),
       "a\ntoken: {\n\nb\n".repeat(70_000),
       'token: ["x\n\n'.repeat(80_000),
+      // An escape before a blank line must not step over it (head 1a67118).
+      'password: ["\\\n\n'.repeat(70_000),
+      'token = {"\\\n\n'.repeat(80_000),
       JSON.stringify({ notes: Array.from({ length: 20_000 }, (_, i) => ({ path: `n${i}.md`, password: "fake", body: "token: fake" })) }, null, 2),
     ];
     for (const s of inputs) {

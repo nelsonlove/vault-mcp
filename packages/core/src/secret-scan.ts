@@ -207,30 +207,33 @@ function blankValue(value: string): string {
   return `${lead}${open}${SECRET_MARK}${inner.slice(trimmed.length)}${close}`;
 }
 
-// The longest bracketed value matched; past it the value is blanked to the end of its block.
+// The longest bracketed value scanned for its close; past it the value is blanked to the end of its block.
 const BRACKET_CAP = 1 << 20;
 
 /**
- * The end (exclusive) of the bracketed value that opens at `i`, or -1 when it does not close
- * within the cap. Brackets are counted, quoted strings (with escapes) skipped. One pass.
+ * Where the bracketed value that opens at `i` ends (exclusive): just after its matching close;
+ * otherwise where its block ends (the line break that starts the next blank line, or the end of
+ * the text). The caller blanks up to this index and resumes there, so the scan and the blank can
+ * never disagree, and every character is scanned once. Brackets are counted, quoted strings (with
+ * escapes) skipped; an escape never steps over a line break. Past the cap, the value is blanked to
+ * the end of its block all the same (fail closed).
  */
 function matchBracket(text: string, i: number, escaped: boolean): number {
   let depth = 0;
   const end = Math.min(text.length, i + BRACKET_CAP);
-  for (let j = i; j < end; j++) {
+  let j = i;
+  for (; j < end; j++) {
     const c = text[j];
     if (!escaped && c === "\n") {
-      // A blank line ends the block: the value did not close inside it. Stopping here (and not at
-      // the cap) keeps the whole pass linear: the caller resumes after this point.
       let k = j + 1;
       while (k < end && (text[k] === " " || text[k] === "\t" || text[k] === "\r")) k++;
-      if (k >= text.length || text[k] === "\n") return -1;
+      if (k >= text.length || text[k] === "\n") return j;
       continue;
     }
     if (!escaped && (c === '"' || c === "'")) {
       // Skip a quoted string; an unclosed one runs to the end of its line, which the loop then sees.
       let k = j + 1;
-      while (k < end && text[k] !== c && text[k] !== "\n") k += text[k] === "\\" ? 2 : 1;
+      while (k < end && text[k] !== c && text[k] !== "\n") k += text[k] === "\\" && k + 1 < end && text[k + 1] !== "\n" ? 2 : 1;
       j = k < end && text[k] === "\n" ? k - 1 : k;
       continue;
     }
@@ -244,13 +247,14 @@ function matchBracket(text: string, i: number, escaped: boolean): number {
       if (depth === 0) return j + 1;
     }
   }
-  return -1;
+  // The cap or the end of the text, with no close: to the end of the block.
+  return endOfBlock(text, Math.min(j, text.length), escaped);
 }
 
-/** Where a value that did not close ends: the next blank line, or the end of the text. */
+/** Where a block ends from `i`: the line break that starts the next blank line, or the end of the text. */
 function endOfBlock(text: string, i: number, escaped: boolean): number {
   if (escaped) return text.length;
-  const re = /\n[ \t]*\r?\n/g;
+  const re = /\n[ \t\r]*(?=\n)/g;
   re.lastIndex = i;
   const m = re.exec(text);
   return m ? m.index : text.length;
@@ -266,8 +270,7 @@ function replaceKeyValues(R: Compiled, text: string, escaped: boolean): string {
   while ((m = re.exec(text)) !== null) {
     const valStart = m.index + m[1].length;
     if (m[2] !== undefined) {
-      let end = matchBracket(text, valStart, escaped);
-      if (end < 0) end = endOfBlock(text, valStart, escaped);
+      const end = matchBracket(text, valStart, escaped);
       out += text.slice(last, valStart) + SECRET_MARK;
       last = end;
       re.lastIndex = end;
