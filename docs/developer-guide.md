@@ -212,6 +212,10 @@ Do not claim performance results until [Testing and release](testing-and-release
 | Git and attestations | Object/ref integrity, canonical subjects, signatures, trust, revocation, admission, and recovery |
 | Replica and Sync | Partial arrival, ordering, portable-state off/on, conflict, offline queue, and local standing |
 
+## Outside names check
+
+A pull request must not hard-wire a name from the operator's own setup (a LaunchAgent label, a home path, a domain, a vault folder name, a Claude Code path, and so on). `scripts/outside-names.json` lists each pattern with a short reason and the path globs that may carry it (tests, docs, and the files that are the intended home). `scripts/check-outside-names.mjs` reads `git diff --unified=0 <base>...HEAD`, looks at added lines only, and exits 1 for a match in a file that is not allowed; the `Outside names` workflow runs it on every pull request. Run it locally with `node scripts/check-outside-names.mjs origin/main`. When it flags a line, add a row to the vault-mcp assumptions ledger (07.36) or make the name a setting. A line that must stay can end with a comment `outside-name-ok: <reason>`. When a name moves to a new intended home, edit the allowed list in the same pull request so the ledger and the check stay in step.
+
 ## Documentation ownership
 
 Action semantics derive from the action registry; capability facts are generated projections; setting facts derive from the schema; errors from the registry; operation, observation, effect, and receipt fields from their schemas; status from status-and-compatibility; security assumptions from the threat model; migrations from the migration register.

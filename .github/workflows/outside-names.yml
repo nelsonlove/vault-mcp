@@ -1,0 +1,22 @@
+name: Outside names
+
+# Flags a NEW hard-wired outside name (a name from the operator's own setup) in a PR.
+# Patterns and allowed paths: scripts/outside-names.json. See docs/developer-guide.md.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  outside-names:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/check-outside-names.mjs "origin/${{ github.base_ref }}"

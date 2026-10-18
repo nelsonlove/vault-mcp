@@ -1,0 +1,28 @@
+{
+  "alwaysAllowed": [
+    "scripts/outside-names.json",
+    "scripts/check-outside-names.mjs",
+    "scripts/check-outside-names.test.mjs",
+    ".github/workflows/outside-names.yml",
+    "CHANGELOG.md",
+    "**/CHANGELOG.md"
+  ],
+  "patterns": [
+    { "id": "launchagent-label", "regex": "com\\.nelson\\.", "why": "LaunchAgent labels of the operator's machine", "allowed": [] },
+    { "id": "home-path", "regex": "/Users/[a-z]", "why": "absolute home path", "allowed": ["packages/*/tests/**", "**/*.test.*"] },
+    { "id": "operator-domain", "regex": "nelson\\.love", "why": "operator's domain or email", "allowed": [".claude-plugin/marketplace.json"] },
+    { "id": "old-account-or-key", "regex": "wham\\.studio|ssh-ed25519 ", "why": "old account name or key", "allowed": [] },
+    { "id": "github-owner", "regex": "nelsonlove/", "why": "GitHub owner in a link", "allowed": ["package.json", "**/package.json", "manifest.json", "**/manifest.json", "plugin.json", "**/plugin.json", "marketplace.json", "**/marketplace.json", "README.md", "**/README.md", "docs/**", "packages/*/tests/**", "**/*.test.*"] },
+    { "id": "old-repo-name", "regex": "obsidian-mcp-suite|obsidian-vault-mcp-(server|plugin)|obsidian-governor", "why": "old repository name", "allowed": ["docs/**", "packages/*/tests/**", "**/*.test.*"] },
+    { "id": "claude-code-path", "regex": "~/\\.claude|\\.claude/", "why": "Claude Code path", "allowed": ["**/paths.ts", "**/discovery.ts", "packages/*/src/bridge/**", "packages/*/src/cc-plugin/**", "packages/skills/src/kernel/skills-config.ts", "packages/server/src/front.ts", "packages/server/src/fs-write-kernel.ts", "docs/**", "packages/*/tests/**", "**/*.test.*"] },
+    { "id": "operator-vault-location", "regex": "~/obsidian\\b|homedir\\(\\), *\"obsidian\"", "why": "the operator's vault location", "allowed": ["packages/*/tests/live/**", "**/*.live.test.*"] },
+    { "id": "homebrew-path", "regex": "/opt/homebrew|/usr/local/bin", "why": "Homebrew path", "allowed": ["packages/core/src/spawn.ts", "packages/host/src/claude-cli.ts", "packages/fileclass/src/tools.ts", "docs/**", "packages/*/tests/**", "**/*.test.*"] },
+    { "id": "jd-area-folder", "regex": "(?<![0-9-])[0-9]{2}-[0-9]{2} [A-Z]", "why": "Johnny.Decimal area folder name of the operator's vault (a guarded area)", "allowed": ["packages/*/tests/**", "**/*.test.*", "docs/**"] },
+    { "id": "jd-id-folder", "regex": "(?<![0-9.])[0-9]{2}\\.[0-9]{2} [A-Z][a-z]", "why": "Johnny.Decimal id folder name of the operator's vault", "allowed": ["packages/*/tests/**", "**/*.test.*", "docs/**"] },
+    { "id": "dead-record-marker", "regex": "Machinery record", "why": "dead record-folder marker", "allowed": [] },
+    { "id": "accept-verb-names", "regex": "Verify current note|Reopen current note|Request revision|Answer current note|Reject current note", "why": "the operator's accept-verb names", "allowed": ["packages/*/tests/**", "**/*.test.*"] },
+    { "id": "vault-class-names", "regex": "Topic/Term|Meta/Slot|Event/AgentNotebookEntry|Person/Agent", "why": "class names of the operator's vault", "allowed": ["packages/core/src/vocab/glossary.ts", "**/tools-create-note.ts", "packages/*/tests/**", "**/*.test.*", "docs/**"] },
+    { "id": "private-fork-version", "regex": "3\\.1\\.9-nl\\.", "why": "private fork version", "allowed": [] },
+    { "id": "fleet-last-run-hook", "regex": "skill-runs", "why": "the fleet's last-run hook", "allowed": [] }
+  ]
+}
