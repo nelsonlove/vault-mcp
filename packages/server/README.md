@@ -36,6 +36,9 @@ Xvfb.
 | `obsidian_move_note` | Move / rename a note. By default rewrites `[[wikilinks]]` that resolved to `from` so they now point at `to`, preserving each ref's visual shape | yes (destructive — multi-file mutation) |
 | `obsidian_write_note` | Create / overwrite a note | yes (destructive) |
 | `obsidian_append_note` | Append to (or create) a note | yes |
+| `obsidian_write_file` | Create / overwrite an Obsidian Bases (`.base`, YAML) or JSON Canvas (`.canvas`) file. The content must parse as its type first (a YAML mapping; a JSON object whose `nodes` and `edges` are arrays of objects with unique ids), or it is refused with `invalid_file` and nothing is written | yes (destructive) |
+| `obsidian_edit_file` | Change one keyed item of such a file: a Base view by `name`, a Canvas node or edge by `id` (upsert or remove; removing a node removes its edges). The result is validated as a whole write is | yes (destructive) |
+| `obsidian_move_file` | Move / rename a `.base` or `.canvas` file, keeping its extension. This server does not rewrite links to it (its link index covers notes only); the response's `links_note` says so | yes (destructive) |
 | `obsidian_force_reindex` | Rebuild the in-memory index synchronously. The watcher auto-refreshes within ~1.5s; call this only for tight read-after-write loops or suspected missed events | no (cache only) |
 | `vaultmcp_send_message` | Send a short text (1 to 2,000 characters, at most 4,096 UTF-8 bytes) to the operator's ntfy topic. **Registered only when `VAULT_MCP_MESSAGE_URL` and `VAULT_MCP_MESSAGE_TOPIC` are set**; see "Message tool" below | no note changes; posts outside the vault |
 
@@ -310,7 +313,7 @@ upstream to your Mac and iPhone. **Run from inside `/var/lib/obsidian/vault`.**
 - claude.ai desktop browser → Settings → Connectors → Add custom connector
 - URL: `https://<your-domain>/mcp`
 - Auth: none (Phase 1)
-- Save — all 17 tools appear in the per-tool permission list. Set each to
+- Save — all 20 tools appear in the per-tool permission list. Set each to
   Allow / Ask / Deny to taste.
 - Open Claude on iOS — connector syncs automatically (you can't add from iOS,
   only use)
@@ -321,9 +324,9 @@ claude.ai uses **deferred tool loading** for connectors with broad surfaces:
 the model doesn't materialize every tool into its working context at session
 start. When you ask a fresh session *"what obsidian tools do you have?"* it
 will run a tool search and return whatever subset the search ranks highest —
-often 5–7, not all 17 — and report that as its complete inventory. This is
+often 5–7, not all 20 — and report that as its complete inventory. This is
 **not a server bug** and not a destructive-tool filter; the connector still
-advertises all 17 in `tools/list`.
+advertises all 20 in `tools/list`.
 
 The model loads tool schemas on demand. To work around the partial
 enumeration:

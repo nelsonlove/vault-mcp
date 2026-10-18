@@ -5,7 +5,7 @@
  * builds, without needing a live Express server.
  *
  * Asserts:
- *   1. tools/list returns exactly 17 tools.
+ *   1. tools/list returns exactly the 17 FS_TOOLS and the 3 .base/.canvas file tools.
  *   2. obsidian_write_note + obsidian_read_note round-trip (write, read back same content).
  *   3. obsidian_read_note response carries `index_status` block when indexStatus=true.
  *   4. The server's declared capabilities include tools.listChanged === true.
@@ -121,17 +121,17 @@ async function makeClientFromFsServer(
 
 describe("createFsHandler / buildFsServer", () => {
   /**
-   * 1. tools/list returns exactly 17 tools.
+   * 1. tools/list returns exactly the 17 note tools and the three .base/.canvas file tools (#575).
    */
-  test("tools/list returns exactly 17 tools", async () => {
+  test("tools/list returns exactly the 17 FS_TOOLS and the 3 file tools", async () => {
     const { client, teardown } = await makeClientFromFsServer();
     try {
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 17, `expected 17 tools, got ${tools.length}`);
+      assert.equal(tools.length, 20, `expected 20 tools, got ${tools.length}`);
 
       const names = tools.map((t) => t.name).sort();
-      const expected = FS_TOOLS.map((t) => t.name).sort();
-      assert.deepEqual(names, expected, "tool names do not match FS_TOOLS");
+      const expected = [...FS_TOOLS.map((t) => t.name), "obsidian_edit_file", "obsidian_move_file", "obsidian_write_file"].sort();
+      assert.deepEqual(names, expected, "tool names do not match FS_TOOLS and the file tools");
     } finally {
       await teardown();
     }
