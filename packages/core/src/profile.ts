@@ -56,9 +56,40 @@ export const INBOX_WRITE_SCOPE: WriteScope = Object.freeze({
   paths: Object.freeze(["**/[0-9A-Z][0-9A-Z].01/*.md", "**/[0-9A-Z][0-9A-Z].01 */*.md"]) as unknown as string[],
 }) as WriteScope;
 
+/**
+ * The message tool a `read+message` connection may call: it posts a short text to a message
+ * service the operator configured (it is registered only when that is configured). It writes no
+ * note. Named here so the profile can list it; its presence is the tool's own concern.
+ */
+export const MESSAGE_TOOL = "vaultmcp_send_message";
+
+/**
+ * `read+message`: a narrower read set than `read` (the notes, links, tags and Base lists, and no
+ * machine state, app settings or command lists), plus the message tool. For a hosted assistant that
+ * should read notes and leave a message, and nothing else.
+ */
+export const READ_MESSAGE_PROFILE_TOOLS: readonly string[] = Object.freeze([
+  "obsidian_list_notes",
+  "obsidian_list_folders",
+  "obsidian_read_note",
+  "obsidian_read_notes",
+  "obsidian_read_note_parsed",
+  "obsidian_search_notes",
+  "obsidian_find_by_tag",
+  "obsidian_search_by_frontmatter",
+  "obsidian_resolve",
+  "obsidian_resolve_uid",
+  "obsidian_get_backlinks",
+  "obsidian_get_outlinks",
+  "obsidian_check_links",
+  "obsidian_tags_list",
+  "vaultmcp_bases_list",
+  MESSAGE_TOOL,
+]);
+
 const READ_SET: ReadonlySet<string> = new Set(READ_PROFILE_TOOLS);
 
-export type ProfileName = "full" | "read" | "read+inbox" | "none";
+export type ProfileName = "full" | "read" | "read+inbox" | "read+message" | "none";
 
 export interface ConnProfile {
   name: ProfileName;
@@ -72,6 +103,7 @@ const PROFILES: Record<Exclude<ProfileName, "none">, ConnProfile> = {
   full: { name: "full", tools: null },
   read: { name: "read", tools: new Set(READ_PROFILE_TOOLS) },
   "read+inbox": { name: "read+inbox", tools: new Set([...READ_PROFILE_TOOLS, "obsidian_write_note"]), writeScope: INBOX_WRITE_SCOPE },
+  "read+message": { name: "read+message", tools: new Set(READ_MESSAGE_PROFILE_TOOLS) },
 };
 
 const NONE: ConnProfile = { name: "none", tools: new Set() };

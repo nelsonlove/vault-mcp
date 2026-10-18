@@ -226,7 +226,7 @@ export {
 } from "./write-scope.js";
 export type { WriteScope, WriteScopeMode } from "./write-scope.js";
 // Connection profiles — which tools one (remote) connection may see and call (profile.ts, #521).
-export { READ_PROFILE_TOOLS, INBOX_WRITE_SCOPE, PROFILE_NAMES, isProfileName, resolveProfile, profileAllows, profileCallRefusal } from "./profile.js";
+export { READ_PROFILE_TOOLS, READ_MESSAGE_PROFILE_TOOLS, MESSAGE_TOOL, INBOX_WRITE_SCOPE, PROFILE_NAMES, isProfileName, resolveProfile, profileAllows, profileCallRefusal } from "./profile.js";
 export type { ConnProfile, ProfileName } from "./profile.js";
 
 // ── The controlled-vocabulary kernel (suite split, S7) ──────────────────────

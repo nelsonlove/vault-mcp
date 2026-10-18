@@ -15,6 +15,7 @@ import { FS_JOURNAL_DIR_ENV_VAR } from "../fs-write-kernel.js";
 
 let buildFsServer: (typeof import("../fs-mode.js"))["buildFsServer"];
 let READ: Set<string>;
+let READ_MESSAGE: Set<string>;
 let FS_NAMES: string[];
 let vault: string;
 let journal: string;
@@ -30,6 +31,7 @@ before(async () => {
   buildFsServer = (await import("../fs-mode.js")).buildFsServer;
   const core = await import("@vault-mcp/core");
   READ = new Set(core.READ_PROFILE_TOOLS);
+  READ_MESSAGE = new Set(core.READ_MESSAGE_PROFILE_TOOLS);
   FS_NAMES = core.FS_TOOLS.map((t: { name: string }) => t.name);
   await core.buildIndex();
 });
@@ -55,6 +57,20 @@ describe("FS mode under a profile", () => {
   test("no profile: every FS tool, as before", async () => {
     const c = await client();
     assert.deepEqual((await c.listTools()).tools.map((t) => t.name).sort(), [...FS_NAMES].sort());
+    await c.close();
+  });
+
+  test("read+message: exactly the FS tools on its list; machine-state reads and writes are absent", async () => {
+    const c = await client("read+message");
+    const listed = (await c.listTools()).tools.map((t) => t.name).sort();
+    assert.deepEqual(listed, FS_NAMES.filter((n) => READ_MESSAGE.has(n)).sort());
+    for (const n of listed) assert.ok(READ.has(n) || n === "vaultmcp_send_message", `${n} is a read or the message tool`);
+    assert.ok(!listed.includes("obsidian_write_note"));
+    const r = await c.callTool({ name: "obsidian_write_note", arguments: { path: "Notes/m.md", content: "x" } }).catch((e: unknown) => ({ thrown: String(e) }));
+    assert.match(text(r), /not found|-32602/i);
+    assert.ok(!existsSync(path.join(vault, "Notes", "m.md")));
+    const read = await c.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/a.md" } });
+    assert.match(text(read), /# A/);
     await c.close();
   });
 

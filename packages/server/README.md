@@ -89,6 +89,7 @@ A profile is an allowlist of tool names, defined in `@vault-mcp/core` (`packages
 | `full` | Every tool. What a local connection (the Claude Code bridge) gets, and what every credential gets when no mapping is set. |
 | `read` | The 23 read tools in `READ_PROFILE_TOOLS` (reads, search, links, uids, tags, bookmarks, workspaces, snippets, command ids, plugin and environment info, `vaultmcp_conformance_debt`, `vaultmcp_bases_list`). No write, no command, no Code Mode meta-tool. |
 | `read+inbox` | The `read` set plus `obsidian_write_note`, which may only create a new note directly inside a `.01` slot folder (`XX.01` or `XX.01 <name>`, at any depth). An overwrite, an existing note, a missing folder and every other write are refused (`write_scope`). This connection-level scope is checked on top of the vault-wide write scope, never instead of it. |
+| `read+message` | A narrower read set (15 tools: the note, search, link, tag and Base-list reads; no machine state, app settings, bookmarks, snippets or command lists) plus `vaultmcp_send_message`, which posts a short text to a message service the operator configured (the tool is offered only where it is configured). No note can be written. |
 
 `VAULT_MCP_PROFILES` maps a credential id to a profile, as JSON. A credential id names a credential without carrying it, so no secret is in the value: `token` is the static bearer, `sub:<subject>` an OAuth subject.
 
