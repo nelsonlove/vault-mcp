@@ -293,6 +293,15 @@ export interface GuardedOpts {
    */
   sessionRefusal?: () => Promise<{ code: string; detail: string } | null> | { code: string; detail: string } | null;
   /**
+   * Rotate the connection's session when it has EXPIRED and nothing refuses it
+   * (server.ts, `kernel/sessions/connection-session.ts`). Awaited just before
+   * the mutation is queued, so `actor()` (taken at enqueue for the journal)
+   * names the session the call actually runs under. Absent ⇒ no session
+   * machinery; nothing rotates. A revoked session never rotates, and the
+   * dequeue check above still refuses it.
+   */
+  sessionRefresh?: () => Promise<void>;
+  /**
    * The shared operation executor (WP1). Every guarded call runs inside one
    * operation, so action identity, actor binding and phase history are the
    * same whichever surface a call came in through.
@@ -643,6 +652,9 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   const sync = opts.syncGuard && !keyKnown ? await opts.syncGuard(name ?? def?.title ?? "unknown", toolArgs as Record<string, unknown>, declared?.sync) : null;
   if (sync && "refuse" in sync) return codedError(sync.refuse.code, sync.refuse.message);
   const syncWarning = sync && "warn" in sync ? { text: sync.warn, code: sync.code } : undefined;
+  // An expired session is replaced by a new one (continuedFrom the old id)
+  // BEFORE the actor is taken below, so the journal names the live session.
+  await opts.sessionRefresh?.();
   // The operation reaches the write queue here. Marked rather than assumed:
   // every refusal above this line — read-only mode, the allowlist, an
   // unresolved uid or address, an unenforceable if_rev — returns without ever
