@@ -166,8 +166,7 @@ export interface ServerCtx {
 
 function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: SyncVerdict, rename?: SyncVerdict): Record<string, unknown> {
   // Shown, not judged for a create (#528): the status text and how many server changes wait, vault-wide.
-  // `sync_rename` is the verdict a rename, move or delete meets, which also needs "Fully synced" (#533)
-  // or Sync's flags `syncing` and `dirty` both false.
+  // `sync_rename` is the verdict a rename, move or delete meets, which also needs "Fully synced" (#533).
   const f = snap.state === "fields" ? snap.fields : null;
   return {
     enabled: settings.enabled,
@@ -180,8 +179,6 @@ function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: Syn
     ...(v.kind === "unknown" ? { why: v.why } : {}),
     ...(f && typeof f.syncStatus === "string" ? { status_text: f.syncStatus } : {}),
     ...(f && Array.isArray(f.pendingPaths) ? { pending_downloads: f.pendingPaths.length } : {}),
-    // Sync's own flags, the second proof for a rename, move or delete: shown only when both are booleans.
-    ...(f && typeof f.syncing === "boolean" && typeof f.dirty === "boolean" ? { syncing: f.syncing, dirty: f.dirty } : {}),
     ...(rename ? { sync_rename: rename.kind } : {}),
   };
 }
