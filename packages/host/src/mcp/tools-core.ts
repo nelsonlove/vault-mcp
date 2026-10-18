@@ -45,6 +45,11 @@ export interface ServerCtx {
      * back into (Security › "Raw CLI proxy"). */
     rawCliProxy?: boolean;
     trustedReadOnlyPlugins?: string[];
+    /** The connection profiles whose replies pass through the secret scanner (core's
+     * redaction.ts). Absent or empty ⇒ off, the default. Read when a connection is built. */
+    redactProfiles?: string[];
+    /** The secret scanner config as JSON text (core's SecretScanConfig). Blank ⇒ the shipped defaults. */
+    redactConfig?: string;
     schemes?: SchemeInstanceConfig[];
     /** Module-host rows (`modules.<id>.enabled` / `.config`) — the mount
      * (mcp/modules-mount.ts) reads these; absent ⇒ every built-in module at

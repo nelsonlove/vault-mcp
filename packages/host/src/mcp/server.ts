@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, isProfileName, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -137,21 +137,80 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // reaches neither the queue nor the journal. `full` (no profile in the preamble) is unchanged.
   const profile = resolveProfile(opts.profile);
   const sdkRegister: any = server.registerTool.bind(server);
+  // THE SECRET SCANNER (core's redaction.ts), OFF unless the settings name this connection's
+  // profile. When they do, every reply, refusals included, passes through it here, so no
+  // registration path skips it. FAIL CLOSED: settings the scanner refuses (an unknown profile
+  // name, a bad config) while a profile is listed give every remote connection, and a local one
+  // when `full` is listed, no tools at all, and the reason is logged. A list that cannot be parsed,
+  // a name in it that is not a known profile, or a setting of the wrong type refuses every
+  // connection, local ones included. They never fall back to sending replies unscanned.
+  let scanner: SecretScanner | undefined;
+  let redactRefused = false;
+  {
+    // A logged refusal, never a throw, whatever the settings hold (a hand-edited data.json included).
+    const refuseAll = (why: string): void => {
+      console.error(`[vault-mcp] secret scanner settings refused (${why}); this connection gets no tools`);
+      redactRefused = true;
+    };
+    try {
+      const st = ctx.getSettings() as { redactProfiles?: unknown; redactConfig?: unknown };
+      const rawProfiles = st.redactProfiles ?? [];
+      const rawConfigValue = st.redactConfig ?? "";
+      if (!Array.isArray(rawProfiles) || rawProfiles.some((e) => typeof e !== "string")) {
+        refuseAll("redactProfiles is not a list of strings");
+      } else if (typeof rawConfigValue !== "string") {
+        refuseAll("redactConfig is not text");
+      } else {
+        const raw = (rawProfiles as string[]).filter((e) => e.trim() !== "");
+        const rawConfig = rawConfigValue.trim();
+        if (raw.length > 0 || rawConfig) {
+          // The list is PARSED first (a line may be a comma list or a JSON array). A list that cannot
+          // be parsed, or that holds a name that is not a known profile (`Full`, `- full`,
+          // `full # local`), refuses every connection it could have meant, `full` included.
+          let listed: string[] | null = null;
+          try {
+            listed = raw.flatMap((e) => parseProfileList(e));
+          } catch {
+            listed = null;
+          }
+          const unknown = listed?.find((n) => !isProfileName(n));
+          if (listed === null) refuseAll("the redaction profile list cannot be parsed");
+          else if (unknown !== undefined) refuseAll(`the redaction profile list names an unknown profile '${unknown}'`);
+          else {
+            try {
+              const config = rawConfig ? JSON.parse(rawConfig) : undefined;
+              scanner = scannerFor(buildRedaction(listed, config), profile.name);
+            } catch (e) {
+              // A bad config with no profile listed leaves the scanner off and refuses nothing.
+              const covers = listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
+              if (covers) refuseAll((e as Error).message);
+              else console.error(`[vault-mcp] secret scanner config refused (${(e as Error).message}); no profile is listed, so the scanner stays off`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      refuseAll(`unexpected error: ${(e as Error).message}`);
+    }
+  }
   const origRegister: any =
-    profile.tools === null
+    profile.tools === null && !scanner && !redactRefused
       ? sdkRegister
       : (name: string, def: any, handler: any) => {
-          if (!profileAllows(profile, name)) return undefined;
+          if (redactRefused || !profileAllows(profile, name)) return undefined;
           const mutating = def?.annotations?.readOnlyHint === false;
-          return sdkRegister(name, def, (args: unknown, extra: unknown) => {
+          const gated = (args: unknown, extra: unknown) => {
             const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
             return refused ? codedError(refused.code, refused.message) : handler(args, extra);
-          });
+          };
+          return sdkRegister(name, def, scanner ? scanner.wrap(gated, { snippets: SNIPPET_TOOLS.has(name) }) : gated);
         };
   // Code Mode under a profile: the meta-tools are outside every profile, so they are not
   // registered, and a captured registry would hide the filter behind obsidian_call_tool. The safe
   // pick: a profiled connection gets the plain, filtered surface, whatever its preamble asked.
-  if (profile.tools !== null) opts = { ...opts, codeMode: false };
+  // A scanned or refused connection gets the plain surface too: the meta-tools would hide each
+  // tool's reply inside obsidian_call_tool's.
+  if (profile.tools !== null || scanner || redactRefused) opts = { ...opts, codeMode: false };
   // Resolved per call, not once: the MCP client's identity only exists after
   // the initialize handshake, which happens well after the server is built.
   // `server` is the transport's own assertion — which vault, which install,

@@ -712,6 +712,40 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Secret scanner: profiles")
+      .setDesc(
+        "Connection profiles (one per line, such as read+message) whose tool replies pass through the secret scanner, " +
+          "which blanks key- and token-shaped strings. Empty: off. A best-effort filter, not a guarantee. " +
+          "An unknown name refuses every connection, local ones included; while a profile is listed, a config below that is refused gives every remote connection no tools. Fix it to restore them. " +
+          "Takes effect on the next session connect."
+      )
+      .addTextArea((ta) => {
+        ta.setValue((this.plugin.settings.redactProfiles ?? []).join("\n"));
+        ta.inputEl.rows = 2;
+        ta.inputEl.style.width = "100%";
+        ta.onChange(async (value) => {
+          this.plugin.settings.redactProfiles = value.split("\n").map((s) => s.trim()).filter(Boolean);
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Secret scanner: config")
+      .setDesc(
+        'Optional JSON: {"extraKeyNames": [...], "keyNames": [...], "extraPatterns": [{"kind": "...", "regex": "..."}], "patterns": [...]}. ' +
+          "keyNames and patterns replace the shipped lists; the extra fields add to them. Blank: the shipped defaults."
+      )
+      .addTextArea((ta) => {
+        ta.setValue(this.plugin.settings.redactConfig ?? "");
+        ta.inputEl.rows = 4;
+        ta.inputEl.style.width = "100%";
+        ta.onChange(async (value) => {
+          this.plugin.settings.redactConfig = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(containerEl)
       .setName("Path allowlist")
       .setDesc("Restrict file operations to these vault-relative prefixes (one per line). Leave empty to allow the whole vault.")
       .addTextArea((ta) => {

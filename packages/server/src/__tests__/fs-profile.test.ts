@@ -5,7 +5,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -14,12 +14,16 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { FS_JOURNAL_DIR_ENV_VAR } from "../fs-write-kernel.js";
 
 let buildFsServer: (typeof import("../fs-mode.js"))["buildFsServer"];
+let core: typeof import("@vault-mcp/core");
 let READ: Set<string>;
 let READ_MESSAGE: Set<string>;
 let FS_NAMES: string[];
 let FILE_NAMES: readonly string[];
 let vault: string;
 let journal: string;
+// Built at run time from parts, so no key-shaped literal is committed; made up.
+const FAKE_KEY = ["sk", "test", "A".repeat(24)].join("-");
+const FAKE_BODY = ["MIIEv", "QIBADANBgkqhkiG9w0BAQEFAASC", "FAKE"].join("");
 
 before(async () => {
   vault = await mkdtemp(path.join(tmpdir(), "fs-profile-"));
@@ -29,8 +33,10 @@ before(async () => {
   await mkdir(path.join(vault, "00 Area", "00.01 Inbox"), { recursive: true });
   await mkdir(path.join(vault, "Notes"), { recursive: true });
   await writeFile(path.join(vault, "Notes", "a.md"), "# A\n");
+  // A made-up key, for the secret scanner (read+message only).
+  await writeFile(path.join(vault, "Notes", "keys.md"), `---\napi_key: fake-key-value\npassword: fake-pass\nAPI Key: fake-spaced\nLicense Code: fake-licence\n---\nThe key is ${FAKE_KEY} here.\n\nhunt marker\n${FAKE_BODY}\n\n| Service | Password |\n|---|---|\n| mail | fake-cell |\n`);
   buildFsServer = (await import("../fs-mode.js")).buildFsServer;
-  const core = await import("@vault-mcp/core");
+  core = await import("@vault-mcp/core");
   READ = new Set(core.READ_PROFILE_TOOLS);
   READ_MESSAGE = new Set(core.READ_MESSAGE_PROFILE_TOOLS);
   FS_NAMES = core.FS_TOOLS.map((t: { name: string }) => t.name);
@@ -44,8 +50,9 @@ after(async () => {
   delete process.env[FS_JOURNAL_DIR_ENV_VAR];
 });
 
-async function client(profile?: string) {
-  const server = buildFsServer({ indexStatus: false, allowWrites: true, ...(profile !== undefined ? { profile } : {}) });
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function client(profile?: string, redaction?: any) {
+  const server = buildFsServer({ indexStatus: false, allowWrites: true, ...(profile !== undefined ? { profile } : {}), ...(redaction !== undefined ? { redaction } : {}) });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(b);
   const c = new Client({ name: "t", version: "0" });
@@ -102,6 +109,118 @@ describe("FS mode under a profile", () => {
     const again = await c.callTool({ name: "obsidian_write_note", arguments: { path: "00 Area/00.01 Inbox/new.md", content: "x" } });
     assert.match(text(again), /write_scope|exists/);
     await c.close();
+  });
+
+  test("the scanner is off by default: read+message sends the note byte for byte as full does", async () => {
+    const m = await client("read+message");
+    const f = await client("full");
+    for (const [name, args] of [["obsidian_read_note", { path: "Notes/keys.md" }], ["obsidian_search_notes", { query: "QIBADANBgkqhkiG9w0" }]] as const) {
+      const a = await m.callTool({ name, arguments: args });
+      const b = await f.callTool({ name, arguments: args });
+      assert.deepEqual(a, b, name);
+    }
+    assert.ok(text(await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } })).includes(FAKE_KEY));
+    await m.close();
+    await f.close();
+  });
+
+  test("the scanner on by setting for read+message: a key-shaped string is blanked; full and read are unchanged; the file is untouched", async () => {
+    const on = core.buildRedaction(["read+message"]);
+    const m = await client("read+message", on);
+    const r = text(await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
+    assert.ok(!r.includes(FAKE_KEY), r);
+    assert.ok(!r.includes("fake-key-value"), r);
+    assert.match(r, /\[redacted:api-key\]/);
+    assert.match(r, /api_key: \[redacted:secret\]/);
+    // The structured copy is blanked too, and the text copy still parses as JSON.
+    const res = (await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } })) as { content: Array<{ text: string }>; structuredContent?: { content?: string } };
+    const sc = JSON.stringify(res.structuredContent);
+    assert.ok(!/fake-key-value|fake-pass/.test(sc) && !sc.includes(FAKE_KEY), sc);
+    const parsed = JSON.parse(res.content[0].text);
+    assert.equal(parsed.content, res.structuredContent?.content);
+    assert.match(parsed.content, /password: \[redacted:secret\]/);
+    // A whole read keeps the key in view, so the spaced key and the table column are blanked; a
+    // bare body line with no BEGIN header is not (only search snippets get that rule).
+    assert.ok(!/fake-spaced|fake-cell/.test(text(res)), text(res));
+    // A search hit carries one line: a key body line is blanked even without its key.
+    const body = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "QIBADANBgkqhkiG9w0" } }));
+    assert.match(body, /redacted:secret/);
+    assert.ok(!body.includes(FAKE_BODY), body);
+    const s = text(await m.callTool({ name: "obsidian_search_notes", arguments: { query: "key is" } }));
+    assert.ok(!s.includes(FAKE_KEY), s);
+    await m.close();
+    assert.ok(text(res).includes("fake-licence"), "License Code is not a shipped key name");
+    const f = await client("full", on);
+    const raw = text(await f.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
+    assert.ok(raw.includes(FAKE_KEY), raw);
+    assert.ok(raw.includes("fake-key-value"), raw);
+    await f.close();
+    const r2 = await client("read", on);
+    assert.ok(text(await r2.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } })).includes(FAKE_KEY));
+    await r2.close();
+    assert.match(await readFile(path.join(vault, "Notes", "keys.md"), "utf8"), new RegExp(FAKE_KEY));
+  });
+
+  test("the .base and .canvas file tools: their replies pass through the scanner when it is on", async () => {
+    // A made-up token-shaped name, built at run time; the reply names the path it wrote.
+    const tok = ["gh", "p_", "FAKE".repeat(9)].join("");
+    const call = async (redaction: unknown, name: string) => {
+      const c = await client("full", redaction);
+      const r = text(await c.callTool({ name: "obsidian_write_file", arguments: { path: `Notes/${name}/${tok}.canvas`, content: '{"nodes":[],"edges":[]}' } }));
+      await c.close();
+      return r;
+    };
+    const on = await call(core.buildRedaction(["full"]), "on");
+    assert.doesNotMatch(on, /isError":true/, on);
+    assert.ok(!on.includes(tok), on);
+    assert.match(on, /redacted:github-token/);
+    const off = await call(null, "off");
+    assert.ok(off.includes(tok), off);
+  });
+
+  test("a config extends the key names", async () => {
+    const m = await client("read+message", core.buildRedaction(["read+message"], { extraKeyNames: ["license code"] }));
+    const r = text(await m.callTool({ name: "obsidian_read_note", arguments: { path: "Notes/keys.md" } }));
+    assert.ok(!r.includes("fake-licence"), r);
+    assert.ok(!r.includes("fake-pass"), "the shipped names still apply");
+    await m.close();
+  });
+
+  test("bad settings fail closed: the server is not built, and the env loader throws", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "fs-redact-"));
+    const bad = path.join(dir, "bad.json");
+    await writeFile(bad, '{"extraPatterns": [{"kind": "x", "regex": "("}]}');
+    const notJson = path.join(dir, "not.json");
+    await writeFile(notJson, "{not json");
+    // Not a regular file (a directory, a symbolic link to a good file), or larger than 1 MB: refused.
+    const good = path.join(dir, "good.json");
+    await writeFile(good, "{}");
+    const link = path.join(dir, "link.json");
+    await symlink(good, link);
+    const big = path.join(dir, "big.json");
+    await writeFile(big, `{"extraKeyNames": ["a"], "pad": "${"x".repeat(1024 * 1024)}"}`);
+    const { loadRedaction, REDACT_PROFILES_ENV_VAR, REDACT_CONFIG_ENV_VAR } = await import("../redaction-env.js");
+    for (const env of [
+      { [REDACT_PROFILES_ENV_VAR]: "read+mesage" },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: bad },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: notJson },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: path.join(dir, "missing.json") },
+      { [REDACT_PROFILES_ENV_VAR]: '["read+message"' },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: dir },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: link },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: big },
+    ]) assert.throws(() => loadRedaction(env), /VAULT_MCP_REDACT/, JSON.stringify(env));
+    assert.equal(loadRedaction({}), undefined);
+    assert.deepEqual([...loadRedaction({ [REDACT_PROFILES_ENV_VAR]: '["read+message"]' })!.profiles], ["read+message"]);
+    process.env[REDACT_PROFILES_ENV_VAR] = "read+message";
+    process.env[REDACT_CONFIG_ENV_VAR] = bad;
+    try {
+      assert.throws(() => buildFsServer({ profile: "read+message", indexStatus: false }), /refused/);
+    } finally {
+      delete process.env[REDACT_PROFILES_ENV_VAR];
+      delete process.env[REDACT_CONFIG_ENV_VAR];
+    }
+    await rm(dir, { recursive: true, force: true });
   });
 
   test("an unknown profile: no tools at all", async () => {

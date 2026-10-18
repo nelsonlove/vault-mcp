@@ -260,6 +260,24 @@ export type { WriteScope, WriteScopeMode } from "./write-scope.js";
 // Connection profiles — which tools one (remote) connection may see and call (profile.ts, #521).
 export { READ_PROFILE_TOOLS, READ_MESSAGE_PROFILE_TOOLS, MESSAGE_TOOL, INBOX_WRITE_SCOPE, PROFILE_NAMES, isProfileName, resolveProfile, profileAllows, profileCallRefusal } from "./profile.js";
 export type { ConnProfile, ProfileName } from "./profile.js";
+// The secret scanner (off by default): blanks key- and token-shaped strings in the tool replies of
+// the profiles a deployment names (redaction.ts), with a configurable rule set (secret-scan.ts).
+export {
+  redactSecrets,
+  redactToolResult,
+  redactingHandler,
+  redactionMarker,
+  SCAN_FAILED_TEXT,
+  SNIPPET_TOOLS,
+  DEFAULT_TOKEN_PATTERNS,
+  DEFAULT_SECRET_SCANNER,
+  createSecretScanner,
+  parseSecretScanConfig,
+  SecretScanConfigError,
+} from "./secret-scan.js";
+export type { ScanOpts, SecretScanner, SecretScanConfig, TokenPattern } from "./secret-scan.js";
+export { buildRedaction, parseProfileList, scannerFor, RedactionSettingsError } from "./redaction.js";
+export type { Redaction } from "./redaction.js";
 
 // ── The controlled-vocabulary kernel (suite split, S7) ──────────────────────
 //

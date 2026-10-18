@@ -52,11 +52,14 @@ import {
   writeScopeRefusal,
   resolveProfile,
   messageConfigFromEnv,
+  scannerFor,
   writeFile,
   editFile,
   moveFile,
   registerFileTools,
 } from "@vault-mcp/core";
+import type { Redaction } from "@vault-mcp/core";
+import { loadRedaction } from "./redaction-env.js";
 import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
 import type { VaultBackend, VaultWatcherHandle, FileBackend } from "@vault-mcp/core";
@@ -121,6 +124,12 @@ export interface FsHandlerOpts {
    * factory shares the one queue and the one journal.
    */
   kernel?: FsWriteKernel;
+  /**
+   * The secret scanner settings (core's redaction.ts). Omitted ⇒ read from the environment
+   * (redaction-env.ts: VAULT_MCP_REDACT_PROFILES, VAULT_MCP_REDACT_CONFIG; off when unset);
+   * `null` ⇒ off. Settings that are refused throw when the server is built (fail closed).
+   */
+  redaction?: Redaction | null;
 }
 
 // ── FS-mode write gate + write kernel (issue #92) ───────────────────────────
@@ -482,10 +491,15 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   );
 
   const profile = opts?.profile === undefined ? undefined : resolveProfile(opts.profile);
+  // Off unless the settings name this connection's profile (`full` when none is given). Throws on
+  // refused settings, so no server is built that would send replies unscanned.
+  const redaction = opts?.redaction === undefined ? loadRedaction() : (opts.redaction ?? undefined);
+  const scanner = scannerFor(redaction, profile?.name ?? "full");
   const backend = makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel });
   registerFsTools(server, backend, {
     // The same per-connection filter the plugin applies at origRegister (#521).
     ...(profile ? { profile, exists: existsInVault } : {}),
+    ...(scanner ? { scanner } : {}),
     decodeHtml: true,
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
@@ -498,7 +512,12 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   });
   // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files, under the same
   // profile, decoding and kernel-argument rules as the note tools above.
-  registerFileTools(server, backend, {
+  // Their replies pass through the secret scanner too when it is on, as every other tool's do.
+  const fileReg = scanner
+    ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { registerTool: (name: string, meta: any, h: (args: any) => any) => server.registerTool(name, meta, scanner.wrap(h)) }
+    : server;
+  registerFileTools(fileReg, backend, {
     ...(profile ? { profile, exists: existsInVault } : {}),
     decodeHtml: true,
     kernelArgs: true,

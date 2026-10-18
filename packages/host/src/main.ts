@@ -74,6 +74,18 @@ interface VaultMcpSettings {
    */
   trustedReadOnlyPlugins: string[];
   /**
+   * The connection profiles (core's profile.ts names, such as `read+message`) whose tool replies
+   * pass through the secret scanner (core's redaction.ts). Empty by default: the scanner is off.
+   * A remote connection names its profile in the preamble; a local one is `full`.
+   */
+  redactProfiles: string[];
+  /**
+   * The secret scanner config as JSON text (core's SecretScanConfig: `keyNames`, `extraKeyNames`,
+   * `patterns`, `extraPatterns`). Blank ⇒ the shipped defaults. A config the scanner refuses, or
+   * an unknown profile name above, fails closed: see mcp/server.ts.
+   */
+  redactConfig: string;
+  /**
    * Declared protected frontmatter properties (#224): `{key, grade}` rows the
    * accept guard enforces on EVERY guarded transport (grade `agent-forbidden`
    * — introduce/change/remove refused, byte-identical carry-forward allowed —
@@ -282,6 +294,8 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   allowDangerousCli: false,
   rawCliProxy: false,
   trustedReadOnlyPlugins: [],
+  redactProfiles: [],
+  redactConfig: "",
   protectedProperties: DEFAULT_PROTECTED_PROPERTIES.map((p) => ({ ...p })),
   // Cloned so settings edits can never mutate the module-level default rows
   // (item 6: schemes now clones symmetrically with vocabularies — a shallow
@@ -774,6 +788,8 @@ export default class VaultMcpPlugin extends Plugin {
         allowDangerousCli: this.settings.allowDangerousCli,
         rawCliProxy: this.settings.rawCliProxy,
         trustedReadOnlyPlugins: this.settings.trustedReadOnlyPlugins,
+        redactProfiles: this.settings.redactProfiles,
+        redactConfig: this.settings.redactConfig,
         schemes: this.settings.schemes,
         modules: this.settings.modules,
         cliPolicy: this.settings.cliPolicy,

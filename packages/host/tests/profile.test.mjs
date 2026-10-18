@@ -13,7 +13,7 @@ const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 
 const FOLDERS = new Set(["00 Inbox area", "00 Inbox area/00.01 Inbox", "Notes"]);
-function build(opts = {}) {
+function build(opts = {}, basesResult = { bases: [] }, redact = {}) {
   const app = {
     vault: {
       adapter: { basePath: "/nonexistent-vault" },
@@ -27,15 +27,16 @@ function build(opts = {}) {
     },
     metadataCache: { getFileCache: () => null, resolvedLinks: {}, unresolvedLinks: {}, on: () => ({}) },
     workspace: { layoutReady: true, iterateAllLeaves: (cb) => cb({}), getActiveFile: () => null, on: () => ({}) },
-    plugins: { plugins: {}, manifests: {}, enabledPlugins: new Set() },
+    // The satellite owner is present, so its tools answer (the stale-publisher check, F6).
+    plugins: { plugins: { "vaultmcp-bases": {} }, manifests: {}, enabledPlugins: new Set() },
     internalPlugins: { getPluginById: () => null },
     commands: { commands: {}, executeCommandById: () => true },
   };
   const ctx = {
     pluginVersion: "0.0.0", socketPath: "/tmp/none.sock", vaultName: "test", enabledPlugins: () => [],
-    getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [] }),
+    getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [], ...redact }),
     getExternalTools: () => [
-      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }, handler: async () => ({ bases: [] }) },
+      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true }, handler: async () => basesResult } },
       { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_create", spec: { description: "make a base", inputSchema: { type: "object", properties: { path: { type: "string" } } }, annotations: { readOnlyHint: false } }, handler: async () => ({}) },
     ],
   };
@@ -150,5 +151,92 @@ describe("profile read+inbox", () => {
   test("a new note in a .01 folder passes the profile check (and reaches the guard)", async () => {
     const r = await tools.obsidian_write_note.handler({ path: "00 Inbox area/00.01 Inbox/x.md", content: "x" }, {});
     assert.doesNotMatch(r.content[0].text, /write_scope|profile_refused/, JSON.stringify(r));
+  });
+});
+
+describe("the secret scanner: off by default, on by setting", () => {
+  // Built at run time from parts, so no key-shaped literal is committed; made up.
+  const FAKE = ["gh", "p_", "FAKE".repeat(9)].join("");
+  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`, `licence code: fake-lic`], frontmatter: { password: "fake-fm-pass", api_key: 1234567, title: "T", secret: true } };
+  const ON = { redactProfiles: ["read+message"] };
+  const callRaw = async (profile, redact = {}) => {
+    const client = await connect(build(profile ? { profile } : {}, result, redact));
+    const r = await client.callTool({ name: "vaultmcp_bases_list", arguments: {} });
+    await client.close();
+    return r;
+  };
+  const call = async (profile, redact) => JSON.stringify(await callRaw(profile, redact));
+
+  test("off by default: a read+message reply is the same, byte for byte, as a full one", async () => {
+    const m = await callRaw("read+message");
+    const f = await callRaw(undefined);
+    assert.deepEqual(m, f);
+    assert.ok(JSON.stringify(m).includes(FAKE));
+  });
+
+  test("on by setting: a reply under read+message is blanked", async () => {
+    const r = await call("read+message", ON);
+    assert.doesNotMatch(r, /isError":true/, r);
+    assert.ok(!r.includes(FAKE), r);
+    assert.ok(!r.includes("fake-pass"), r);
+    assert.match(r, /redacted:github-token/);
+    assert.match(r, /Notes\/b\.base/);
+    assert.ok(!r.includes("fake-fm-pass") && !r.includes("1234567"), r);
+    assert.ok(r.includes("fake-lic"), "licence code is not a shipped key name");
+  });
+
+  test("on by setting: structured content is blanked key-aware, and the text copy still parses", async () => {
+    const res = await callRaw("read+message", ON);
+    const fm = res.structuredContent?.frontmatter;
+    assert.deepEqual(fm, { password: "[redacted:secret]", api_key: "[redacted:secret]", title: "T", secret: true }, JSON.stringify(res));
+    for (const c of res.content) if (c.type === "text" && /^\s*[{[]/.test(c.text)) assert.doesNotThrow(() => JSON.parse(c.text), c.text);
+  });
+
+  test("on by setting: profiles not listed are sent as they are", async () => {
+    for (const p of [undefined, "read"]) assert.ok((await call(p, ON)).includes(FAKE), String(p));
+  });
+
+  test("a config extends the key names", async () => {
+    const r = await call("read+message", { ...ON, redactConfig: JSON.stringify({ extraKeyNames: ["licence code"] }) });
+    assert.ok(!r.includes("fake-lic") && !r.includes("fake-pass"), r);
+  });
+
+  test("bad settings fail closed: no tools for a remote connection, and a local one not listed is unchanged", () => {
+    for (const bad of [
+      { ...ON, redactConfig: "{not json" },
+      { ...ON, redactConfig: JSON.stringify({ extraPatterns: [{ kind: "x", regex: "(" }] }) },
+      { ...ON, redactConfig: JSON.stringify({ unknown: 1 }) },
+    ]) {
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read" }, result, bad)), [], JSON.stringify(bad));
+      assert.ok(names(build({}, result, bad)).includes("obsidian_write_note"), JSON.stringify(bad));
+    }
+    // The fail-closed check reads the PARSED list: a comma line or a JSON array that names `full`
+    // refuses the local connection too, and a list that cannot be parsed refuses every connection.
+    for (const bad of [
+      { redactProfiles: ["full, read+message"], redactConfig: "{not json" },
+      { redactProfiles: ['["full","bogus"]'], redactConfig: "{not json" },
+      { redactProfiles: ['["full","bogus"]'] },
+      { redactProfiles: ['["full"'] },
+    ]) {
+      assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+    }
+    // An entry that is not a known profile name refuses every connection, with a good config or a bad one.
+    for (const entry of ["Full", "full;read+message", "- full", '"full"', "full # local", "read+mesage"]) {
+      for (const redactConfig of ["", "{not json"]) {
+        const bad = { redactProfiles: [entry], redactConfig };
+        assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+        assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+      }
+    }
+    // A hand-edited data.json with the wrong types: a logged refusal of every connection, not a throw.
+    for (const bad of [{ redactProfiles: "read+message" }, { redactProfiles: [1] }, { redactProfiles: { a: 1 } }, { redactConfig: { extraKeyNames: [] } }, { redactProfiles: ["read+message"], redactConfig: 5 }]) {
+      assert.doesNotThrow(() => build({}, result, bad), JSON.stringify(bad));
+      assert.deepEqual(names(build({}, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+    }
+    // A bad config with no profile listed leaves the scanner off and refuses nothing.
+    assert.ok(names(build({ profile: "read+message" }, result, { redactConfig: "{not json" })).length > 0);
   });
 });
