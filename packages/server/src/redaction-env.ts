@@ -4,7 +4,7 @@
 //   VAULT_MCP_REDACT_PROFILES — the connection profiles whose replies are scanned: a JSON array
 //                               (`["read+message"]`) or a comma list (`read+message,read`).
 //                               Unset or empty: the scanner is off.
-//   VAULT_MCP_REDACT_CONFIG   — the path of a JSON file with the scanner config (core's
+//   VAULT_MCP_REDACT_CONFIG   — the path of a JSON file (a regular file, at most 1 MB) with the scanner config (core's
 //                               SecretScanConfig: keyNames, extraKeyNames, patterns, extraPatterns).
 //                               Unset: the shipped defaults.
 //
@@ -15,11 +15,12 @@
 // These variables apply to FS mode only. In LIVE mode the Obsidian plugin decides, from its own
 // settings ("Secret scanner: profiles" and "config").
 
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { buildRedaction, parseProfileList, RedactionSettingsError, type Redaction } from "@vault-mcp/core";
 
 export const REDACT_PROFILES_ENV_VAR = "VAULT_MCP_REDACT_PROFILES";
 export const REDACT_CONFIG_ENV_VAR = "VAULT_MCP_REDACT_CONFIG";
+const MAX_CONFIG_BYTES = 1024 * 1024;
 
 let cache: { key: string; redaction: Redaction | undefined } | null = null;
 
@@ -47,8 +48,13 @@ export function loadRedaction(env: NodeJS.ProcessEnv = process.env): Redaction |
     if (configPath) {
       let text: string;
       try {
+        // A regular file (not a link, a device or a pipe), of at most 1 MB.
+        const st = lstatSync(configPath);
+        if (!st.isFile()) throw new RedactionSettingsError(`${REDACT_CONFIG_ENV_VAR}: '${configPath}' is not a regular file`);
+        if (st.size > MAX_CONFIG_BYTES) throw new RedactionSettingsError(`${REDACT_CONFIG_ENV_VAR}: '${configPath}' is larger than 1 MB`);
         text = readFileSync(configPath, "utf8");
       } catch (e) {
+        if (e instanceof RedactionSettingsError) throw e;
         throw new RedactionSettingsError(`${REDACT_CONFIG_ENV_VAR}: cannot read '${configPath}' (${(e as NodeJS.ErrnoException).code ?? "error"})`);
       }
       try {

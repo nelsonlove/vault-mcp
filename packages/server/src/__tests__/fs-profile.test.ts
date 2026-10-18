@@ -5,7 +5,7 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, symlink } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -173,6 +173,13 @@ describe("FS mode under a profile", () => {
     await writeFile(bad, '{"extraPatterns": [{"kind": "x", "regex": "("}]}');
     const notJson = path.join(dir, "not.json");
     await writeFile(notJson, "{not json");
+    // Not a regular file (a directory, a symbolic link to a good file), or larger than 1 MB: refused.
+    const good = path.join(dir, "good.json");
+    await writeFile(good, "{}");
+    const link = path.join(dir, "link.json");
+    await symlink(good, link);
+    const big = path.join(dir, "big.json");
+    await writeFile(big, `{"extraKeyNames": ["a"], "pad": "${"x".repeat(1024 * 1024)}"}`);
     const { loadRedaction, REDACT_PROFILES_ENV_VAR, REDACT_CONFIG_ENV_VAR } = await import("../redaction-env.js");
     for (const env of [
       { [REDACT_PROFILES_ENV_VAR]: "read+mesage" },
@@ -180,6 +187,9 @@ describe("FS mode under a profile", () => {
       { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: notJson },
       { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: path.join(dir, "missing.json") },
       { [REDACT_PROFILES_ENV_VAR]: '["read+message"' },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: dir },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: link },
+      { [REDACT_PROFILES_ENV_VAR]: "read+message", [REDACT_CONFIG_ENV_VAR]: big },
     ]) assert.throws(() => loadRedaction(env), /VAULT_MCP_REDACT/, JSON.stringify(env));
     assert.equal(loadRedaction({}), undefined);
     assert.deepEqual([...loadRedaction({ [REDACT_PROFILES_ENV_VAR]: '["read+message"]' })!.profiles], ["read+message"]);
