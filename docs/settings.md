@@ -519,8 +519,8 @@ Obsidian Sync carries the plugin's `data.json` to every device that syncs the va
 | Field | Value |
 |---|---|
 | Variable | `VAULT_MCP_LOCAL_SETTINGS`: an absolute path to the file |
-| Default | `<base state folder>/settings.local.json`, where the base state folder is the environment variable `VAULT_MCP_STATE_DIR`, else `~/.claude/vault-mcp/` |
-| Absent file | No override: the synced settings apply as they are. A file that `VAULT_MCP_LOCAL_SETTINGS` names but that does not exist is an error (see below), because to name it is to say that it exists |
+| Default | `<base state folder>/local/settings.json`, where the base state folder is the environment variable `VAULT_MCP_STATE_DIR`, else `~/.claude/vault-mcp/`. The file is in the `local` subfolder on purpose: the bridge, the Claude Code health hook and the plugin read the `*.json` files directly in the state folder as vault discovery files. They also skip any JSON file there that has no `socket_path`, so a stray file is never read as a vault |
+| Absent file | No override: the synced settings apply as they are. At the default path, a file where the `local` folder would be (the error ENOTDIR) also counts as absent. Any other error at the default path, such as no permission (EACCES) or a loop of links (ELOOP), stops the plugin. A file that `VAULT_MCP_LOCAL_SETTINGS` names but that does not exist is an error (see below), because to name it is to say that it exists; with the variable set, every error stops the plugin |
 | Takes effect | When the plugin next loads. The file is read once, at load, so a change to it needs a plugin reload (or an Obsidian restart) |
 
 The plugin looks for the file through the environment only, never through the `host.stateDir` setting. `host.stateDir` is a setting, so it can come from the synced `data.json`; if it chose where the override is read, a value synced in from another device could move this machine's override out of sight, and this machine would quietly run on the synced settings. The override itself may set `host.stateDir`: that moves the socket, `bridge.mjs` and the discovery file, as the setting always does, and it does not move the override. To keep the override inside a state folder of your own, set `VAULT_MCP_STATE_DIR` (or `VAULT_MCP_LOCAL_SETTINGS`) in the environment the plugin runs in.
@@ -537,14 +537,14 @@ After the merge, each value goes through the same checks as a value in `data.jso
 
 ### When the file is bad
 
-A bad override stops the plugin. It does not serve (no socket, no bridge, no discovery file, no Claude Code registration), it logs the reason in the console and it shows the reason in a notice that stays until you close it. It never falls back to the synced settings: an override often makes a machine stricter (headless on, create-only writes, no registration), so to drop it would loosen the machine without anyone choosing that. The file is bad when:
+A bad override stops the plugin. It does not serve (no socket, no bridge, no discovery file, no Claude Code registration, and other plugins that ask it for settings get no answer), it logs the reason in the console and it shows the reason in a notice that stays until you close it. It never falls back to the synced settings: an override often makes a machine stricter (headless on, create-only writes, no registration), so to drop it would loosen the machine without anyone choosing that. The file is bad when:
 
-- it is not a regular file (a folder, or a link to nothing), or it cannot be read;
+- it is not a regular file (a folder, or a link to nothing), or it cannot be read (see the table above for ENOTDIR at the default path);
 - it is not valid JSON, or not one JSON object;
 - a key is not a setting of this plugin (a misspelt key would otherwise do nothing), or a key under a setting with fixed keys (such as `host` or `writeScope`) is not one of its keys; keys under `modules` and `cliPolicy.opaqueSnapshot` are free, as in `data.json`;
 - a value has the wrong type (a string where the setting is a boolean, an item that is not a string in a list of folders);
-- a value is one the setting does not take, so that its check would change it (an unknown mode, a relative path, a `writeScope.paths` pattern that does not compile, a number out of range);
-- a key is `null`, `__proto__`, `constructor` or `prototype`;
+- a value is one the setting does not take, so that its check would change it (an unknown mode, a relative path, a `writeScope.paths` pattern that does not compile, a record folder that is blank or only slashes, a number out of range), or a `recordFolders.archivePattern` that does not compile as a regular expression (in `data.json` such a pattern matches nothing; in the override it is refused);
+- a value is `null`, or a key is `__proto__`, `constructor`, `prototype`, empty, or holds a `.` (keys are read as dotted paths);
 - `VAULT_MCP_LOCAL_SETTINGS` names a relative path, or a file that does not exist.
 
 Fix or remove the file, then reload the plugin.
@@ -552,6 +552,8 @@ Fix or remove the file, then reload the plugin.
 ### What the settings tab and a save do
 
 The settings tab names the file and the keys it sets, above the tabs. Each control whose key the override sets is locked (it cannot be changed) and says where its value comes from. A save from the settings tab never writes this machine's values into the synced `data.json`: for each overridden key it writes the value that the synced file holds now, or, when the synced file does not hold that key, the value it had when the plugin loaded; every other key is saved as usual. So the other devices keep their own values for the keys this machine overrides.
+
+Satellite plugins that copy settings from the host once, on their first load (such as `vaultmcp-conformance`), read the host's synced `data.json`, not the override.
 
 `obsidian_doctor` reports the override as `local_settings`: the path it is looked up at, whether it comes from `VAULT_MCP_LOCAL_SETTINGS` or the default, whether the file was found, and the names of the keys it sets. It never reports their values.
 
