@@ -4,9 +4,8 @@
     "scripts/check-outside-names.mjs",
     "scripts/check-outside-names.test.mjs",
     ".github/workflows/outside-names.yml",
-    ".superpowers/**",
-    "CHANGELOG*",
-    "**/CHANGELOG*"
+    "CHANGELOG.md",
+    "**/CHANGELOG.md"
   ],
   "patterns": [
     { "id": "launchagent-label", "regex": "com\\.nelson\\.", "why": "LaunchAgent labels of the operator's machine", "allowed": [] },

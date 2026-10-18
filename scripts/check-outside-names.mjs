@@ -50,18 +50,35 @@ export function findViolations(lines, config) {
   return found;
 }
 
+/** A "+++" header's path: drop git's trailing TAB (paths with spaces), the C-style quotes git puts
+ *  round a path with unusual characters, and the "b/" prefix (#565 review 1). */
+export function headerPath(h) {
+  let p = h.replace(/\t.*$/, "");
+  if (p.startsWith('"') && p.endsWith('"')) {
+    try { p = JSON.parse(p); } catch { p = p.slice(1, -1); }
+  }
+  return p.replace(/^b\//, "");
+}
+
 /** Parse `git diff --unified=0` output into added lines. */
 export function parseAddedLines(diff) {
   const out = [];
   let file = null;
   let n = 0;
+  // A "+++ " line is a file header only between "diff --git" and the file's first "@@"; inside a
+  // hunk it is an added line that starts with "++" (#565 review 1).
+  let inHunk = false;
   for (const raw of diff.split("\n")) {
-    if (raw.startsWith("+++ ")) {
-      file = raw === "+++ /dev/null" ? null : raw.replace(/^\+\+\+ (b\/)?/, "");
+    if (raw.startsWith("diff --git ")) {
+      inHunk = false;
+      file = null;
+    } else if (!inHunk && raw.startsWith("+++ ")) {
+      file = raw === "+++ /dev/null" ? null : headerPath(raw.slice(4));
     } else if (raw.startsWith("@@")) {
+      inHunk = true;
       const m = /\+(\d+)/.exec(raw);
       n = m ? Number(m[1]) : 0;
-    } else if (file && raw.startsWith("+") && !raw.startsWith("+++")) {
+    } else if (inHunk && file && raw.startsWith("+")) {
       out.push({ file, line: n, text: raw.slice(1) });
       n++;
     }

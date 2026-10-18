@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { globToRegExp, matchesAny, findViolations, parseAddedLines, loadConfig } from "./check-outside-names.mjs";
+import { globToRegExp, matchesAny, findViolations, parseAddedLines, headerPath, loadConfig } from "./check-outside-names.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const config = loadConfig(join(here, "outside-names.json"));
@@ -87,3 +87,30 @@ test("end to end in a temp git repo: exit 0 when clean, 1 on a new name, old lin
   writeFileSync(join(repo, "b.ts"), 'const x = "/Users/zed";\n'); g("add", "."); g("commit", "-qm", "bad");
   assert.equal(run(), 1);
 });
+
+test("#565 review 1: an added line that starts with ++ is an added line, and paths with spaces or quotes are read plainly", () => {
+  const diff = [
+    "diff --git a/x.js b/x.js",
+    "--- a/x.js",
+    "+++ b/x.js",
+    "@@ -0,0 +1,3 @@",
+    "+a();",
+    "+++count; // a made-up name",
+    "+b();",
+    "diff --git a/a b.md b/a b.md",
+    "--- a/a b.md",
+    "+++ b/a b.md\t",
+    "@@ -0,0 +1 @@",
+    "+x",
+  ].join("\n");
+  const added = parseAddedLines(diff);
+  assert.deepEqual(added.map((l) => [l.file, l.line, l.text]), [
+    ["x.js", 1, "a();"],
+    ["x.js", 2, "++count; // a made-up name"],
+    ["x.js", 3, "b();"],
+    ["a b.md", 1, "x"],
+  ]);
+  assert.equal(headerPath('"b/caf\\303\\251.md"').startsWith("caf"), true);
+  assert.equal(headerPath("b/a b.md\t"), "a b.md");
+});
+
