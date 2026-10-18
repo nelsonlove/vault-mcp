@@ -36,14 +36,26 @@ describe("validation before a write", () => {
   test("a .base must be one YAML mapping, with views a list of mappings when present", () => {
     assert.equal(validateFileContent("x.base", BASE), "base");
     assert.equal(validateFileContent("x.base", "{}"), "base");
-    for (const bad of ["", "# only a comment\n", "- a\n- b\n", "just text\n", "a: [\n", "a: 1\na: 2\n", "a: 1\n---\nb: 2\n", "views: Table\n", "views:\n  - Table\n"]) {
+    for (const bad of ["", "# only a comment\n", "- a\n- b\n", "just text\n", "a: [\n", "a: 1\na: 2\n", "a: 1\n---\nb: 2\n", "views: Table\n", "views:\n  - Table\n", "a: &x 1\nb: *x\n", "d: &d {a: 1}\ne:\n  <<: {a: 2}\n", "e:\n  <<: {a: 2}\n", "f: !!js/function \"x\"\n", "g: !!str 5\n", "h: !custom 1\n", "a: &a [1,1,1,1,1,1,1,1,1]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"]) {
       assert.equal(code(() => validateFileContent("x.base", bad)), "invalid_file", JSON.stringify(bad));
+    }
+  });
+  test("an empty `views:` is no views: valid, and upsert_view makes the list", () => {
+    assert.equal(validateFileContent("x.base", "filters: {}\nviews:\n"), "base");
+    const { text, result } = applyFileEdit("x.base", "views:\n", { op: "upsert_view", item: JSON.stringify({ type: "table", name: "T" }) });
+    assert.equal(result.action, "added");
+    assert.match(text, /views:\n  - type: table\n    name: T/);
+    assert.equal(applyFileEdit("x.base", "views:\n", { op: "remove_view", key: "T" }).result.found, false);
+  });
+  test("a view item may not use an alias, an anchor, a merge key or a tag either, so no duplicate name can hide behind one", () => {
+    for (const item of ["name: &n Cards\ntype: table\n", "<<: {name: Cards}\ntype: table\n", "name: !!str Cards\n"]) {
+      assert.equal(code(() => applyFileEdit("x.base", BASE, { op: "upsert_view", item })), "invalid_file", item);
     }
   });
   test("a .canvas must be a JSON object; nodes and edges, when present, arrays of objects with unique string ids", () => {
     assert.equal(validateFileContent("x.canvas", CANVAS), "canvas");
     assert.equal(validateFileContent("x.canvas", "{}"), "canvas");
-    for (const bad of ["", "[]", "null", "{nodes: []}", '{"nodes": {}}', '{"edges": "x"}', '{"nodes": [1]}', '{"nodes": [{"type": "text"}]}', '{"nodes": [{"id": ""}]}', '{"nodes": [{"id": "a"}, {"id": "a"}]}']) {
+    for (const bad of ["", "[]", "null", "{nodes: []}", '{"nodes": {}}', '{"edges": "x"}', '{"nodes": [1]}', '{"nodes": [{"type": "text"}]}', '{"nodes": [{"id": ""}]}', '{"nodes": [{"id": "a"}, {"id": "a"}]}', '{"nodes": [{"id": "a"}], "edges": [{"id": "e", "fromNode": "a", "toNode": "z"}]}', '{"edges": [{"id": "e", "fromNode": "a", "toNode": "a"}]}', '{"nodes": [{"id": "a"}], "edges": [{"id": "e", "fromNode": "a"}]}']) {
       assert.equal(code(() => validateFileContent("x.canvas", bad)), "invalid_file", bad);
     }
   });
@@ -60,7 +72,9 @@ describe("the keyed edit", () => {
     assert.equal(result.action, "added");
     assert.match(text, /name: List/);
     ({ text, result } = applyFileEdit("x.base", BASE, { op: "upsert_view", key: "Cards", item: JSON.stringify({ type: "cards", name: "Gallery" }) }));
-    assert.equal(result.action, "replaced");
+    assert.deepEqual(result, { op: "upsert_view", key: "Gallery", found: true, action: "replaced", replaced: "Cards" });
+    ({ result } = applyFileEdit("x.base", BASE, { op: "upsert_view", key: "Nope", item: JSON.stringify({ type: "list", name: "List" }) }));
+    assert.deepEqual(result, { op: "upsert_view", key: "List", found: false, action: "added" }, "a key that matches no view: the result names the view added");
     assert.doesNotMatch(text, /name: Cards/);
     assert.equal(code(() => applyFileEdit("x.base", BASE, { op: "upsert_view", key: "Cards", item: JSON.stringify({ type: "cards", name: "Table" }) })), "invalid_edit", "a rename onto another view's name");
     ({ text } = applyFileEdit("x.base", "filters: {}\n", { op: "upsert_view", item: JSON.stringify({ type: "table", name: "T" }) }));
@@ -83,6 +97,7 @@ describe("the keyed edit", () => {
     ({ text, result } = applyFileEdit("x.canvas", CANVAS, { op: "upsert_node", item: JSON.stringify({ id: "c", type: "text", text: "C", x: 1, y: 1, width: 1, height: 1 }) }));
     assert.equal(result.action, "added");
     assert.deepEqual(JSON.parse(text).nodes.map((n) => n.id), ["a", "b", "c"]);
+    assert.equal(code(() => applyFileEdit("x.canvas", CANVAS, { op: "upsert_edge", item: JSON.stringify({ id: "ac", fromNode: "a", toNode: "c" }) })), "invalid_file", "an edge to a missing node");
     ({ result } = applyFileEdit("x.canvas", CANVAS, { op: "upsert_edge", key: "ab", item: JSON.stringify({ id: "ab", fromNode: "a", toNode: "b", label: "x" }) }));
     assert.equal(result.action, "replaced");
     assert.equal(code(() => applyFileEdit("x.canvas", CANVAS, { op: "upsert_node", key: "z", item: JSON.stringify({ id: "a" }) })), "invalid_edit", "key and id differ");

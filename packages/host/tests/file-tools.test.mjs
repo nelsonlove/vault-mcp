@@ -36,8 +36,15 @@ function fakeApp(initial) {
   const mk = (p) => { const f = new TFile(p); stamp(f); files.set(p, f); addFolders(p); return f; };
   for (const p of text.keys()) mk(p);
   const all = () => [...files.values()];
-  const resolve = (linkpath, _source) => {
+  const resolve = (linkpath, source) => {
     if (!linkpath) return null;
+    if (/^\.\.?\//.test(linkpath)) {
+      // A relative link resolves from the source's folder only, as in Obsidian.
+      const parts = folderOf(source) ? folderOf(source).split("/") : [];
+      for (const seg of linkpath.split("/")) { if (seg === "..") parts.pop(); else if (seg !== ".") parts.push(seg); }
+      const p = parts.join("/");
+      return files.get(p) ?? files.get(`${p}.md`) ?? null;
+    }
     const exact = files.get(linkpath) ?? files.get(`${linkpath}.md`);
     if (exact) return exact;
     const name = linkpath.split("/").pop().toLowerCase();
@@ -164,6 +171,9 @@ describe("obsidian_write_file", () => {
         ["Boards/Bad.canvas", "{ nodes: [] }"],
         ["Boards/Shape.canvas", JSON.stringify({ nodes: {} })],
         ["Boards/NoId.canvas", JSON.stringify({ nodes: [{ type: "text" }] })],
+        ["Boards/Dangling.canvas", JSON.stringify({ nodes: [{ id: "a" }], edges: [{ id: "e", fromNode: "a", toNode: "gone" }] })],
+        ["Boards/Bomb.base", "a: &a [1,1,1,1,1,1,1,1,1]\nb: &b [*a,*a,*a,*a,*a,*a,*a,*a,*a]\nc: [*b,*b,*b,*b,*b,*b,*b,*b,*b]\n"],
+        ["Boards/Merge.base", "views:\n  - <<: {name: Table}\n    type: cards\n"],
       ]) {
         const r = await h.call("obsidian_write_file", { path: p, content });
         assert.equal(r.isError, true, p);
@@ -311,10 +321,20 @@ describe("obsidian_move_file", () => {
       assert.equal(data(r).link_check.ok, true, JSON.stringify(data(r).link_check));
       const idx = h.text.get("Notes/Index.md");
       assert.match(idx, /!\[\[Plan 2026\.canvas\]\]/);
-      assert.match(idx, /\[\[Plan 2026\.canvas\|the board\]\]|\[\[Archive\/Plan 2026\.canvas\|the board\]\]/);
+      assert.equal(idx, "See ![[Plan 2026.canvas]] and [[Plan 2026.canvas|the board]].\n");
       const again = await h.call("obsidian_move_file", { from: "Boards/Plan.canvas", to: "Archive/Plan 2026.canvas", idempotency_key: k });
       assert.equal(again.isError, undefined, errText(again));
       assert.deepEqual(h.records().filter((x) => x.op === "obsidian_move_file").map((x) => x.outcome), ["ok", "deduped"]);
+    } finally { await h.close(); }
+  });
+
+  test("the file's own text is never rewritten: a canvas text node's relative link stays as written (ownLinks: false)", async () => {
+    const own = JSON.stringify({ nodes: [{ id: "t", type: "text", text: "see [[../Notes/Plan]]" }], edges: [] }, null, "\t");
+    const h = await harness({ "Boards/Rel.canvas": own, "Notes/Plan.md": "# Plan\n" });
+    try {
+      const r = await h.call("obsidian_move_file", { from: "Boards/Rel.canvas", to: "Archive/Deep/Rel.canvas", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.equal(h.text.get("Archive/Deep/Rel.canvas"), own);
     } finally { await h.close(); }
   });
 
@@ -371,6 +391,31 @@ describe("the guards notes have", () => {
       assert.match(errText(r), /^Error \[read_only\]/);
       assert.equal(ro.text.has("Boards/New.base"), false);
     } finally { await ro.close(); }
+  });
+
+  test("under a path allowlist a .base is not written, edited or moved (base_under_scope); a .canvas still is", async () => {
+    const h = await harness({ "Boards/Tasks.base": BASE, "Boards/Plan.canvas": CANVAS }, { settings: { allowlist: ["Boards"] } });
+    try {
+      const rev = data(await h.call("obsidian_read_note", { path: "Boards/Tasks.base" })).rev;
+      for (const [name, args] of [
+        ["obsidian_write_file", { path: "Boards/Reach.base", content: "filters:\n  and:\n    - file.inFolder(\"Elsewhere\")\nviews:\n  - type: table\n    name: T\n" }],
+        ["obsidian_write_file", { path: "Boards/Tasks.base", content: BASE, overwrite: true, if_rev: rev }],
+        ["obsidian_edit_file", { path: "Boards/Tasks.base", op: "remove_view", key: "Cards", if_rev: rev }],
+        ["obsidian_move_file", { from: "Boards/Tasks.base", to: "Boards/Moved.base", idempotency_key: key() }],
+      ]) {
+        const r = await h.call(name, args);
+        assert.match(errText(r), /^Error \[base_under_scope\]: .*the path allowlist/, name);
+      }
+      assert.equal(h.text.has("Boards/Reach.base"), false);
+      assert.equal(h.text.get("Boards/Tasks.base"), BASE);
+      const c = await h.call("obsidian_write_file", { path: "Boards/New.canvas", content: CANVAS });
+      assert.equal(c.isError, undefined, errText(c));
+    } finally { await h.close(); }
+    const open = await harness({ "Boards/Tasks.base": BASE });
+    try {
+      const r = await open.call("obsidian_write_file", { path: "Boards/Reach.base", content: BASE });
+      assert.equal(r.isError, undefined, "with no allowlist a .base is written");
+    } finally { await open.close(); }
   });
 
   test("a create-only write scope refuses all three (they are not note creates)", async () => {

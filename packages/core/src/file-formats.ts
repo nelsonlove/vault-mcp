@@ -4,11 +4,15 @@
 //
 // What a write must pass, before anything is written (and again on the result of a keyed edit):
 //   - `.base`: one YAML document (no `---` second document, no duplicate key, no parse error) whose
-//     top level is a mapping, not a scalar or a list; a `views` key, when present, is a list of
-//     mappings.
+//     top level is a mapping, not a scalar or a list; a `views` key, when present and not empty, is
+//     a list of mappings (an empty `views:` is no views). No anchor, alias, merge key (`<<`) or
+//     explicit tag (`!!str`, `!!js/function`, `!foo`): a Base needs none, an alias can expand without
+//     bound (an alias bomb Obsidian cannot load), and an aliased view name would hide a duplicate
+//     from the keyed edit.
 //   - `.canvas`: JSON whose top level is an object; `nodes` and `edges`, when present, are arrays
 //     (JSON Canvas 1.0); each node and each edge is an object with a non-empty string `id`, unique
-//     within its array (the keyed edit addresses them by it).
+//     within its array (the keyed edit addresses them by it); each edge's `fromNode` and `toNode`
+//     name a node of the file.
 // Nothing more is checked: a node's type or position, a view's type or filters, are Obsidian's to
 // read. A write that fails is refused with `invalid_file` and nothing is written.
 //
@@ -16,7 +20,7 @@
 // edited as a YAML document (its comments and the style of the untouched parts are kept; the
 // replaced view is written fresh), a Canvas is re-serialised with the indentation it already had.
 
-import { parseDocument, isMap, isSeq, type Document, type YAMLMap } from "yaml";
+import { parseDocument, isMap, isSeq, isScalar, isAlias, isPair, visit, type Document, type YAMLMap } from "yaml";
 
 /** The extensions these tools write, and nothing else. A note (`.md`) goes through the note tools. */
 export const FILE_EXTENSIONS: readonly string[] = Object.freeze([".base", ".canvas"]);
@@ -80,18 +84,41 @@ export function assertFilePath(path: string): FileKind {
 
 // ── validation ──────────────────────────────────────────────────────────────
 
-function parseBase(text: string): Document.Parsed {
+/** Parse YAML for a Base: one document, no error, no anchor, alias, merge key or explicit tag. */
+function parsePlainYaml(text: string, what: string): Document.Parsed {
   const doc = parseDocument(text, { uniqueKeys: true, prettyErrors: false });
-  if (doc.errors.length > 0) {
-    const e = doc.errors[0];
-    throw new InvalidFileError(`the .base content is not valid YAML (${e.code}: ${e.message.split("\n")[0]}). Nothing was written.`);
+  const problem = doc.errors[0] ?? doc.warnings[0];
+  if (problem) {
+    throw new InvalidFileError(`${what} is not valid YAML (${problem.code}: ${problem.message.split("\n")[0]}). Nothing was written.`);
   }
+  let found: string | null = null;
+  visit(doc, {
+    Node(_k, n) {
+      if (isAlias(n)) found = `an alias (*${n.source})`;
+      else if (n.anchor) found = `an anchor (&${n.anchor})`;
+      else if (n.tag) found = `an explicit tag (${n.tag})`;
+      if (found) return visit.BREAK;
+    },
+    Pair(_k, p) {
+      if (isPair(p) && isScalar(p.key) && p.key.value === "<<") {
+        found = "a merge key (<<)";
+        return visit.BREAK;
+      }
+    },
+  });
+  if (found) throw new InvalidFileError(`${what} holds ${found}; a Base is written without anchors, aliases, merge keys or tags. Nothing was written.`);
+  return doc;
+}
+
+function parseBase(text: string): Document.Parsed {
+  const doc = parsePlainYaml(text, "the .base content");
   if (!isMap(doc.contents)) {
     const what = doc.contents === null ? "empty" : isSeq(doc.contents) ? "a list" : "a single value";
     throw new InvalidFileError(`the .base content is ${what}; a Base is a YAML mapping (keys such as filters, properties, views). Nothing was written.`);
   }
   const views = doc.contents.get("views", true);
-  if (views !== undefined && views !== null) {
+  // An empty `views:` (a null scalar) is no views; Obsidian reads it as none, and upsert_view makes the list.
+  if (views !== undefined && !(isScalar(views) && views.value === null)) {
     if (!isSeq(views)) throw new InvalidFileError("the .base `views` key is not a list. Nothing was written.");
     if (views.items.some((v) => !isMap(v))) throw new InvalidFileError("every item of the .base `views` list must be a mapping. Nothing was written.");
   }
@@ -128,6 +155,17 @@ function parseCanvas(text: string): CanvasData {
       seen.add(id);
     });
   }
+  if (Array.isArray(c.edges)) {
+    const nodes = new Set((c.nodes ?? []).map((n) => n.id as string));
+    c.edges.forEach((e, i) => {
+      for (const end of ["fromNode", "toNode"] as const) {
+        const v = e[end];
+        if (typeof v !== "string" || !nodes.has(v)) {
+          throw new InvalidFileError(`.canvas edge '${String(e.id)}' (edges[${i}]) has ${end} ${typeof v === "string" ? `'${v}', which is not a node of this canvas` : "missing"}; every edge joins two nodes of the file. Nothing was written.`);
+        }
+      }
+    });
+  }
   return c;
 }
 
@@ -158,6 +196,8 @@ export interface FileEditResult {
   /** False when a remove names an item the file does not have: nothing is written. */
   found: boolean;
   action?: "added" | "replaced" | "removed";
+  /** upsert_view: the name of the view replaced, when the item renamed it. */
+  replaced?: string;
   /** remove_node: the edges that touched the node, removed with it. */
   edges_removed?: string[];
 }
@@ -168,9 +208,7 @@ function parseItem(raw: string | undefined, kind: FileKind, what: string): Recor
   if (raw === undefined) throw new FileEditError(`an upsert needs \`item_json\`: the whole ${what}. Nothing was written.`);
   let v: unknown;
   if (kind === "base") {
-    const d = parseDocument(raw, { uniqueKeys: true, prettyErrors: false });
-    if (d.errors.length > 0) throw new InvalidFileError(`\`item_json\` is not valid JSON or YAML (${d.errors[0].code}). Nothing was written.`);
-    v = d.toJS();
+    v = parsePlainYaml(raw, "`item_json`").toJS();
   } else {
     try {
       v = JSON.parse(raw);
@@ -229,7 +267,10 @@ export function applyFileEdit(path: string, text: string, edit: FileEdit): { tex
     const node = doc.createNode(item);
     if (at.length === 0) seq.items.push(node);
     else seq.items[at[0]] = node;
-    return { text: finishBase(doc), result: { op: edit.op, key, found: at.length > 0, action: at.length === 0 ? "added" : "replaced" } };
+    // The result names the view the file now holds; a replaced view of another name is `replaced`.
+    const result: FileEditResult = { op: edit.op, key: item.name, found: at.length > 0, action: at.length === 0 ? "added" : "replaced" };
+    if (at.length > 0 && key !== item.name) result.replaced = key;
+    return { text: finishBase(doc), result };
   }
 
   // canvas
