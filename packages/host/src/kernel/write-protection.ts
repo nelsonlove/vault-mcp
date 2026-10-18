@@ -79,7 +79,12 @@ export function protectionRefusal(
   if ((need === "key" || need === "both") && (given.idempotencyKey === undefined || given.idempotencyKey === "")) missing.push(KEY_HOW);
   if (missing.length === 0) return null;
   const names = missing.map((m) => m.slice(0, m.indexOf(":"))).join(" and ");
-  const createHint = tool === "obsidian_write_note" ? " To CREATE a new note, set overwrite: false instead; a create needs neither." : "";
+  const createHint =
+    tool === "obsidian_write_note"
+      ? " To CREATE a new note, set overwrite: false instead; a create needs neither."
+      : tool === "obsidian_write_file"
+        ? " To CREATE a new file, set overwrite: false instead; a create needs neither."
+        : "";
   return {
     code: PROTECTION_REQUIRED,
     message: `'${tool}' requires ${names} (protection '${need}', 01.33 rule 6f). Nothing was written. ${missing.join(" ")}${createHint}`,

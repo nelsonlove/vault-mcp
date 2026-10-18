@@ -13,7 +13,7 @@ It is a single Express process (`src/front.ts`) that:
 - Routes `/mcp` to the **LIVE proxy** (plugin-backed, 44 tools) when Obsidian's
   plugin Unix socket (`~/.claude/vault-mcp/<slug>.sock`) is reachable.
 - Falls back to the **FS handler** (`@vault-mcp/core`'s `FilesystemBackend`,
-  17 tools) when the socket is gone — no outage, graceful degradation.
+  20 tools: the 17 note tools and the three `.base`/`.canvas` file tools) when the socket is gone — no outage, graceful degradation.
 - Returns to LIVE mode automatically when the plugin reconnects.
 
 **FS-mode write caveat:** writes while Obsidian is closed are direct disk edits.

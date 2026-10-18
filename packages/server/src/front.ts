@@ -6,7 +6,7 @@
  *      remote-proxy.ts).
  *   2. Routes to the LIVE proxy (plugin-backed, 44 tools) when Obsidian's plugin
  *      Unix socket is reachable.
- *   3. Falls back to the FS handler (filesystem-only, 17 tools) otherwise.
+ *   3. Falls back to the FS handler (filesystem-only, 20 tools) otherwise.
  *
  * The endpoint therefore survives Obsidian closing (graceful degradation) and
  * automatically returns to LIVE mode when the plugin reopens.

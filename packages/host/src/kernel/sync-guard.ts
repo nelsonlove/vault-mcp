@@ -164,6 +164,8 @@ export type SyncVerdict =
 export const STATUS_STRICT: ReadonlySet<string> = new Set([
   "obsidian_move_note",
   "obsidian_move_notes",
+  // A .base or .canvas move (#575) is a rename like a note's.
+  "obsidian_move_file",
   "obsidian_assign_address",
   "obsidian_refile_address",
   "obsidian_renumber_address",

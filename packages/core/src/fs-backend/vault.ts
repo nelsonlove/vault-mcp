@@ -21,6 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
+import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
  * All filesystem access for the vault goes through this module so that
@@ -919,6 +920,77 @@ class VaultImpl {
       backlinks_files_touched: backlinksFilesTouched,
     };
   }
+
+  // ── .base and .canvas files (#575) ──────────────────────────────────────────
+  //
+  // The same path rules as notes (the vault's resolver, Sync-unsafe names), and the content
+  // validated before anything is written (file-formats.ts). These files carry no frontmatter, so
+  // the accept guard has nothing to read in them.
+
+  async writeFile(relPath: string, content: string, overwrite: boolean): Promise<{ path: string; created: boolean }> {
+    assertFilePath(relPath);
+    // A cut read handed back as the content is refused first (#441), as for a note.
+    assertNotTruncatedRead(relPath, content);
+    const abs = this.resolveInVault(relPath);
+    validateFileContent(relPath, content);
+    const existed = existsSync(abs);
+    if (existed && !overwrite) {
+      throw new Error(`File already exists: '${relPath}'. Set overwrite=true to replace it.`);
+    }
+    // No bracket context here: this server cannot know that nothing links the new name.
+    if (!existed) assertSyncSafeName(relPath);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, content, "utf8");
+    return { path: this.toRelative(abs), created: !existed };
+  }
+
+  async editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }> {
+    assertFilePath(relPath);
+    if (edit.item !== undefined) assertNotTruncatedRead(relPath, edit.item);
+    const abs = this.resolveInVault(relPath);
+    const text = await fs.readFile(abs, "utf8");
+    const { text: next, result } = applyFileEdit(relPath, text, edit);
+    if (next !== null && next !== text) await fs.writeFile(abs, next, "utf8");
+    return { path: this.toRelative(abs), ...result };
+  }
+
+  async moveFile(
+    fromRel: string,
+    toRel: string,
+    options: { update_backlinks: boolean; overwrite: boolean },
+  ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
+    const kind = assertFilePath(fromRel);
+    if (assertFilePath(toRel) !== kind) {
+      throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type.`);
+    }
+    const absFrom = this.resolveInVault(fromRel);
+    const absTo = this.resolveInVault(toRel);
+    if (absFrom === absTo) throw new Error("'from' and 'to' resolve to the same path");
+    // As moveNote: linked always (this server cannot vouch that nothing links the file), no archive pattern.
+    assertSyncSafeMove(this.toRelative(absFrom), this.toRelative(absTo), {
+      linked: true,
+      folderExists: (p) => existsSync(path.join(this.root, p)),
+    });
+    try {
+      await fs.access(absFrom);
+    } catch {
+      throw new Error(`not found: ${fromRel}`);
+    }
+    if (existsSync(absTo) && !options.overwrite) {
+      throw new Error(`Destination '${toRel}' already exists. Pass overwrite: true to replace.`);
+    }
+    await fs.mkdir(path.dirname(absTo), { recursive: true });
+    await fs.rename(absFrom, absTo);
+    return {
+      from: fromRel,
+      to: toRel,
+      backlinks_updated: 0,
+      backlinks_files_touched: 0,
+      links_note:
+        "The file-system server does not rewrite links to a .base or .canvas file: its link index covers notes only. " +
+        "A note that linked the old path still names it; move the file on the live Obsidian server to have them rewritten, or fix them with obsidian_patch_note.",
+    };
+  }
 }
 
 // ── Pure helper: extract tags from note content ───────────────────────────────
@@ -1140,6 +1212,22 @@ export async function moveNote(
   }
 ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number }> {
   return _impl.moveNote(fromRel, toRel, options);
+}
+
+export async function writeFile(relPath: string, content: string, overwrite: boolean): Promise<{ path: string; created: boolean }> {
+  return _impl.writeFile(relPath, content, overwrite);
+}
+
+export async function editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }> {
+  return _impl.editFile(relPath, edit);
+}
+
+export async function moveFile(
+  fromRel: string,
+  toRel: string,
+  options: { update_backlinks: boolean; overwrite: boolean },
+): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
+  return _impl.moveFile(fromRel, toRel, options);
 }
 
 // ── Per-instance factory ──────────────────────────────────────────────────────

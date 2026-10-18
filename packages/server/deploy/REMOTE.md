@@ -15,7 +15,7 @@ cloudflared (LaunchAgent)  ──►  http://127.0.0.1:8787
 front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vault>.sock
      │                                               │ unix socket (when Obsidian is live)
      ├─ Obsidian LIVE:  bridge.mjs ──► vault-mcp plugin ──► Obsidian APIs  (44 tools)
-     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (17 tools)
+     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (20 tools)
 ```
 
 ## Failover behavior
@@ -23,7 +23,7 @@ front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vau
 | Obsidian state | Mode | Tool surface | Notes |
 | --- | --- | --- | --- |
 | Running + plugin enabled | `live` | 44 tools (full `obsidian_*` set) | Writes go through Obsidian APIs — canonical, sync-safe, **journaled and serialized** by the plugin kernel |
-| Closed / plugin disabled | `fs` | 17 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. |
+| Closed / plugin disabled | `fs` | 20 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. |
 | Reopened after closure | `live` | Back to 44 tools (auto) | Open SSE channels get a `notifications/tools/list_changed` push |
 
 `GET /health` returns:
@@ -182,7 +182,7 @@ Two Clerk realities shaped the wiring:
 `VAULT_MCP_SEAMLESS=1` routes `/mcp` through the **MCP-semantic proxy**
 (`src/semantic-proxy.ts`) instead of the Phase 2a passthrough: each session gets
 an in-process MCP server that mirrors the plugin's live tools (forwarding
-`tools/call` over one shared bridge connection) or serves the 17 FS tools, and
+`tools/call` over one shared bridge connection) or serves the 20 FS tools, and
 on a presence flip emits `notifications/tools/list_changed` so a connected
 client's tool surface changes 44↔17 **without reconnecting**. With the flag
 unset the behavior is byte-for-byte Phase 2a.
