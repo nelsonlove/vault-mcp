@@ -16,9 +16,11 @@
 //   2. the governance provider is asked, through the seam with purpose
 //      "rotate", whether it refuses the OLD id. If it does (a revocation, or a
 //      store it cannot read: a rotation needs a positive "not revoked"), or its
-//      hook throws, nothing rotates: the old session stays current, so every
-//      later mutation keeps refusing. Only an expiry rotates; a revocation
-//      never does;
+//      hook throws, or it does not answer within WRITE_TIMEOUT_MS (this check
+//      runs in front of the write queue, so it carries its own budget), nothing
+//      rotates: the old session stays current, so every later mutation keeps
+//      refusing, and the refusal names the provider's reason and says a retry
+//      will not help. Only an expiry rotates; a revocation never does;
 //   3. otherwise a NEW session is minted with `openSession`, its `continuedFrom`
 //      set to the old id, and logged as opened. The connection's later calls,
 //      its journal actor, and its close all use the new session.
@@ -50,6 +52,10 @@
 
 import { livenessOf, expiryRefusal, NO_DIRECT_WRITES } from "@vault-mcp/core";
 import type { SessionId, SessionV1 } from "@vault-mcp/core";
+import { WRITE_TIMEOUT_MS } from "../write-queue.js";
+
+/** The tail of a refusal for a session that could not be replaced: a retry will not help. */
+const NO_RETRY_NO_DIRECT_WRITES = "A retry will not help. Do not write vault files directly; stop and report to your superior.";
 
 type Refusal = { code: string; detail: string };
 
@@ -66,6 +72,12 @@ export interface ConnectionSessionDeps {
   refuse?: (sessionId: string | null, purpose: "dequeue" | "rotate") => Promise<Refusal | null>;
   /** The clock. Defaults to Date.now. */
   now?: () => number;
+  /**
+   * How long the provider's "rotate" check may take. It runs in front of the
+   * write queue, so the queue's timeout does not bound it; this does, with the
+   * same budget (WRITE_TIMEOUT_MS). A timeout counts as a refusal. Tests only.
+   */
+  rotateCheckTimeoutMs?: number;
 }
 
 export interface ConnectionSession {
@@ -95,6 +107,11 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
   // judge a call by the session it was enqueued under.
   const held = new Map<string, SessionV1>([[session.id, session]]);
   let closed = false;
+  // The refusal that kept an expired session from rotating, by the old id, so
+  // the dequeue check gives the real reason instead of "retry". Cleared when a
+  // later rotation of that session goes through.
+  const rotationRefused = new Map<string, Refusal>();
+  const rotateBudget = deps.rotateCheckTimeoutMs ?? WRITE_TIMEOUT_MS;
 
   let rotating: Promise<void> | null = null;
 
@@ -109,14 +126,38 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
     // A revoked session is never rotated: the provider's refusal of the OLD id
     // keeps it current, so the connection keeps refusing. A refuse hook that
     // throws is treated the same way (fail closed): no rotation.
+    // The check runs in front of the write queue, so it carries its own
+    // budget: a hook that hangs must not wedge this connection's writes (every
+    // later mutation awaits this same rotation). A timeout is a refusal.
     let refused: Refusal | null;
-    try {
-      refused = (await deps.refuse?.(old.id, "rotate")) ?? null;
-    } catch {
+    if (deps.refuse) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const check = Promise.resolve()
+        .then(() => deps.refuse!(old.id, "rotate"))
+        .then(
+          (r): Refusal | null => r ?? null,
+          (e): Refusal => ({ code: "session_rotation_failed", detail: `the session provider's rotate check failed: ${e instanceof Error ? e.message : String(e)}` })
+        );
+      const timeout = new Promise<Refusal>((resolve) => {
+        timer = setTimeout(
+          () => resolve({ code: "session_rotation_timeout", detail: `the session provider's rotate check did not answer within ${rotateBudget} ms` }),
+          rotateBudget
+        );
+      });
+      try {
+        refused = await Promise.race([check, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    } else {
+      refused = null;
+    }
+    if (refused) {
+      rotationRefused.set(old.id, refused);
       return;
     }
-    if (refused) return;
     if (session !== old || closed) return;
+    rotationRefused.delete(old.id);
     const next = deps.mint(old.id, clock());
     session = next;
     held.set(next.id, next);
@@ -151,6 +192,15 @@ export function createConnectionSession(deps: ConnectionSessionDeps): Connection
         // The expiry transition is recorded, not merely observed: the durable
         // record should not say "open" about a session nothing will honour.
         if (expired.status === "expired") deps.log.markExpired(target.id, now).catch(() => undefined);
+        // The connection is still on this session because the provider
+        // refused to replace it: a retry would only be refused again.
+        const blocked = target === session ? rotationRefused.get(target.id) : undefined;
+        if (blocked) {
+          return {
+            code: expired.code,
+            detail: `this connection's session (${target.id}) is expired and could not be replaced (${blocked.code}: ${blocked.detail}). Reconnect to open a new session. ${NO_RETRY_NO_DIRECT_WRITES}`,
+          };
+        }
         return { code: expired.code, detail: expired.detail };
       }
       return (await deps.refuse?.(target.id, "dequeue")) ?? null;

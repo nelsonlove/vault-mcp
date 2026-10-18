@@ -142,7 +142,12 @@ export function expiryRefusal(
   const status = livenessOf(session, now);
   return {
     code: "session_not_live",
-    detail: `this connection's session (${session.id}) is ${status}; retry the call (an expired session is replaced by a new one on the next call) or reconnect to open a new session. ${NO_DIRECT_WRITES}`,
+    // Only an expiry is replaced on the next call; a closed or revoked session
+    // never is, so its text does not tell the caller to retry.
+    detail:
+      status === "expired"
+        ? `this connection's session (${session.id}) is expired; retry the call (an expired session is replaced by a new one on the next call) or reconnect to open a new session. ${NO_DIRECT_WRITES}`
+        : `this connection's session (${session.id}) is ${status}; reconnect to open a new session. Do not write vault files directly; stop and report to your superior.`,
     status,
   };
 }

@@ -41,7 +41,7 @@ const NO_DIRECT = "Do not write vault files directly; stop and retry, then repor
 const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
 
 /** A connection session over a fake clock and an in-memory lifecycle log. */
-function fixture({ refuse, firstMint } = {}) {
+function fixture({ refuse, firstMint, rotateCheckTimeoutMs } = {}) {
   let now = T0;
   const lines = [];
   const log = {
@@ -58,7 +58,7 @@ function fixture({ refuse, firstMint } = {}) {
     );
     return mints === 1 && firstMint ? firstMint(s) : s;
   };
-  const conn = createConnectionSession({ log, mint, ...(refuse ? { refuse } : {}), now: () => now });
+  const conn = createConnectionSession({ log, mint, ...(refuse ? { refuse } : {}), ...(rotateCheckTimeoutMs ? { rotateCheckTimeoutMs } : {}), now: () => now });
   return { conn, lines, set: (t) => { now = t; }, mints: () => mints };
 }
 
@@ -272,7 +272,9 @@ describe("a provider must DECLARE the rotate check before a session rotates", ()
     assert.equal(f.mints(), 1);
     const r = await f.conn.refusal();
     assert.equal(r.code, "session_not_live");
-    assert.ok(r.detail.includes(NO_DIRECT), r.detail);
+    assert.match(r.detail, /session_rotation_unsupported/, "the real reason is named");
+    assert.match(r.detail, /Do not write vault files directly/);
+    assert.doesNotMatch(r.detail, /retry the call/, "a retry would be refused again");
   });
 
   test("MUTATION CHECK: the same provider, declaring it, lets the session rotate", async () => {
@@ -507,5 +509,70 @@ describe("the refusal texts say: do not write vault files directly", () => {
   test("the bridge's copy and core's NO_DIRECT_WRITES are the same text", () => {
     assert.equal(NO_DIRECT_WRITES, NO_DIRECT);
     assert.ok(DISCONNECT_REASON.endsWith(NO_DIRECT_WRITES), "the bridge copies core's text exactly");
+  });
+});
+
+describe("#568 round 3: the rotate check is bounded, and a refused rotation does not say retry", () => {
+  test("a provider hook that HANGS is cut off by the budget: no rotation, and refresh settles", async () => {
+    const f = fixture({ refuse: () => new Promise(() => {}), rotateCheckTimeoutMs: 20 });
+    const old = f.conn.current();
+    f.set(AFTER_TTL);
+    const t0 = Date.now();
+    await f.conn.refresh();
+    assert.ok(Date.now() - t0 < 2000, "refresh settled on the budget, not on the hung hook");
+    assert.equal(f.conn.current().id, old.id, "a timeout is a refusal: nothing rotated");
+    const r = await f.conn.refusal();
+    assert.equal(r.code, "session_not_live");
+    assert.match(r.detail, /session_rotation_timeout/);
+    assert.doesNotMatch(r.detail, /retry the call/);
+    assert.match(r.detail, /A retry will not help/);
+    assert.match(r.detail, /Do not write vault files directly/);
+  });
+
+  test("a later mutation after a hang does not wait on the old hung check", async () => {
+    let calls = 0;
+    const f = fixture({ refuse: () => { calls++; return new Promise(() => {}); }, rotateCheckTimeoutMs: 20 });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    await f.conn.refresh();
+    assert.equal(calls, 2, "each refresh asks again, within its own budget");
+  });
+
+  test("a provider REFUSAL of the rotation gives its reason, not 'retry'", async () => {
+    const f = fixture({ refuse: async (id, purpose) => (purpose === "rotate" ? { code: "session_revoked", detail: `revoked ${id}` } : null) });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    const r = await f.conn.refusal();
+    assert.match(r.detail, /could not be replaced \(session_revoked: revoked /);
+    assert.doesNotMatch(r.detail, /retry the call/);
+  });
+
+  test("a hook that THROWS is named in the refusal too", async () => {
+    const f = fixture({ refuse: async () => { throw new Error("store unreadable"); } });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    const r = await f.conn.refusal();
+    assert.match(r.detail, /session_rotation_failed: .*store unreadable/);
+  });
+
+  test("once a later rotation goes through, a call queued under the old session gets the plain retry text", async () => {
+    let refuseNow = true;
+    const f = fixture({ refuse: async () => (refuseNow ? { code: "session_store_unreadable", detail: "x" } : null) });
+    const old = f.conn.current();
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.conn.current().id, old.id);
+    refuseNow = false;
+    await f.conn.refresh();
+    assert.notEqual(f.conn.current().id, old.id, "the second attempt rotates");
+    const r = await f.conn.refusal(old.id);
+    assert.match(r.detail, /retry the call/, "a retry now runs under the new session, so the text is true");
+  });
+
+  test("a session the host's own record says is revoked is told to reconnect, not to retry", () => {
+    const s = revokeSession(openSession({ vaultId: "v", replicaId: "r", actor: { connection: "c", clientClaim: null }, journalHead: null, scopeDigest: "d" }, T0), "a human said so");
+    const r = expiryRefusal(s, T0 + 1);
+    assert.match(r.detail, /is revoked; reconnect/);
+    assert.doesNotMatch(r.detail, /retry/);
   });
 });
