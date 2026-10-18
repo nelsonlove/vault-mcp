@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, redactingHandler } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, redactingHandler, SNIPPET_TOOLS } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -149,7 +149,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
             const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
             return refused ? codedError(refused.code, refused.message) : handler(args, extra);
           };
-          return sdkRegister(name, def, profile.redactSecrets ? redactingHandler(gated) : gated);
+          return sdkRegister(name, def, profile.redactSecrets ? redactingHandler(gated, { snippets: SNIPPET_TOOLS.has(name) }) : gated);
         };
   // Code Mode under a profile: the meta-tools are outside every profile, so they are not
   // registered, and a captured registry would hide the filter behind obsidian_call_tool. The safe

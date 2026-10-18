@@ -17,7 +17,7 @@ import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
 import { z } from "zod";
 import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
-import { redactingHandler } from "./secret-scan.js";
+import { redactingHandler, SNIPPET_TOOLS } from "./secret-scan.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -149,7 +149,8 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
       : inner;
     // A profile that asks for it (read+message) has every reply passed through the secret scanner;
     // the arguments and anything written to disk are unchanged.
-    const handler = profile?.redactSecrets ? redactingHandler(gated) : gated;
+    // Search hits carry single lines, so their snippets get the snippet rules too.
+    const handler = profile?.redactSecrets ? redactingHandler(gated, { snippets: SNIPPET_TOOLS.has(tool.name) }) : gated;
     reg.registerTool(
       tool.name,
       {

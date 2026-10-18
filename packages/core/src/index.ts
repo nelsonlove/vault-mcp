@@ -229,7 +229,8 @@ export type { WriteScope, WriteScopeMode } from "./write-scope.js";
 export { READ_PROFILE_TOOLS, READ_MESSAGE_PROFILE_TOOLS, MESSAGE_TOOL, INBOX_WRITE_SCOPE, PROFILE_NAMES, isProfileName, resolveProfile, profileAllows, profileCallRefusal } from "./profile.js";
 export type { ConnProfile, ProfileName } from "./profile.js";
 // The secret scanner a profile may turn on (`redactSecrets`): blanks key- and token-shaped strings in tool replies.
-export { redactSecrets, redactToolResult, redactingHandler, redactionMarker, SCAN_FAILED_TEXT } from "./secret-scan.js";
+export { redactSecrets, redactToolResult, redactingHandler, redactionMarker, SCAN_FAILED_TEXT, SNIPPET_TOOLS } from "./secret-scan.js";
+export type { ScanOpts } from "./secret-scan.js";
 
 // ── The controlled-vocabulary kernel (suite split, S7) ──────────────────────
 //
