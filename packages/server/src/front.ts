@@ -36,6 +36,7 @@ import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
 import { loadProfileMap, createProfileGate, credentialOf, profileOf, type ProfileMap } from "./profiles.js";
+import { loadRedaction } from "./redaction-env.js";
 import { DEFAULT_RATE_LIMITS, loadRateLimitConfig, createIpRateLimit, createCredentialRateLimit, type RateLimitConfig } from "./rate-limit.js";
 import { createRequestLog, createLogWriter, loadRequestLogConfig } from "./request-log.js";
 
@@ -283,6 +284,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
   let profiles: ProfileMap;
   try {
     profiles = loadProfileMap();
+  } catch (e) {
+    console.error(`[front] refusing to start: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  // Fail-closed: secret scanner settings that are refused must not leave a profile unscanned.
+  try {
+    const redaction = loadRedaction();
+    if (redaction && redaction.profiles.size > 0) console.error(`[front] secret scanner on (FS mode) for: ${[...redaction.profiles].join(", ")}`);
   } catch (e) {
     console.error(`[front] refusing to start: ${(e as Error).message}`);
     process.exit(1);

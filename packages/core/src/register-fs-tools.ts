@@ -17,7 +17,7 @@ import { isCutRead } from "./truncation.js";
 import { strictInput } from "./strict-input.js";
 import { z } from "zod";
 import { profileAllows, profileCallRefusal, type ConnProfile } from "./profile.js";
-import { redactingHandler, SNIPPET_TOOLS } from "./secret-scan.js";
+import { SNIPPET_TOOLS, type SecretScanner } from "./secret-scan.js";
 import { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
 import { registerSendMessageTool, type MessageConfig } from "./send-message.js";
 
@@ -95,6 +95,11 @@ export interface RegisterFsToolsOpts {
    * registration, these included; the file-system server passes it here.
    */
   profile?: ConnProfile;
+  /**
+   * The secret scanner for this connection (redaction.ts's `scannerFor`), or absent (the default:
+   * replies are sent as they are). Off unless the deployment named this connection's profile.
+   */
+  scanner?: SecretScanner;
   /** Whether a vault-relative path exists, for the profile's create-only check. Absent ⇒ every path reads as existing, so a profile write is refused. */
   exists?: (path: string) => boolean;
   /**
@@ -154,10 +159,10 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
           return refused ? fail(Object.assign(new Error(refused.message), { code: refused.code })) : inner(args);
         }
       : inner;
-    // A profile that asks for it (read+message) has every reply passed through the secret scanner;
-    // the arguments and anything written to disk are unchanged.
+    // When the deployment turned the secret scanner on for this connection's profile (redaction.ts),
+    // every reply passes through it; the arguments and anything written to disk are unchanged.
     // Search hits carry single lines, so their snippets get the snippet rules too.
-    const handler = profile?.redactSecrets ? redactingHandler(gated, { snippets: SNIPPET_TOOLS.has(tool.name) }) : gated;
+    const handler = opts.scanner ? opts.scanner.wrap(gated, { snippets: SNIPPET_TOOLS.has(tool.name) }) : gated;
     reg.registerTool(
       tool.name,
       {
@@ -177,7 +182,10 @@ export function registerFsTools(server: any, backend: VaultBackend, opts: Regist
       handler,
     );
   }
-  registerSendMessageTool(reg, opts.message, { profile });
+  // The message tool's replies pass through the same scanner, so every reply on the connection does.
+  const scanner = opts.scanner;
+  const msgReg: ToolRegistrar = scanner ? { registerTool: (name, meta, h) => reg.registerTool(name, meta, scanner.wrap(h)) } : reg;
+  registerSendMessageTool(msgReg, opts.message, { profile });
 }
 
 // ── Per-tool handler factory ──────────────────────────────────────────────────

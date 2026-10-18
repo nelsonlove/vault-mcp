@@ -52,7 +52,10 @@ import {
   writeScopeRefusal,
   resolveProfile,
   messageConfigFromEnv,
+  scannerFor,
 } from "@vault-mcp/core";
+import type { Redaction } from "@vault-mcp/core";
+import { loadRedaction } from "./redaction-env.js";
 import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
 import type { VaultBackend, VaultWatcherHandle } from "@vault-mcp/core";
@@ -117,6 +120,12 @@ export interface FsHandlerOpts {
    * factory shares the one queue and the one journal.
    */
   kernel?: FsWriteKernel;
+  /**
+   * The secret scanner settings (core's redaction.ts). Omitted ⇒ read from the environment
+   * (redaction-env.ts: VAULT_MCP_REDACT_PROFILES, VAULT_MCP_REDACT_CONFIG; off when unset);
+   * `null` ⇒ off. Settings that are refused throw when the server is built (fail closed).
+   */
+  redaction?: Redaction | null;
 }
 
 // ── FS-mode write gate + write kernel (issue #92) ───────────────────────────
@@ -451,9 +460,14 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   );
 
   const profile = opts?.profile === undefined ? undefined : resolveProfile(opts.profile);
+  // Off unless the settings name this connection's profile (`full` when none is given). Throws on
+  // refused settings, so no server is built that would send replies unscanned.
+  const redaction = opts?.redaction === undefined ? loadRedaction() : (opts.redaction ?? undefined);
+  const scanner = scannerFor(redaction, profile?.name ?? "full");
   registerFsTools(server, makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel }), {
     // The same per-connection filter the plugin applies at origRegister (#521).
     ...(profile ? { profile, exists: existsInVault } : {}),
+    ...(scanner ? { scanner } : {}),
     decodeHtml: true,
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
