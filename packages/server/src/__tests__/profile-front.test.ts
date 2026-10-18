@@ -157,6 +157,7 @@ describe("VAULT_MCP_PRM_UNDER_RESOURCE: the metadata inside the one published pa
     assert.equal(resourceMetadataUrl(on(RES1)), "https://host.example.ts.net/mcp/.well-known/oauth-protected-resource");
     assert.equal(resourceMetadataUrl(on("https://h.example/vault-mcp/mcp/")), "https://h.example/vault-mcp/mcp/.well-known/oauth-protected-resource");
     assert.ok(prmPaths(RES1, true).includes("/mcp/.well-known/oauth-protected-resource"));
+    assert.equal(resourceMetadataUrl(on("https://h.example/mcp?x=1#f")), "https://h.example/mcp/.well-known/oauth-protected-resource");
     const s = await serve(buildFront({ cfg: on(RES1), token: TOKEN, presence: { isLive: () => false }, fs: spy(), live: spy() }));
     const r = await fetch(`${s.url}/mcp/.well-known/oauth-protected-resource`);
     assert.equal(r.status, 200);

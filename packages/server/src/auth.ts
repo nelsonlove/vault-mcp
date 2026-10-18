@@ -91,8 +91,9 @@ export function prmPath(): string {
 export function resourceMetadataUrl(cfg: AuthConfig): string {
   if (!cfg.resourceUrl) return prmPath();
   // Inside the resource's own path when asked (RFC 9728 §5.1 lets the header name any metadata URL).
-  if (cfg.prmUnderResource) return `${cfg.resourceUrl.replace(/\/+$/, "")}${prmPath()}`;
   const u = new URL(cfg.resourceUrl);
+  // Parsed like the default branch (#567 review 1): origin + path, never a query, fragment or raw text.
+  if (cfg.prmUnderResource) return `${u.origin}${u.pathname.replace(/\/+$/, "")}${prmPath()}`;
   // RFC 9728 §3.1: the well-known path goes between the host and the resource's own path, so a
   // resource at https://host/vault-mcp/mcp names /.well-known/oauth-protected-resource/vault-mcp/mcp.
   const suffix = u.pathname.replace(/\/+$/, "");
