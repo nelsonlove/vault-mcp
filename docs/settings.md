@@ -46,6 +46,28 @@ Code mode changes discovery cost, not authority. The selected surface still reso
 
 Listing `governor` here is what restores read-only treatment to the governance provider's four read-only tools (`governance_pending_review`, `governance_revisions`, `governance_mandates`, `governance_mandate_draft`); without it they register as mutating and, under an active path allowlist, are refused wholesale.
 
+### Secret scanner: profiles
+
+| Field | Value |
+|---|---|
+| Key | `redactProfiles` |
+| Default | Empty (the scanner is off) |
+| Effect | Names connection profiles (such as `read+message`) whose tool replies pass through the secret scanner, which blanks key- and token-shaped strings as `[redacted:<kind>]`. Listing `full` scans local connections too. See `packages/server/README.md`, "Secret scanner" |
+| Takes effect | New connections |
+| Risk | A best-effort filter: it cannot catch every form of a secret. While a profile is listed, an unknown name or a refused config gives every remote connection (and a local one when `full` is listed) no tools until it is fixed |
+| Recovery | Fix the name or the config, or empty the list, and reconnect clients |
+
+### Secret scanner: config
+
+| Field | Value |
+|---|---|
+| Key | `redactConfig` |
+| Default | Blank (the shipped defaults) |
+| Effect | JSON text: `keyNames` and `patterns` replace the shipped key names and provider token shapes; `extraKeyNames` and `extraPatterns` (`{kind, regex, ignoreCase?}`) add to them. The structural rules (private key blocks, JWTs, Authorization and bearer values, URL credentials) always run |
+| Takes effect | New connections |
+| Risk | A pattern you add is run as given: a pattern with nested repeats can make a scan slow |
+| Recovery | Blank the field and reconnect clients |
+
 ## Posture
 
 ### Current posture
