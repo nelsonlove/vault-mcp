@@ -417,8 +417,9 @@ describe("session wiring — pinned, because unwired machinery is the known fail
     // revocation from the store. This pin is the provider's half — the host's
     // half is a source fact in another package and is pinned nowhere today.
     const src = main();
-    assert.match(src, /sessionRefusal: async \(sessionId\)/, "the provider registers the seam's refusal hook");
-    assert.match(src, /sessionStore\.revocationRefusal\(sessionId\)/, "and answers it from the store");
+    assert.match(src, /sessionRefusal: sessionRefusalFrom\(sessionStore\)/, "the provider registers the seam's refusal hook, over the store");
+    const hook = fs.readFileSync(new URL("../src/wiring/session-refusal.ts", import.meta.url), "utf8");
+    assert.match(hook, /store\.revocationRefusal\(sessionId\)/, "and answers it from the store");
     assert.match(src, /registerGovernance\(this, \{/, "through the seam, not through a host context object");
   });
 

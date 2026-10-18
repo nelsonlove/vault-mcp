@@ -117,8 +117,19 @@ export interface SeamRefusal {
 }
 
 export type WriteObserver = (facts: WriteFacts) => void | Promise<void>;
+/**
+ * Why the host is asking. `"dequeue"` (the default) is the check inside the
+ * write queue. `"rotate"` is asked before the host replaces an EXPIRED session
+ * with a new one (`kernel/sessions/connection-session.ts`): a rotation needs a
+ * positive answer that the old session is not revoked, so a hook that cannot
+ * read its revocation state should REFUSE for `"rotate"`, even where it
+ * degrades to silence for `"dequeue"`. A hook that ignores the argument keeps
+ * its old behaviour.
+ */
+export type SessionRefusalPurpose = "dequeue" | "rotate";
 export type SessionRefusalHook = (
-  sessionId: string | null
+  sessionId: string | null,
+  purpose?: SessionRefusalPurpose
 ) => SeamRefusal | null | Promise<SeamRefusal | null>;
 
 /**
@@ -164,7 +175,7 @@ export interface SeamConsult {
    * refusal wins (deny-wins: a later `null` cannot undo an earlier refusal,
    * and the type could not express an allow even if it wanted to).
    */
-  refuseSession(sessionId: string | null): Promise<SeamRefusal | null>;
+  refuseSession(sessionId: string | null, purpose?: SessionRefusalPurpose): Promise<SeamRefusal | null>;
   /**
    * The ids that currently hold at least one registration — a registered
    * governance provider is a plugin the host must not let an agent switch off
@@ -270,10 +281,10 @@ export function createGovernanceSeam(): { seam: GovernanceSeam; consult: SeamCon
         });
       }
     },
-    async refuseSession(sessionId) {
+    async refuseSession(sessionId, purpose = "dequeue") {
       for (const { id, fn } of state().sessionRefusals) {
         try {
-          const refusal = await fn(sessionId);
+          const refusal = await fn(sessionId, purpose);
           if (refusal) return { code: refusal.code, detail: refusal.detail };
         } catch (e) {
           // Fail CLOSED (rule 2). A refusal hook that throws has not said

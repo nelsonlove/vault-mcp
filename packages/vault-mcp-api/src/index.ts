@@ -262,8 +262,16 @@ export interface SeamRefusal {
 }
 
 export type WriteObserver = (facts: WriteFacts) => void | Promise<void>;
+/**
+ * Why the host asks: `"dequeue"` (inside the write queue) or `"rotate"`
+ * (before it replaces an EXPIRED session with a new one). A rotation needs a
+ * positive "not revoked", so a hook that cannot read its revocation state
+ * should refuse for `"rotate"`. Older hosts pass no second argument.
+ */
+export type SessionRefusalPurpose = "dequeue" | "rotate";
 export type SessionRefusalHook = (
   sessionId: string | null,
+  purpose?: SessionRefusalPurpose,
 ) => SeamRefusal | null | Promise<SeamRefusal | null>;
 
 /** The registration half of the seam, as it appears on the host's api object. */
