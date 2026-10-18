@@ -28,6 +28,11 @@ export interface AuthConfig {
   jwksUri: string; // AS JWKS endpoint
   authorizationServers: string[]; // advertised in PRM
   scopesSupported: string[];
+  /** VAULT_MCP_PRM_UNDER_RESOURCE: serve the protected-resource metadata inside the resource's own
+   *  path (`<resource>/.well-known/oauth-protected-resource`) and name that URL in the 401's
+   *  resource_metadata, so a proxy that publishes one path (Funnel at /mcp) carries it too. Off by
+   *  default: the RFC 9728 well-known form at the host root, as before. */
+  prmUnderResource?: boolean;
 }
 
 export function loadAuthConfig(): AuthConfig {
@@ -57,7 +62,11 @@ export function loadAuthConfig(): AuthConfig {
     }
   }
 
-  return { enabled, resourceUrl, issuer, jwksUri, authorizationServers, scopesSupported };
+  const prmUnderResource = ["true", "1", "yes", "on"].includes((process.env.VAULT_MCP_PRM_UNDER_RESOURCE ?? "false").trim().toLowerCase());
+  if (prmUnderResource && !resourceUrl) {
+    throw new Error("VAULT_MCP_PRM_UNDER_RESOURCE=true needs MCP_RESOURCE_URL (the metadata is served inside that path)");
+  }
+  return { enabled, resourceUrl, issuer, jwksUri, authorizationServers, scopesSupported, prmUnderResource };
 }
 
 /** RFC 9728 Protected Resource Metadata document. */
@@ -81,7 +90,10 @@ export function prmPath(): string {
  */
 export function resourceMetadataUrl(cfg: AuthConfig): string {
   if (!cfg.resourceUrl) return prmPath();
+  // Inside the resource's own path when asked (RFC 9728 §5.1 lets the header name any metadata URL).
   const u = new URL(cfg.resourceUrl);
+  // Parsed like the default branch (#567 review 1): origin + path, never a query, fragment or raw text.
+  if (cfg.prmUnderResource) return `${u.origin}${u.pathname.replace(/\/+$/, "")}${prmPath()}`;
   // RFC 9728 §3.1: the well-known path goes between the host and the resource's own path, so a
   // resource at https://host/vault-mcp/mcp names /.well-known/oauth-protected-resource/vault-mcp/mcp.
   const suffix = u.pathname.replace(/\/+$/, "");
