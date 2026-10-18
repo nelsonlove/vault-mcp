@@ -98,6 +98,12 @@ export interface ServerCtx {
   createNoteFlow?: () => string;
   /** The `host` setting (headless.ts): headless mode, path overrides, the claude registration switch. */
   host?: () => unknown;
+  /**
+   * The machine-local settings override (#579, local-settings.ts), as
+   * `localSettingsReport` gives it: the path it is looked up at, whether it was
+   * found, and the overridden key NAMES. Never the values. Absent in tests.
+   */
+  localSettings?: () => Record<string, unknown>;
   // `getVocabularies` was here until the read-tier satellite extraction (suite
   // split, S7). It carried `settings.vocabularies` to the vocab module's tool
   // layer; that module is now the `vaultmcp-vocab` plugin, which owns its own
@@ -195,7 +201,7 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
     "obsidian_doctor",
     {
       title: "Diagnostics",
-      description: "Report vault-mcp health: socket path, bound vault, plugin version, and which integration plugins are detected. Read-only.",
+      description: "Report vault-mcp health: socket path, bound vault, plugin version, which integration plugins are detected, the Sync guard, and the machine-local settings override (its path, whether it was found, and the names of the keys it sets). Read-only.",
       inputSchema: {},
       annotations: RO,
     },
@@ -221,6 +227,10 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
             const now = Date.now();
             return syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), snap, judgeSync(snap, now), judgeSync(snap, now, [], false, true));
           })(),
+          // The machine-local settings override (#579): where it is looked up,
+          // whether this machine has one, and which keys it sets — names only,
+          // never values (an override can hold paths and patterns).
+          ...(ctx.localSettings ? { local_settings: ctx.localSettings() } : {}),
         });
       } catch (e) { return fail(e); }
     }

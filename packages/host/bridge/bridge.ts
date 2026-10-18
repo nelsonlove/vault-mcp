@@ -102,6 +102,8 @@ export function loadDiscoveryDir(dir: string): Discovery[] {
   for (const f of files) {
     try {
       const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf8"));
+      // Only an object with a string socket_path is a vault: a stray JSON file in the folder is skipped (#582 review 1).
+      if (!d || typeof d !== "object" || typeof (d as { socket_path?: unknown }).socket_path !== "string") continue;
       if ((d as { legacy?: boolean }).legacy === true) continue;
       out.push(d);
     } catch {

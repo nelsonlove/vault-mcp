@@ -464,7 +464,7 @@ The filesystem server (the FS fallback of the HTTP front) reads the same value a
 
 ## Running headless
 
-For a host with no Obsidian window, such as vaultd's headless plugin host. The bridge (`bridge.mjs`) and the HTTP front read the environment variable `VAULT_MCP_STATE_DIR` as the plugin does, so a front started with it reaches a plugin whose state folder is outside `~/.claude/`; the front passes it on to each bridge it starts. The four keys sit under one setting, `host`, so one entry in `data.json` sets them all, for example `{"host": {"headless": "on", "stateDir": "/srv/vault-mcp/state", "autoRegisterClaude": false}}`.
+For a host with no Obsidian window, such as vaultd's headless plugin host. The bridge (`bridge.mjs`) and the HTTP front read the environment variable `VAULT_MCP_STATE_DIR` as the plugin does, so a front started with it reaches a plugin whose state folder is outside `~/.claude/`; the front passes it on to each bridge it starts. The four keys sit under one setting, `host`, so one entry in `data.json` sets them all, for example `{"host": {"headless": "on", "stateDir": "/srv/vault-mcp/state", "autoRegisterClaude": false}}`. When the headless host gets the vault through Obsidian Sync, put these keys in the [machine-local override](#machine-local-override) instead, so they do not reach the desktop.
 
 ### Headless
 
@@ -509,6 +509,77 @@ For a host with no Obsidian window, such as vaultd's headless plugin host. The b
 | Takes effect | When the plugin next loads |
 | Risk | Off on a new Mac: Claude Code is not connected until someone runs the command |
 | Recovery | Turn it on, or run Connect to Claude Code |
+
+## Machine-local override
+
+Obsidian Sync carries the plugin's `data.json` to every device that syncs the vault, so every device reads the same settings. A headless replica (a server that gets the vault, and this plugin, through Sync and runs it with no Obsidian window) needs settings that the desktop must not get, and the desktop has settings that the server must not get. The machine-local override is a second settings file, outside the vault, that only one machine reads (#579). Sync never carries it, because it is not in the vault.
+
+### Where the file is
+
+| Field | Value |
+|---|---|
+| Variable | `VAULT_MCP_LOCAL_SETTINGS`: an absolute path to the file |
+| Default | `<base state folder>/local/settings.json`, where the base state folder is the environment variable `VAULT_MCP_STATE_DIR`, else `~/.claude/vault-mcp/`. The file is in the `local` subfolder on purpose: the bridge, the Claude Code health hook and the plugin read the `*.json` files directly in the state folder as vault discovery files. They also skip any JSON file there that has no `socket_path`, so a stray file is never read as a vault |
+| Absent file | No override: the synced settings apply as they are. At the default path, a file where the `local` folder would be (the error ENOTDIR) also counts as absent. Any other error at the default path, such as no permission (EACCES) or a loop of links (ELOOP), stops the plugin. A file that `VAULT_MCP_LOCAL_SETTINGS` names but that does not exist is an error (see below), because to name it is to say that it exists; with the variable set, every error stops the plugin |
+| Takes effect | When the plugin next loads. The file is read once, at load, so a change to it needs a plugin reload (or an Obsidian restart) |
+
+The plugin looks for the file through the environment only, never through the `host.stateDir` setting. `host.stateDir` is a setting, so it can come from the synced `data.json`; if it chose where the override is read, a value synced in from another device could move this machine's override out of sight, and this machine would quietly run on the synced settings. The override itself may set `host.stateDir`: that moves the socket, `bridge.mjs` and the discovery file, as the setting always does, and it does not move the override. To keep the override inside a state folder of your own, set `VAULT_MCP_STATE_DIR` (or `VAULT_MCP_LOCAL_SETTINGS`) in the environment the plugin runs in.
+
+### How it merges
+
+The file is one JSON object with the same keys as `data.json`. The plugin loads the synced `data.json` first, then merges the override on top, key by key:
+
+- An object merges into the synced object: `{"host": {"headless": "on"}}` sets `host.headless` and keeps the synced `host.socketPath`.
+- Any other value replaces the synced value. A list replaces the synced list; it is never merged item by item. An empty list in the override replaces a full synced list, so `{"allowlist": []}` means "no allowlist on this machine".
+- `null` is refused. To take the synced value, leave the key out.
+
+After the merge, each value goes through the same checks as a value in `data.json`.
+
+### When the file is bad
+
+A bad override stops the plugin. It does not serve (no socket, no bridge, no discovery file, no Claude Code registration, and other plugins that ask it for settings get no answer), it logs the reason in the console and it shows the reason in a notice that stays until you close it. It never falls back to the synced settings: an override often makes a machine stricter (headless on, create-only writes, no registration), so to drop it would loosen the machine without anyone choosing that. The file is bad when:
+
+- it is not a regular file (a folder, or a link to nothing), or it cannot be read (see the table above for ENOTDIR at the default path);
+- it is not valid JSON, or not one JSON object;
+- a key is not a setting of this plugin (a misspelt key would otherwise do nothing), or a key under a setting with fixed keys (such as `host` or `writeScope`) is not one of its keys; keys under `modules` and `cliPolicy.opaqueSnapshot` are free, as in `data.json`;
+- a value has the wrong type (a string where the setting is a boolean, an item that is not a string in a list of folders);
+- a value is one the setting does not take, so that its check would change it (an unknown mode, a relative path, a `writeScope.paths` pattern that does not compile, a record folder that is blank or only slashes, a number out of range), or a `recordFolders.archivePattern` that does not compile as a regular expression (in `data.json` such a pattern matches nothing; in the override it is refused);
+- a value is `null`, or a key is `__proto__`, `constructor`, `prototype`, empty, or holds a `.` (keys are read as dotted paths);
+- `VAULT_MCP_LOCAL_SETTINGS` names a relative path, or a file that does not exist.
+
+Fix or remove the file, then reload the plugin.
+
+### What the settings tab and a save do
+
+The settings tab names the file and the keys it sets, above the tabs. Each control whose key the override sets is locked (it cannot be changed) and says where its value comes from. A save from the settings tab never writes this machine's values into the synced `data.json`: for each overridden key it writes the value that the synced file holds now, or, when the synced file does not hold that key, the value it had when the plugin loaded; every other key is saved as usual. So the other devices keep their own values for the keys this machine overrides.
+
+Satellite plugins that copy settings from the host once, on their first load (such as `vaultmcp-conformance`), read the host's synced `data.json`, not the override.
+
+`obsidian_doctor` reports the override as `local_settings`: the path it is looked up at, whether it comes from `VAULT_MCP_LOCAL_SETTINGS` or the default, whether the file was found, and the names of the keys it sets. It never reports their values.
+
+### Which keys belong in the override
+
+Put a key in the override when its right value depends on the machine, not on the vault. For a headless replica, these usually belong there:
+
+| Key | Why on this machine only |
+|---|---|
+| `host.headless` | `on` on the server; the desktop needs `auto` or `off`, or its editor and CLI tools go away |
+| `host.stateDir`, `host.socketPath` | Folders on the server's own disk; the desktop's folders do not exist there, and the server's do not exist on the desktop |
+| `host.autoRegisterClaude` | Off on a server that has no Claude Code to register with, or that registers its clients another way |
+| `writeScope` | A server that agents reach from outside is often limited to creating notes (`create-only` with its own patterns), while the desktop keeps `all` |
+| `readOnly`, `allowlist` | A replica can be made read-only, or limited to some folders, without limiting the desktop |
+| `redactProfiles`, `redactConfig` | The secret scanner is for remote connections; a server that serves them turns it on, a desktop with local connections only may leave it off |
+| `enabled` | The socket can be off on one device and on on the other |
+
+Keys that describe the vault itself (guarded territories, record identification and record folders, protected properties, the command policy) usually stay in the synced `data.json`, so the devices share them. You can override them too; that is your choice.
+
+An example override for a made-up server: `{"host": {"headless": "on", "stateDir": "/srv/example/vault-mcp/state", "autoRegisterClaude": false}, "writeScope": {"mode": "create-only", "paths": ["Inbox/*.md"]}}`.
+
+An override can also make one machine less strict than the synced settings (for example `{"readOnly": false}` where the synced file says `true`). That is the operator's choice for that machine; the plugin does not stop it.
+
+### The filesystem server
+
+The filesystem server in `packages/server` (the HTTP front's fallback when Obsidian is closed) does not read `data.json` at all: it takes its settings from environment variables (for example `VAULT_MCP_WRITE_SCOPE`), which are already local to the machine. The override does not apply to it.
 
 ## Conformance
 

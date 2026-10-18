@@ -44,6 +44,7 @@ import {
 import { hasGuardedTerritory } from "./territory-policy.js";
 import { normalizeWriteScope } from "@vault-mcp/core";
 import { normalizeHostSettings, type HostSettings } from "./headless.js";
+import { overridesTouching } from "./local-settings.js";
 
 // ── tabbed settings UI: the pure, DOM-free half ─────────────────────────────
 //
@@ -275,8 +276,35 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     super.hide();
   }
 
+  /** Controls to lock once `display()` has built them all (#579): `setDisabled` acts on the components a Setting already has. */
+  private pendingLocks: Array<() => void> = [];
+
+  /**
+   * Lock `setting` when this machine's override sets any of `keys` (or a key
+   * under or above one of them): its controls are disabled and a note says
+   * where the value comes from (#579). Returns the setting, so it sits at the
+   * head of a builder chain. The lock is applied at the end of `display()`,
+   * after every control of the chain exists.
+   */
+  private lock(setting: Setting, ...keys: string[]): Setting {
+    const paths = this.plugin.overriddenKeys();
+    if (paths.length === 0) return setting;
+    const hit = [...new Set(keys.flatMap((k) => overridesTouching(paths, k)))];
+    if (hit.length === 0) return setting;
+    const file = this.plugin.localSettings?.location.path ?? "";
+    this.pendingLocks.push(() => {
+      setting.setDisabled(true);
+      setting.descEl.createDiv({
+        cls: "mod-warning",
+        text: `Set on this machine by ${file} (${hit.join(", ")}). Not editable here, and never saved into the synced data.json. Edit that file, then reload the plugin.`,
+      });
+    });
+    return setting;
+  }
+
   display() {
     this.recordFieldCommits = [];
+    this.pendingLocks = [];
     const { containerEl } = this;
     containerEl.empty();
     ensureSettingsStyles();
@@ -284,6 +312,20 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // Everything lives under a single plugin-scoped wrapper so the tab CSS
     // (settings-styles.ts) can never leak to the rest of the app.
     const wrapper = containerEl.createDiv({ cls: "vault-mcp-settings" });
+
+    // #579 — the machine-local override, named once above the tabs: which keys
+    // this machine takes from it (names only), and that they are locked below
+    // and never saved into the synced data.json.
+    const overridden = this.plugin.overriddenKeys();
+    if (overridden.length > 0) {
+      wrapper.createEl("p", {
+        cls: "setting-item-description mod-warning",
+        text:
+          `This machine overrides ${overridden.length} setting${overridden.length === 1 ? "" : "s"} from ` +
+          `${this.plugin.localSettings?.location.path ?? ""}: ${overridden.join(", ")}. Those controls are locked below, and a save ` +
+          "never writes this machine's values into the synced data.json. To change one, edit that file and reload the plugin.",
+      });
+    }
 
     // Data-driven tab set: the two fixed tabs plus one per registered module,
     // derived from the SAME module list the generic renderer iterates — a new
@@ -333,6 +375,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     }
 
     this.applyActiveTab(active, tabs, buttons, panes);
+
+    for (const apply of this.pendingLocks) apply();
+    this.pendingLocks = [];
   }
 
   /** Show only the `active` tab's pane and mark only its button active —
@@ -436,7 +481,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .addButton((b) => b.setButtonText("Copy command").setCta().onClick(() => copyToClipboard(cmd)))
       .addButton((b) => b.setButtonText("Open setup popup").onClick(() => new ConnectionSetupModal(this.app).open()));
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "enabled")
       .setName("Socket enabled")
       .setDesc(
         this.plugin.settings.enabled
@@ -461,7 +506,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
   private renderSecurityTab(containerEl: HTMLElement): void {
     containerEl.createEl("h3", { text: "Security" });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "readOnly")
       .setName("Read-only mode")
       .setDesc("Block all mutating tools (write, move, delete, patch, etc.). Read and search tools remain available.")
       .addToggle((t) =>
@@ -471,7 +516,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "rawCliProxy")
       .setName("Raw CLI proxy")
       .setDesc(
         "Register obsidian_cli, the free-text pass-through to the official Obsidian CLI. Off by default: the " +
@@ -487,7 +532,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "allowDangerousCli")
       .setName("Allow dangerous CLI commands")
       .setDesc(
         `Let the CLI surfaces run ${DANGEROUS_LIST_DESC}. These execute arbitrary code or control the app — leave off ` +
@@ -537,6 +582,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         const res = await expandOpaqueWildcards(input, cur.opaqueSnapshot, ids, choices, vaultTextReader(this.app));
         unreadable = res.unreadable;
         this.plugin.settings.cliPolicy = res.policy;
+        // The expansion derives allowOpaque and opaqueSnapshot from the wildcards; a key this
+        // machine's override sets keeps the override's value, at once, before any await (#582 review 1).
+        this.plugin.keepOverrides();
         await this.plugin.saveSettings();
         // Redraw the boxes this save rewrote (not the one the human is typing in: see the callers).
         if (allowOpaqueTextarea && document.activeElement !== allowOpaqueTextarea) allowOpaqueTextarea.value = res.policy.allowOpaque.join("\n");
@@ -547,7 +595,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       });
       return saveChain;
     };
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "cliPolicy.allowOpaque", "cliPolicy.opaqueWildcards", "cliPolicy.opaqueSnapshot")
       .setName("Add a command")
       .setDesc(
         "Search registered Obsidian commands by name or id (e.g. a QuickAdd choice) and pick one to add it to " +
@@ -581,7 +629,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "cliPolicy.allowOpaque", "cliPolicy.opaqueWildcards", "cliPolicy.opaqueSnapshot")
       .setName("Re-enabled opaque commands")
       .setDesc(
         `Opaque macro/code commands (${[...OPAQUE_ACCEPT_CLI_COMMANDS].join(", ")}; ${[...OPAQUE_ACCEPT_COMMAND_IDS].join(", ")} ` +
@@ -610,7 +658,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "cliPolicy.allowOpaque", "cliPolicy.opaqueWildcards", "cliPolicy.opaqueSnapshot")
       .setName("Wildcards")
       .setDesc(
         "The wildcards you saved (one per line, each ending in *). Each save of these four boxes lists again, " +
@@ -629,7 +677,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "cliPolicy.neverOpaque")
       .setName("Never re-enable")
       .setDesc(
         "QuickAdd choice command ids that a wildcard never opens, one per line (a trailing * makes a prefix). " +
@@ -679,7 +727,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     };
     void showReach();
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "cliPolicy.deny")
       .setName("Denied commands")
       .setDesc(
         "Additional obsidian_cli commands or obsidian_run_command ids to deny (one per line; a trailing * makes " +
@@ -694,7 +742,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "trustedReadOnlyPlugins")
       .setName("Trusted read-only plugins")
       .setDesc(
         "Plugin ids (one per line) whose published tools may declare themselves read-only and be believed. " +
@@ -711,7 +759,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "redactProfiles")
       .setName("Secret scanner: profiles")
       .setDesc(
         "Connection profiles (one per line, such as read+message) whose tool replies pass through the secret scanner, " +
@@ -729,7 +777,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "redactConfig")
       .setName("Secret scanner: config")
       .setDesc(
         'Optional JSON: {"extraKeyNames": [...], "keyNames": [...], "extraPatterns": [{"kind": "...", "regex": "..."}], "patterns": [...]}. ' +
@@ -745,7 +793,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "allowlist")
       .setName("Path allowlist")
       .setDesc("Restrict file operations to these vault-relative prefixes (one per line). Leave empty to allow the whole vault.")
       .addTextArea((ta) => {
@@ -763,7 +811,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // perimeter. Saving routes through plugin.saveSettings, which re-syncs the
     // core guard registry (normalizing: floor keys / unknown grades dropped
     // loudly) — so edits land live on the next guarded write.
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "protectedProperties")
       .setName("Protected frontmatter properties")
       .setDesc(
         "One per line, as `key: grade`. Grade `agent-forbidden`: no agent transport may introduce, change, or " +
@@ -799,7 +847,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // protected-property list above: a whole-note rule rather than a per-key
     // one. Default ON; the toggle exists as the escape hatch for the check's
     // deliberate over-inclusiveness (it refuses on any NAMED path).
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "enforceRecordImmutability")
       .setName("Enforce record immutability")
       .setDesc(
         "Refuse non-append writes to notes identified as records by the setting below — historical, byte-verified " +
@@ -818,7 +866,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // How a note declares itself a record — the operator's convention, not the
     // plugin's (#397). Same three knobs TaskNotes gives its task identifier.
     // Its own on/off switch (#482).
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "recordIdentification.enabled")
       .setName("Records by note marker")
       .setDesc(
         "A note is a record when it carries the marker below. Off: no note is a record by its marker, for the write " +
@@ -830,7 +878,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "recordIdentification.method")
       .setName("Record identifier")
       .setDesc("How a note marks itself as a record. By a frontmatter property with a value, or by a tag. Applies immediately.")
       .addDropdown((d) =>
@@ -844,7 +892,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           })
       );
     if (this.plugin.settings.recordIdentification.method === "tag") {
-      new Setting(containerEl)
+      this.lock(new Setting(containerEl), "recordIdentification.tag")
         .setName("Record tag")
         .setDesc("Without the #. Frontmatter tags and inline tags both count.")
         .addText((t) =>
@@ -856,7 +904,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           })
         );
     } else {
-      new Setting(containerEl)
+      this.lock(new Setting(containerEl), "recordIdentification.property", "recordIdentification.value")
         .setName("Record property")
         .setDesc("The frontmatter key, and the value it must hold. The default is record: true.")
         .addText((t) =>
@@ -881,7 +929,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // Used by the moves (a move never rewrites a link inside a record); the write
     // check above judges by the note marker only. The archive pattern also tells
     // the bracket rule which folders are archives.
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "recordFolders.enabled")
       .setName("Records by folder")
       .setDesc(
         "A note under one of the record folders below, or under a folder whose name matches the archive pattern, is a " +
@@ -897,7 +945,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       );
     // Both fields save when the field is left (the "change" event: blur or Enter),
     // never on each keystroke, so a half-typed path or pattern is never live.
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "recordFolders.folders")
       .setName("Record folders")
       .setDesc("One vault folder path per line. Every note under it is a record. Saved when you leave the field.")
       .addTextArea((t) => {
@@ -923,7 +971,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           : archivePatternRegExp(v)
             ? "In force."
             : "This pattern does not compile, so it matches nothing: no folder is an archive until you fix it.";
-    const patternSetting = new Setting(containerEl).setName("Archive folder pattern");
+    const patternSetting = this.lock(new Setting(containerEl), "recordFolders.archivePattern").setName("Archive folder pattern");
     const patternDesc = (v: string) =>
       patternSetting.setDesc(
         "A regular expression matched against each folder NAME on a note's path; a match makes that folder an " +
@@ -952,7 +1000,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // append. kernel/sync-guard.ts holds the rule; these five keys drive it.
     containerEl.createEl("h4", { text: "Sync guard" });
     const sg = this.plugin.settings.syncGuard;
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "syncGuard.enabled")
       .setName("Check Obsidian Sync before a write")
       .setDesc(
         "On: before an agent's write, vault-mcp waits while this Mac's Obsidian Sync is disconnected or has a server change waiting at the note being written; a rename, move or delete also waits, for up to its own wait below, until Sync says Fully synced. A rename, move, delete " +
@@ -965,7 +1013,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         })
       );
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "syncGuard.mode")
       .setName("When a rename, move, delete or create finds Sync behind")
       .setDesc("Refuse: wait, then refuse (nothing written). Wait: wait, then go on with a warning. Warn: do not wait, only warn.")
       .addDropdown((d) =>
@@ -977,7 +1025,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "syncGuard.waitSeconds")
       .setName("Wait for Sync to catch up (seconds)")
       .setDesc(`How long a write waits for Sync before the rule above applies. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`)
       .addText((t) => {
@@ -994,7 +1042,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "syncGuard.strictWaitSeconds")
       .setName("Wait for a rename, move or delete (seconds)")
       .setDesc(
         `How long a rename, move or delete waits, in place of the wait above, for a moment Sync is idle (it says Fully synced). On a busy day those moments are short and far apart, so it looks again every half second and goes on at the first one. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`
@@ -1013,7 +1061,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "syncGuard.onUnknown")
       .setName("When Sync cannot be read")
       .setDesc(
         "The Sync state comes from an internal Obsidian API that an update can change. Warn: the write goes on with a warning. " +
@@ -1030,7 +1078,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       );
 
     // ── obsidian_create_note (#531) ───────────────────────────────────────────
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "createNoteFlow")
       .setName("Construction module for obsidian_create_note")
       .setDesc(
         "Vault-relative path of the vault's flow.js (the module with applyFileclass). Set: agents get obsidian_create_note, " +
@@ -1048,7 +1096,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       });
 
     // ── write scope (core's write-scope.ts) ─────────────────────────────────────
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "writeScope.mode")
       .setName("What agents may write")
       .setDesc(
         "All: any write the read-only mode and the path allowlist allow. Create new notes only: agents may only create a new note at a path that matches one of the patterns below; " +
@@ -1063,7 +1111,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "writeScope.paths")
       .setName("Where new notes may be created")
       .setDesc(
         "One glob pattern per line, over the vault-relative note path: ** is any folders (or none), * and ? stay within one name, [0-9] is a character class. " +
@@ -1087,7 +1135,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       this.plugin.settings.host = { ...normalizeHostSettings(this.plugin.settings.host), ...patch };
       await this.plugin.saveSettings();
     };
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "host.headless")
       .setName("Headless")
       .setDesc(
         "For a host with no Obsidian window (vaultd-host). On (or Auto with VAULT_MCP_HEADLESS=1): tools that need the app (the editor, workspaces, bookmarks to open, the obsidian CLI) are not offered, " +
@@ -1100,7 +1148,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           .setValue(host.headless)
           .onChange(async (v) => saveHost({ headless: v === "on" || v === "off" ? v : "auto" }))
       );
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "host.stateDir")
       .setName("State folder")
       .setDesc(
         "An absolute path: where the socket, bridge.mjs and the discovery file go. Empty: ~/.claude/vault-mcp/ (or the VAULT_MCP_STATE_DIR variable). Set: nothing is written under ~/.claude/governor/, and an HTTP front must be started with VAULT_MCP_STATE_DIR set to the same folder. " +
@@ -1110,14 +1158,14 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         t.setValue(host.stateDir);
         t.inputEl.addEventListener("change", async () => saveHost({ stateDir: t.getValue().trim() }));
       });
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "host.socketPath")
       .setName("Socket path")
       .setDesc("An absolute path: the socket to listen on. Empty: <state folder>/<vault>.sock. Takes effect when the plugin next loads. Saved when you leave the field.")
       .addText((t) => {
         t.setValue(host.socketPath);
         t.inputEl.addEventListener("change", async () => saveHost({ socketPath: t.getValue().trim() }));
       });
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "host.autoRegisterClaude")
       .setName("Register with Claude Code at load")
       .setDesc("On: at load the plugin runs `claude mcp` to add itself to Claude Code when the claude CLI is found. Off (or headless declared, or VAULT_MCP_NO_AUTOREGISTER=1): it runs nothing. The Connect command still works.")
       .addToggle((t) => t.setValue(host.autoRegisterClaude).onChange(async (v) => saveHost({ autoRegisterClaude: v })));
@@ -1127,7 +1175,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // DEFAULT OFF, and the copy says plainly what turning it on does. Capturing
     // note bodies writes vault content outside the vault; a user should be able
     // to decide that from the toggle's own description without reading a doc.
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "captureObservations")
       .setName("Record what agents were shown")
       .setDesc(
         "Off by default. When on, Vault MCP keeps the exact text it returns from a note read, so you can later see what an agent was actually shown rather than what it says it saw. " +
@@ -1151,7 +1199,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         })
       );
 
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "captureMaxBytes")
       .setName("Recording size limit (MB)")
       .setDesc(
         "How much recorded text to keep before Vault MCP stops adding more. It stops and says so rather than filling the disk. Deleting old recordings is not automatic yet."
@@ -1178,7 +1226,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // plugin when it is installed (#397) — its own settings tab shows this list
     // read-only and points here, so there is one
     // list with one editor rather than two that can disagree.
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "guardedTerritories")
       .setName("Areas never to copy out of the vault")
       .setDesc(
         "One folder per line. An entry covers its folder and everything under it, and every folder whose name begins with the entry and then breaks (80-89 covers 80-89 Sensitive); end an entry with / to mean exactly that folder. Nothing here is ever recorded by the setting above, walked by the conformance check, or reviewed by Governor — for archival or legally sensitive areas, not live notes. " +
@@ -1233,7 +1281,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // queue, journal and the accept guard all bind identically), so hiding it
     // is a UI-tidiness choice, not a security boundary.
     containerEl.createEl("h4", { text: "Developer" });
-    new Setting(containerEl)
+    this.lock(new Setting(containerEl), "devToolRunner")
       .setName("In-app tool runner")
       .setDesc(
         'Enable the "Run tool…" command: pick any MCP tool, fill its arguments in a form, and see the result in a ' +
@@ -1291,7 +1339,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     section.createEl("h4", { text: `${mod.id} (${hosted.posture})` });
     if (hosted.summary) section.createEl("p", { cls: "setting-item-description", text: hosted.summary });
 
-    new Setting(section)
+    this.lock(new Setting(section), `modules.${mod.id}.enabled`)
       .setName("Enabled")
       // `scheme`'s Obsidian surface (the Inbox pane; the Drift pane left with the conformance rail for the vaultmcp-conformance plugin) mounts/unmounts LIVE from this
       // toggle — no reload. A tool-only module's surface mounts per connection, so its toggle
@@ -1382,7 +1430,8 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     field: HostedField,
     renderProblems: (problems: string[]) => void
   ): void {
-    const setting = new Setting(section).setName(field.label);
+    // A module with a config binding (scheme) stores its fields elsewhere (`schemes`), so that is the key a lock checks.
+    const setting = this.lock(new Setting(section), mod.configBinding ? "schemes" : `modules.${mod.id}.config.${field.key}`).setName(field.label);
     if (field.help) setting.setDesc(field.help);
 
     const commit = async (patch: Record<string, unknown>) => {

@@ -35,6 +35,19 @@ export function stateDir(): string {
 }
 
 /**
+ * The state dir as the ENVIRONMENT names it, ignoring every setting:
+ * VAULT_MCP_STATE_DIR, else `~/.claude/vault-mcp/`. The machine-local settings
+ * override (local-settings.ts) is looked up here, never through `stateDir()`,
+ * because `host.stateDir` is a setting that comes from the synced `data.json`
+ * (or from the override itself): letting it choose where the override is read
+ * would let a synced value move this machine's override out of sight.
+ */
+export function baseStateDir(): string {
+  const env = typeof process !== "undefined" ? process.env?.VAULT_MCP_STATE_DIR?.trim() : undefined;
+  return env ? path.resolve(env) : path.join(os.homedir(), ".claude", "vault-mcp");
+}
+
+/**
  * Overrides for a host that must not write under `~/.claude/` (a headless
  * vaultd-host, or a second instance beside a live Obsidian): the `host.stateDir`
  * and `host.socketPath` settings, set by main.ts at load before anything is
