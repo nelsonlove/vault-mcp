@@ -393,7 +393,13 @@ OPAQUE_ACCEPT_COMMAND_IDS  = ["quickadd:*", "js-engine:*"]   // obsidian_run_com
 
 These are now **denied by default — fail closed** — by the settings-driven command policy
 (`mcp/cli-policy.ts`), on both surfaces (`obsidian_cli` commands and `obsidian_run_command`
-ids), with a typed `Error [cli_denied]` before anything executes. Re-enabling goes through the human-only settings (`Security › "Re-enabled opaque commands"`): an exact entry re-enables one command or command id, and a trailing-`*` entry re-enables a family of `obsidian_run_command` ids only. A trailing-`*` entry skips CLI commands and the five accept verbs' QuickAdd choices (Nelson, 2026-10-14); a settings deny list wins, including over a re-enable. Ids on the `Security › "Never re-enable"` list are also skipped by a trailing-`*` entry, and the settings show at save how many commands the list opens today (his pick A on 01.41). The policy **composes** with the
+ids), with a typed `Error [cli_denied]` before anything executes. Re-enabling goes through the human-only settings (`Security › "Re-enabled opaque commands"`), and the gate reads exact entries only: one entry re-enables one CLI command or one command id.
+
+A wildcard (a trailing `*`, such as `quickadd:choice:*`) is expanded when the human saves the setting (Nelson's pick A on 01.41, verified 2026-10-17, with his change: "it should enumerate the choices opened rather than just list the wildcard"). The save stores the exact `quickadd:choice:<id>` ids the wildcard opens at that moment, and the setting shows that list. A wildcard opens a QuickAdd Macro choice that resolves in QuickAdd's settings, is not one of the five accept verbs (Verify, Reopen, Request revision, Answer, Reject), and runs no such verb. It skips a choice on the deny list or on `Security › "Never re-enable"`, and it opens no CLI command and no `js-engine:` id. The wildcard text is kept in `cliPolicy.opaqueWildcards`, so the next save expands it again; nothing else expands it.
+
+For each id a wildcard added, the save also records a sha256 of each script the choice runs (`cliPolicy.opaqueSnapshot`). At call time that id opens only while the choice resolves, still passes the wildcard's checks, runs the same scripts, and each script hashes the same as at save. A choice added after the save, or one whose script changed, stays closed until the human saves again, and the count in the settings then shows it. A trailing-`*` entry found in the stored list at call time (a hand-edited `data.json`) opens nothing. An id the human typed by hand has no snapshot and opens as an exact entry. A settings deny list wins over a re-enable.
+
+The policy **composes** with the
 older gates rather than replacing them: a re-enabled `eval`/`command` still needs the
 **"Allow dangerous CLI commands"** toggle, and the accept guard on inspectable writes is
 untouched. The human-only property is itself enforced: the MCP write primitives refuse
