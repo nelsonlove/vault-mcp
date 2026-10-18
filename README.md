@@ -129,10 +129,12 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_create_note` | `idempotency_key` |  |
 | `obsidian_create_note_from_template` | `idempotency_key` |  |
 | `obsidian_delete_note` | `if_rev` and `idempotency_key` |  |
+| `obsidian_edit_file` | `if_rev` |  |
 | `obsidian_fileclass_insert_fields` | `if_rev` |  |
 | `obsidian_import_apple_notes` | `idempotency_key` |  |
 | `obsidian_jump_to` | nothing (not a vault write) |  |
 | `obsidian_manage_frontmatter` | op set, delete: `if_rev`; any other op, or none: nothing |  |
+| `obsidian_move_file` | `idempotency_key` |  |
 | `obsidian_move_note` | `idempotency_key` |  |
 | `obsidian_move_notes` | `idempotency_key` |  |
 | `obsidian_open_bookmark` | nothing (not a vault write) |  |
@@ -157,6 +159,7 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_survey_slot` | `if_rev` |  |
 | `obsidian_toggle_view_mode` | nothing (not a vault write) |  |
 | `obsidian_trash` | `if_rev` and `idempotency_key` |  |
+| `obsidian_write_file` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_note` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_notes` | per item: `if_rev` to overwrite an existing note; nothing to create one |  |
 | `vaultmcp_send_message` | nothing (not a vault write) |  |

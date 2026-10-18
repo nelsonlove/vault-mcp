@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { inRecordFolder } from "./records.js";
 import { TFile, stringifyYaml, parseYaml, type App } from "obsidian";
-import { registerFsTools, ok,
+import { registerFsTools, registerFileTools, ok,
   CHARACTER_LIMIT,
   noteLengthFrom,
   WholeReads,
@@ -537,6 +537,10 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
         }
       : {}),
   });
+  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files through the same
+  // backend and the same guarded registerTool, so every kernel rule above applies to them. No
+  // profile option: the patched registerTool filters by profile here, as for every tool.
+  registerFileTools(server, backend);
 
   // ── remaining tools — live-only, complementary, nav, integrations ────────────
   registerCoreTools(server, app, ctx);

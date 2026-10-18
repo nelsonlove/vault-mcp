@@ -85,6 +85,11 @@ export interface MoveWithLinksOptions {
    * moves would otherwise read the vault 50 times inside one 30 s queue slot.
    */
   texts?: TextCache;
+  /**
+   * false: the moved file's own text is never read for links or rewritten (a `.base` or `.canvas`
+   * file, #575: YAML or JSON, which the Markdown link parser must not edit). Default true.
+   */
+  ownLinks?: boolean;
   /** Which notes are records, never rewritten. Every live road passes the operator's settings (#397, #482). Default: only the shipped note marker `record: true`, and NO folder (the plugin ships no folder names, #482). */
   isRecord?: IsRecord;
 }
@@ -193,7 +198,7 @@ export async function moveWithLinks(app: App, file: TFile, to: string, opts: Mov
   let ownText = "";
   let movedIsRecord = false;
   if (update) {
-    ownText = await texts.get(file);
+    ownText = opts.ownLinks === false ? "" : await texts.get(file);
     // A record by its key travels with it; by folder, it stays a record only if it lands in a record folder too.
     // An un-archived note is living at its new path, so its links are healed as any other.
     movedIsRecord = isRecord(oldPath, ownText) && isRecord(to, ownText);
