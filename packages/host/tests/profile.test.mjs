@@ -13,7 +13,7 @@ const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 
 const FOLDERS = new Set(["00 Inbox area", "00 Inbox area/00.01 Inbox", "Notes"]);
-function build(opts = {}, basesResult = { bases: [] }) {
+function build(opts = {}, basesResult = { bases: [] }, redact = {}) {
   const app = {
     vault: {
       adapter: { basePath: "/nonexistent-vault" },
@@ -34,7 +34,7 @@ function build(opts = {}, basesResult = { bases: [] }) {
   };
   const ctx = {
     pluginVersion: "0.0.0", socketPath: "/tmp/none.sock", vaultName: "test", enabledPlugins: () => [],
-    getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [] }),
+    getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [], ...redact }),
     getExternalTools: () => [
       { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true }, handler: async () => basesResult } },
       { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_create", spec: { description: "make a base", inputSchema: { type: "object", properties: { path: { type: "string" } } }, annotations: { readOnlyHint: false } }, handler: async () => ({}) },
@@ -154,41 +154,65 @@ describe("profile read+inbox", () => {
   });
 });
 
-describe("profile read+message: the secret scanner", () => {
-  // A made-up key; never a real one.
+describe("the secret scanner: off by default, on by setting", () => {
   // Built at run time from parts, so no key-shaped literal is committed; made up.
   const FAKE = ["gh", "p_", "FAKE".repeat(9)].join("");
-  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`], frontmatter: { password: "fake-fm-pass", api_key: 1234567, title: "T", secret: true } };
-  const call = async (profile) => {
-    const client = await connect(build(profile ? { profile } : {}, result));
-    const r = JSON.stringify(await client.callTool({ name: "vaultmcp_bases_list", arguments: {} }));
+  const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`, `licence code: fake-lic`], frontmatter: { password: "fake-fm-pass", api_key: 1234567, title: "T", secret: true } };
+  const ON = { redactProfiles: ["read+message"] };
+  const callRaw = async (profile, redact = {}) => {
+    const client = await connect(build(profile ? { profile } : {}, result, redact));
+    const r = await client.callTool({ name: "vaultmcp_bases_list", arguments: {} });
     await client.close();
     return r;
   };
+  const call = async (profile, redact) => JSON.stringify(await callRaw(profile, redact));
 
-  test("over MCP: a reply under read+message is blanked", async () => {
-    const r = await call("read+message");
+  test("off by default: a read+message reply is the same, byte for byte, as a full one", async () => {
+    const m = await callRaw("read+message");
+    const f = await callRaw(undefined);
+    assert.deepEqual(m, f);
+    assert.ok(JSON.stringify(m).includes(FAKE));
+  });
+
+  test("on by setting: a reply under read+message is blanked", async () => {
+    const r = await call("read+message", ON);
     assert.doesNotMatch(r, /isError":true/, r);
     assert.ok(!r.includes(FAKE), r);
     assert.ok(!r.includes("fake-pass"), r);
     assert.match(r, /redacted:github-token/);
     assert.match(r, /Notes\/b\.base/);
     assert.ok(!r.includes("fake-fm-pass") && !r.includes("1234567"), r);
+    assert.ok(r.includes("fake-lic"), "licence code is not a shipped key name");
   });
 
-  test("over MCP: structured content is blanked key-aware, and the text copy still parses", async () => {
-    const client = await connect(build({ profile: "read+message" }, result));
-    const res = await client.callTool({ name: "vaultmcp_bases_list", arguments: {} });
-    await client.close();
+  test("on by setting: structured content is blanked key-aware, and the text copy still parses", async () => {
+    const res = await callRaw("read+message", ON);
     const fm = res.structuredContent?.frontmatter;
     assert.deepEqual(fm, { password: "[redacted:secret]", api_key: "[redacted:secret]", title: "T", secret: true }, JSON.stringify(res));
     for (const c of res.content) if (c.type === "text" && /^\s*[{[]/.test(c.text)) assert.doesNotThrow(() => JSON.parse(c.text), c.text);
   });
 
-  test("over MCP: under full and read the same reply is sent as it is", async () => {
-    for (const p of [undefined, "read"]) {
-      const r = await call(p);
-      assert.ok(r.includes(FAKE), `${p}: ${r}`);
+  test("on by setting: profiles not listed are sent as they are", async () => {
+    for (const p of [undefined, "read"]) assert.ok((await call(p, ON)).includes(FAKE), String(p));
+  });
+
+  test("a config extends the key names", async () => {
+    const r = await call("read+message", { ...ON, redactConfig: JSON.stringify({ extraKeyNames: ["licence code"] }) });
+    assert.ok(!r.includes("fake-lic") && !r.includes("fake-pass"), r);
+  });
+
+  test("bad settings fail closed: no tools for a remote connection, and a local one not listed is unchanged", () => {
+    for (const bad of [
+      { ...ON, redactConfig: "{not json" },
+      { ...ON, redactConfig: JSON.stringify({ extraPatterns: [{ kind: "x", regex: "(" }] }) },
+      { ...ON, redactConfig: JSON.stringify({ unknown: 1 }) },
+      { redactProfiles: ["read+mesage"] },
+    ]) {
+      assert.deepEqual(names(build({ profile: "read+message" }, result, bad)), [], JSON.stringify(bad));
+      assert.deepEqual(names(build({ profile: "read" }, result, bad)), [], JSON.stringify(bad));
+      assert.ok(names(build({}, result, bad)).includes("obsidian_write_note"), JSON.stringify(bad));
     }
+    // A bad config with no profile listed leaves the scanner off and refuses nothing.
+    assert.ok(names(build({ profile: "read+message" }, result, { redactConfig: "{not json" })).length > 0);
   });
 });

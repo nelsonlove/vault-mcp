@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
-import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, redactingHandler, SNIPPET_TOOLS } from "@vault-mcp/core";
+import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
 import { sealUnguardedRegistration } from "./seal-registration.js";
@@ -137,24 +137,47 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // reaches neither the queue nor the journal. `full` (no profile in the preamble) is unchanged.
   const profile = resolveProfile(opts.profile);
   const sdkRegister: any = server.registerTool.bind(server);
-  // A profile that asks for it (read+message) also has every reply, refusals included, passed
-  // through the secret scanner (core's secret-scan.ts) here, so no registration path skips it.
+  // THE SECRET SCANNER (core's redaction.ts), OFF unless the settings name this connection's
+  // profile. When they do, every reply, refusals included, passes through it here, so no
+  // registration path skips it. FAIL CLOSED: settings the scanner refuses (an unknown profile
+  // name, a bad config) while a profile is listed give every remote connection, and a local one
+  // when `full` is listed, no tools at all, and the reason is logged. They never fall back to sending replies unscanned.
+  let scanner: SecretScanner | undefined;
+  let redactRefused = false;
+  {
+    const st = ctx.getSettings();
+    const listed = st.redactProfiles ?? [];
+    const rawConfig = st.redactConfig?.trim() ?? "";
+    if (listed.length > 0 || rawConfig) {
+      try {
+        const config = rawConfig ? JSON.parse(rawConfig) : undefined;
+        scanner = scannerFor(buildRedaction(parseProfileList(listed.join("\n")), config), profile.name);
+      } catch (e) {
+        // A bad config with no profile listed leaves the scanner off and refuses nothing.
+        const covers = listed.length > 0 && (profile.tools !== null || listed.includes(profile.name));
+        console.error(`[vault-mcp] secret scanner settings refused (${(e as Error).message}); ${covers ? "this connection gets no tools" : "this local connection is not covered"}`);
+        redactRefused = covers;
+      }
+    }
+  }
   const origRegister: any =
-    profile.tools === null && !profile.redactSecrets
+    profile.tools === null && !scanner && !redactRefused
       ? sdkRegister
       : (name: string, def: any, handler: any) => {
-          if (!profileAllows(profile, name)) return undefined;
+          if (redactRefused || !profileAllows(profile, name)) return undefined;
           const mutating = def?.annotations?.readOnlyHint === false;
           const gated = (args: unknown, extra: unknown) => {
             const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
             return refused ? codedError(refused.code, refused.message) : handler(args, extra);
           };
-          return sdkRegister(name, def, profile.redactSecrets ? redactingHandler(gated, { snippets: SNIPPET_TOOLS.has(name) }) : gated);
+          return sdkRegister(name, def, scanner ? scanner.wrap(gated, { snippets: SNIPPET_TOOLS.has(name) }) : gated);
         };
   // Code Mode under a profile: the meta-tools are outside every profile, so they are not
   // registered, and a captured registry would hide the filter behind obsidian_call_tool. The safe
   // pick: a profiled connection gets the plain, filtered surface, whatever its preamble asked.
-  if (profile.tools !== null) opts = { ...opts, codeMode: false };
+  // A scanned or refused connection gets the plain surface too: the meta-tools would hide each
+  // tool's reply inside obsidian_call_tool's.
+  if (profile.tools !== null || scanner || redactRefused) opts = { ...opts, codeMode: false };
   // Resolved per call, not once: the MCP client's identity only exists after
   // the initialize handshake, which happens well after the server is built.
   // `server` is the transport's own assertion — which vault, which install,
