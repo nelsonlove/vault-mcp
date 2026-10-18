@@ -582,6 +582,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         const res = await expandOpaqueWildcards(input, cur.opaqueSnapshot, ids, choices, vaultTextReader(this.app));
         unreadable = res.unreadable;
         this.plugin.settings.cliPolicy = res.policy;
+        // The expansion derives allowOpaque and opaqueSnapshot from the wildcards; a key this
+        // machine's override sets keeps the override's value, at once, before any await (#582 review 1).
+        this.plugin.keepOverrides();
         await this.plugin.saveSettings();
         // Redraw the boxes this save rewrote (not the one the human is typing in: see the callers).
         if (allowOpaqueTextarea && document.activeElement !== allowOpaqueTextarea) allowOpaqueTextarea.value = res.policy.allowOpaque.join("\n");

@@ -8,11 +8,15 @@ import os from "node:os";
 import path from "node:path";
 import { installObsidianStub } from "./obsidian-stub.mjs";
 import { fakeServer } from "./fake-server.mjs";
+import { spawnSync } from "node:child_process";
 
 installObsidianStub();
 const L = await import("../src/local-settings.ts");
 const P = await import("../src/paths.ts");
 const { registerCoreTools } = await import("../src/mcp/tools-core.ts");
+const D = await import("../src/discovery.ts");
+const { loadDiscoveryDir } = await import("../bridge/bridge.ts");
+const VaultMcpPlugin = (await import("../src/main.ts")).default;
 
 /** A settings shape like the plugin's defaults: fixed objects, open maps, lists. */
 const SHAPE = {
@@ -47,8 +51,8 @@ afterEach(() => {
 });
 
 describe("where the override is looked up", () => {
-  test("the variable when set, else settings.local.json in the base state dir", () => {
-    assert.deepEqual(L.localSettingsLocation("/opt/example/state", {}), { path: "/opt/example/state/settings.local.json", source: "default" });
+  test("the variable when set, else local/settings.json under the base state dir (never beside the discovery files)", () => {
+    assert.deepEqual(L.localSettingsLocation("/opt/example/state", {}), { path: "/opt/example/state/local/settings.json", source: "default" });
     assert.deepEqual(L.localSettingsLocation("/opt/example/state", { VAULT_MCP_LOCAL_SETTINGS: " /etc/example/vm.json " }), { path: "/etc/example/vm.json", source: "env" });
     assert.equal(L.localSettingsLocation("/opt/example/state", { VAULT_MCP_LOCAL_SETTINGS: "  " }).source, "default", "a blank variable is unset");
   });
@@ -236,7 +240,7 @@ describe("saving", () => {
 
   test("a key neither the file nor the load had is left out of the file", () => {
     const out = L.forSyncedFile({ host: { headless: "on" }, readOnly: false }, ["host.headless"], null, null);
-    assert.deepEqual(out, { host: {}, readOnly: false });
+    assert.deepEqual(out, { readOnly: false }, "and the object it leaves empty goes too");
   });
 
   test("the override is set again in memory after a save", () => {
@@ -261,10 +265,13 @@ describe("saving", () => {
     assert.deepEqual(onDisk, { readOnly: false, writeScope: { mode: "all", paths: [] }, allowlist: ["Projects"] });
   });
 
-  test("main.ts saves through forSyncedFile and then sets the override again", () => {
+  test("main.ts saves through forSyncedFile, with the override set back before and after", () => {
     const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
     const save = main.slice(main.indexOf("async saveSettings()"), main.indexOf("private discoveryCount()"));
-    assert.ok(save.indexOf("forSyncedFile(") > 0 && save.indexOf("forSyncedFile(") < save.indexOf("reapplyOverride("));
+    const first = save.indexOf("this.keepOverrides();");
+    assert.ok(first > 0 && first < save.indexOf("await this.loadData()"), "the override is set back before the first await");
+    assert.ok(save.indexOf("forSyncedFile(") > 0 && save.indexOf("finally {") > save.indexOf("forSyncedFile("));
+    assert.ok(save.slice(save.indexOf("finally {")).includes("this.keepOverrides();"), "and again in finally");
     assert.equal((save.match(/this\.saveData\(this\.settings\)/g) ?? []).length, 1, "the plain save is only the no-override branch");
     assert.ok(save.indexOf("saveData(this.settings)") > save.indexOf("} else {"));
   });
@@ -310,5 +317,214 @@ describe("the settings tab and obsidian_doctor", () => {
     });
     const text = JSON.stringify(res);
     assert.ok(!text.includes("/srv/example/state") && !text.includes("Inbox/*.md"), "no value of the override is reported");
+  });
+});
+
+describe("a stray JSON file in the state dir is never read as a vault (#582 review 1)", () => {
+  const stateWithStray = () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, "notes.json"), JSON.stringify({ readOnly: true }));
+    fs.writeFileSync(path.join(dir, "list.json"), "[1, 2]");
+    return dir;
+  };
+  const entry = { vault_name: "Example", socket_path: "/tmp/vault-mcp-example-none.sock" };
+
+  test("the plugin's registration check counts only discovery entries", () => {
+    const dir = stateWithStray();
+    assert.equal(D.countDiscoveries(dir), 0);
+    fs.writeFileSync(path.join(dir, "example.json"), JSON.stringify(entry));
+    assert.equal(D.countDiscoveries(dir), 1, "one vault stays one vault: auto-registration is not skipped as ambiguous");
+    const main = fs.readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+    assert.match(main.slice(main.indexOf("private discoveryCount()")), /^private discoveryCount\(\): number \{[\s\S]*?return countDiscoveries\(stateDir\(\)\);/);
+  });
+
+  test("the bridge skips it", () => {
+    const dir = stateWithStray();
+    assert.deepEqual(loadDiscoveryDir(dir), []);
+    fs.writeFileSync(path.join(dir, "example.json"), JSON.stringify(entry));
+    assert.deepEqual(loadDiscoveryDir(dir).map((d) => d.vault_name), ["Example"]);
+  });
+
+  test("the SessionStart health hook skips it and still reports", () => {
+    const home = tmp();
+    const dir = path.join(home, ".claude", "vault-mcp");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "notes.json"), JSON.stringify({ readOnly: true }));
+    const hook = fileURLToPathSafe(new URL("../cc-plugin/hooks/scripts/vault-mcp-health.mjs", import.meta.url));
+    const run = () => spawnSync(process.execPath, [hook, "--verbose"], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+    let r = run();
+    assert.match(r.stdout, /no vault discovery found/, "a stray file alone is no vault");
+    fs.writeFileSync(path.join(dir, "example.json"), JSON.stringify(entry));
+    r = run();
+    assert.match(r.stdout, /DOWN — discovery exists \(Example\)/, "the down warning is not lost to the stray file");
+    assert.doesNotMatch(r.stderr, /DEP0187/);
+  });
+
+  test("the default override file is not in the discovery folder", () => {
+    const loc = L.localSettingsLocation("/opt/example/state", {});
+    assert.notEqual(path.dirname(loc.path), "/opt/example/state");
+  });
+});
+
+function fileURLToPathSafe(u) {
+  return decodeURIComponent(u.pathname);
+}
+
+describe("more file checks (#582 review 1)", () => {
+  test("a key with a dot, or an empty key, is refused", () => {
+    for (const text of ['{"modules": {"a.b": {"enabled": false}}}', '{"modules": {"": 1}}']) {
+      const r = L.readLocalSettings(at(write(tmp(), text)), SHAPE);
+      assert.equal(r.state, "error", text);
+      assert.match(r.error, /not an allowed key/);
+    }
+  });
+
+  test("at the default path ENOTDIR is absent; through the variable it fails closed", () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, "local"), "a file where the folder would be");
+    const p = path.join(dir, "local", "settings.json");
+    assert.equal(L.readLocalSettings(at(p), SHAPE).state, "absent");
+    assert.equal(L.readLocalSettings(at(p, "env"), SHAPE).state, "error");
+  });
+
+  test("ELOOP at the default path fails closed", () => {
+    const dir = tmp();
+    const p = path.join(dir, "settings.json");
+    fs.symlinkSync(p, p);
+    const r = L.readLocalSettings(at(p), SHAPE);
+    assert.equal(r.state, "error");
+  });
+
+  test("an empty object the synced file never had is not written", () => {
+    const out = L.forSyncedFile({ modules: { scheme: { enabled: false } }, readOnly: true }, ["modules.scheme.enabled"], { modules: {} }, { modules: {} });
+    assert.deepEqual(out, { modules: {}, readOnly: true });
+    const out2 = L.forSyncedFile({ modules: { a: { b: { c: 1 } } } }, ["modules.a.b.c"], null, null);
+    assert.deepEqual(out2, {}, "every level the synced side lacks is left out");
+  });
+
+  test("an archive pattern that does not compile is a use-time problem", () => {
+    const ok = (p) => { try { new RegExp(p); return true; } catch { return false; } };
+    assert.deepEqual(L.useTimeProblems({ recordFolders: { archivePattern: "(" } }, ok), ["recordFolders.archivePattern does not compile as a regular expression"]);
+    assert.deepEqual(L.useTimeProblems({ recordFolders: { archivePattern: "" } }, ok), []);
+  });
+});
+
+describe("the plugin class, with a fake loadData and saveData (#582 review 1)", () => {
+  const LOC = { path: "/opt/example/state/local/settings.json", source: "default" };
+  /** A plugin over an in-memory data.json; `fail` makes the next read or write throw. */
+  function harness(data, override) {
+    const p = new VaultMcpPlugin();
+    const state = { disk: data === undefined ? null : structuredClone(data), failRead: false, failWrite: false, writes: 0 };
+    p.loadData = async () => {
+      if (state.failRead) throw new Error("read failed");
+      return state.disk === null ? null : structuredClone(state.disk);
+    };
+    p.saveData = async (d) => {
+      if (state.failWrite) throw new Error("write failed");
+      state.writes++;
+      state.disk = structuredClone(d);
+    };
+    p.localSettings = override ? { state: "loaded", location: LOC, override, keys: L.overridePaths(override) } : { state: "absent", location: LOC };
+    return { p, state };
+  }
+  const synced = { readOnly: false, guardedTerritories: ["Private"], recordFolders: { enabled: true, folders: [], archivePattern: "" }, writeScope: { mode: "all", paths: [] }, host: { headless: "off", stateDir: "", socketPath: "", autoRegisterClaude: true } };
+
+  test("no override: load and save behave as before (no extra read)", async () => {
+    const { p, state } = harness(synced);
+    let reads = 0;
+    const read = p.loadData;
+    p.loadData = async () => { reads++; return read(); };
+    await p.loadSettings();
+    await p.saveSettings();
+    assert.equal(reads, 1, "only loadSettings reads");
+    assert.equal(state.disk.writeScope.mode, "all");
+  });
+
+  test("load merges the override; a save keeps it out of data.json", async () => {
+    const override = { writeScope: { mode: "create-only", paths: ["Inbox/*.md"] }, host: { headless: "on" }, modules: { scheme: { enabled: false } } };
+    const { p, state } = harness(synced, override);
+    await p.loadSettings();
+    assert.equal(p.settings.writeScope.mode, "create-only");
+    assert.equal(p.settings.host.headless, "on");
+    assert.equal(p.settings.host.socketPath, "", "the synced half of host stays");
+    p.settings.allowlist = ["Projects"];
+    await p.saveSettings();
+    assert.deepEqual(state.disk.writeScope, { mode: "all", paths: [] });
+    assert.equal(state.disk.host.headless, "off");
+    assert.deepEqual(state.disk.allowlist, ["Projects"]);
+    assert.equal(state.disk.modules.scheme, undefined, "no empty object written for an override-only open-map key");
+    assert.equal(p.settings.writeScope.mode, "create-only", "memory keeps the override");
+  });
+
+  test("an edit of an overridden key never takes effect, even across the save's awaits", async () => {
+    const { p } = harness(synced, { readOnly: true });
+    await p.loadSettings();
+    p.settings.readOnly = false; // what a derived write could do
+    const saving = p.saveSettings();
+    assert.equal(p.settings.readOnly, true, "set back before the first await");
+    await saving;
+    assert.equal(p.settings.readOnly, true);
+  });
+
+  test("a throwing saveData or loadData leaves the override in memory and data.json untouched", async () => {
+    const { p, state } = harness(synced, { readOnly: true });
+    await p.loadSettings();
+    const before = structuredClone(state.disk);
+    for (const flag of ["failWrite", "failRead"]) {
+      state[flag] = true;
+      p.settings.readOnly = false;
+      await assert.rejects(p.saveSettings());
+      assert.equal(p.settings.readOnly, true, `${flag}: memory keeps the override`);
+      assert.deepEqual(state.disk, before, `${flag}: nothing written`);
+      state[flag] = false;
+    }
+  });
+
+  test("the wildcard expansion's derived write cannot change an overridden allowOpaque", () => {
+    const ui = fs.readFileSync(new URL("../src/connection-ui.ts", import.meta.url), "utf8");
+    const save = ui.slice(ui.indexOf("const saveOpaque ="), ui.indexOf("new Setting(containerEl)", ui.indexOf("const saveOpaque =")));
+    const assign = save.indexOf("this.plugin.settings.cliPolicy = res.policy;");
+    assert.ok(assign > 0 && save.indexOf("this.plugin.keepOverrides();") > assign && save.indexOf("this.plugin.keepOverrides();") < save.indexOf("await this.plugin.saveSettings()"));
+  });
+
+  test("adoption: an adopted install takes the override too, and the save writes the adopted values, not the override's", async () => {
+    const { p, state } = harness(undefined, { readOnly: true });
+    p.adoptedSettings = { readOnly: false, allowlist: ["Adopted"], guardedTerritories: ["Private"] };
+    await p.loadSettings();
+    assert.equal(p.settings.readOnly, true);
+    assert.deepEqual(p.settings.allowlist, ["Adopted"]);
+    await p.saveSettings();
+    assert.equal(state.disk.readOnly, false, "the adopted (synced-side) value is what the file gets");
+    assert.deepEqual(state.disk.allowlist, ["Adopted"]);
+  });
+
+  test("a value a normalizer would change is refused, before any save", async () => {
+    for (const override of [{ host: { headless: "onn" } }, { recordFolders: { folders: ["/"] } }, { recordFolders: { folders: ["  "] } }, { recordFolders: { archivePattern: "(" } }]) {
+      const { p, state } = harness({ ...synced, guardedTerritories: undefined }, override);
+      delete state.disk.guardedTerritories; // the territory seed would persist, if the refusal came late
+      await assert.rejects(p.loadSettings(), /does not take|does not compile/, JSON.stringify(override));
+      assert.equal(state.writes, 0, `${JSON.stringify(override)}: nothing written`);
+    }
+  });
+
+  test("a refusal at load leaves no ready host: the API throws, as when the file itself is bad", async () => {
+    const dir = tmp();
+    const file = path.join(dir, "vm.json");
+    fs.writeFileSync(file, JSON.stringify({ host: { headless: "onn" } }));
+    process.env.VAULT_MCP_LOCAL_SETTINGS = file;
+    const p = new VaultMcpPlugin();
+    p.app = { vault: { configDir: ".obsidian", adapter: { exists: async () => false, list: async () => ({ files: [], folders: [] }) } } };
+    p.manifest = { id: "vault-mcp", dir: ".obsidian/plugins/vault-mcp", version: "0.0.0" };
+    p.loadData = async () => structuredClone(synced);
+    p.saveData = async () => { throw new Error("must not save"); };
+    await p.onload();
+    assert.equal(p.settings, undefined);
+    assert.throws(() => p.api.guardedTerritories());
+    fs.writeFileSync(file, "{ not json");
+    const q = new VaultMcpPlugin();
+    q.app = p.app;
+    q.manifest = p.manifest;
+    await q.onload();
+    assert.throws(() => q.api.guardedTerritories(), undefined, "path 1 throws the same way");
   });
 });

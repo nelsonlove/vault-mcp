@@ -13,9 +13,10 @@ import {
   normalizedMismatches,
   readLocalSettings,
   reapplyOverride,
+  useTimeProblems,
   type LocalSettingsLoad,
 } from "./local-settings.js";
-import { writeDiscovery, removeDiscovery, writeBridge, type Discovery } from "./discovery.js";
+import { writeDiscovery, removeDiscovery, writeBridge, countDiscoveries, type Discovery } from "./discovery.js";
 import { ConnectionSetupModal, VaultMcpSettingTab } from "./connection-ui.js";
 import { findClaudeBinary, claudeIsRegistered, claudeRegister, claudeRemove, claudeEnsureConnectPlugin } from "./claude-cli.js";
 import { ExternalToolRegistry, type VaultMcpApi } from "./mcp/external-tools.js";
@@ -42,6 +43,8 @@ import {
   DEFAULT_RECORD_IDENTIFICATION,
   DEFAULT_RECORD_FOLDERS,
   normalizeRecordIdentification,
+  normalizeRecordFolders,
+  archivePatternRegExp,
   type RecordFolders,
   type RecordIdentification,
 } from "./kernel/record-guard.js";
@@ -365,6 +368,17 @@ export default class VaultMcpPlugin extends Plugin {
    */
   private syncedBase: Record<string, unknown> | null = null;
 
+  /**
+   * Set every overridden key in memory back to the override's value, at once
+   * (#579). A code path that derives one setting from another (the wildcard
+   * expansion writes `cliPolicy.allowOpaque`) calls this right after it
+   * assigns, so an overridden key never holds another value across an await.
+   */
+  keepOverrides(): void {
+    const local = this.localSettings;
+    if (local?.state === "loaded" && this.settings) reapplyOverride(this.settings as unknown as Record<string, unknown>, local.override, local.keys);
+  }
+
   /** The dotted setting paths this machine's override sets (names, not values); empty with no override. */
   overriddenKeys(): string[] {
     return this.localSettings?.state === "loaded" ? [...this.localSettings.keys] : [];
@@ -432,6 +446,10 @@ export default class VaultMcpPlugin extends Plugin {
     if (local?.state === "loaded") {
       this.syncedBase = structuredClone(this.settings) as unknown as Record<string, unknown>;
       this.settings = mergeOverride(this.settings as unknown as Record<string, unknown>, local.override) as unknown as VaultMcpSettings;
+      // recordFoldersOnLoad normalized the synced value before the merge; the
+      // merged one goes through the same coercion, so a blank or slash-only
+      // folder in the override is caught by the check below (#582 review 1).
+      this.settings.recordFolders = normalizeRecordFolders(this.settings.recordFolders);
     } else {
       this.syncedBase = null;
     }
@@ -502,6 +520,8 @@ export default class VaultMcpPlugin extends Plugin {
           `${local.location.path}: the plugin does not take the value given for ${bad.join(", ")} (an unknown value, or one the setting would change)`,
         );
       }
+      const useTime = useTimeProblems(local.override, (p) => archivePatternRegExp(p) !== null);
+      if (useTime.length > 0) throw new LocalSettingsError(`${local.location.path}: ${useTime.join("; ")}`);
     }
     // Persist NOW if the territories key was absent (seeded or fresh), so the
     // seeding branch above can never run a second time for this install.
@@ -512,13 +532,19 @@ export default class VaultMcpPlugin extends Plugin {
     if (local?.state === "loaded" && local.keys.length > 0) {
       // #579 — the override never reaches the synced data.json: every
       // overridden key is written with the synced file's own value (as it is
-      // now, else as it was at load), never this machine's. Then the override
-      // is set again in memory, so a settings-tab edit of an overridden key
-      // (the tab locks those controls) cannot take effect here either.
-      const syncedNow = ((await this.loadData()) as Record<string, unknown> | null) ?? null;
-      const settings = this.settings as unknown as Record<string, unknown>;
-      await this.saveData(forSyncedFile(settings, local.keys, syncedNow, this.syncedBase));
-      reapplyOverride(settings, local.override, local.keys);
+      // now, else as it was at load), never this machine's. The override is set
+      // again in memory FIRST, synchronously, so an edit of an overridden key
+      // made just before this call (the tab locks those controls; a derived
+      // write such as the wildcard expansion can still touch one) is gone
+      // before the first await, and AGAIN in `finally`, so a failed read or
+      // write cannot leave memory loosened (#582 review 1).
+      this.keepOverrides();
+      try {
+        const syncedNow = ((await this.loadData()) as Record<string, unknown> | null) ?? null;
+        await this.saveData(forSyncedFile(this.settings as unknown as Record<string, unknown>, local.keys, syncedNow, this.syncedBase));
+      } finally {
+        this.keepOverrides();
+      }
     } else {
       await this.saveData(this.settings);
     }
@@ -529,8 +555,9 @@ export default class VaultMcpPlugin extends Plugin {
   }
 
   private discoveryCount(): number {
-    try { return fs.readdirSync(stateDir()).filter((f) => f.endsWith(".json")).length; }
-    catch { return 0; }
+    // Only real discovery entries count (a JSON object with a string socket_path), so a stray JSON
+    // file in the state dir cannot make a one-vault machine look ambiguous (#582 review 1).
+    return countDiscoveries(stateDir());
   }
 
   async autoRegister(force = false): Promise<void> {
@@ -727,6 +754,9 @@ export default class VaultMcpPlugin extends Plugin {
       await this.loadSettings();
     } catch (e) {
       if (!(e instanceof LocalSettingsError)) throw e;
+      // As on the first refusal path: no settings, so the host API (guardedTerritories)
+      // throws and a satellite or the governance provider reads no ready host.
+      this.settings = undefined as unknown as VaultMcpSettings;
       this.refuseToServe(
         `NOT SERVING: the machine-local settings override cannot be used — ${e.message}. ` +
           "Nothing falls back to the synced settings. Fix or remove the file, then reload the plugin.",

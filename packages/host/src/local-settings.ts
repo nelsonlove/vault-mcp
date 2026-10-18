@@ -14,11 +14,15 @@
 // take the synced value).
 //
 // WHERE THE FILE IS. `VAULT_MCP_LOCAL_SETTINGS` (an absolute path), else
-// `<base state dir>/settings.local.json`, where the base state dir is
+// `<base state dir>/local/settings.json`, where the base state dir is
 // `VAULT_MCP_STATE_DIR` or `~/.claude/vault-mcp/` (paths.ts `baseStateDir`).
 // It is NEVER looked up through the `host.stateDir` setting: that setting comes
 // from the synced file (or from the override itself), and a synced value must
 // not be able to move where this machine looks for its own override. The
+// default is in a SUBFOLDER on purpose: the bridge, the SessionStart health
+// hook and the plugin's own registration check read every `*.json` directly in
+// the state dir as a vault discovery entry, so a file there would be read as a
+// vault (#582 review 1). The
 // override may set `host.stateDir`; that moves the socket, the bridge and the
 // discovery file as the setting always does, and does not move the override.
 //
@@ -40,12 +44,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 export const LOCAL_SETTINGS_ENV = "VAULT_MCP_LOCAL_SETTINGS";
-export const LOCAL_SETTINGS_FILE = "settings.local.json";
+/** The default file, relative to the base state dir: in a subfolder, never beside the discovery files. */
+export const LOCAL_SETTINGS_DIR = "local";
+export const LOCAL_SETTINGS_FILE = "settings.json";
 
 /** Where the override is looked up, and why there. */
 export interface LocalSettingsLocation {
   path: string;
-  /** "env": named by VAULT_MCP_LOCAL_SETTINGS; "default": `<base state dir>/settings.local.json`. */
+  /** "env": named by VAULT_MCP_LOCAL_SETTINGS; "default": `<base state dir>/local/settings.json`. */
   source: "env" | "default";
 }
 
@@ -61,7 +67,7 @@ export function localSettingsLocation(
 ): LocalSettingsLocation {
   const named = env[LOCAL_SETTINGS_ENV]?.trim();
   if (named) return { path: named, source: "env" };
-  return { path: path.join(baseStateDir, LOCAL_SETTINGS_FILE), source: "default" };
+  return { path: path.join(baseStateDir, LOCAL_SETTINGS_DIR, LOCAL_SETTINGS_FILE), source: "default" };
 }
 
 /** The file-system calls `readLocalSettings` makes, injectable for tests. */
@@ -96,7 +102,10 @@ export function readLocalSettings(
   try {
     fsImpl.lstatSync(location.path);
   } catch (e) {
-    if (code(e) === "ENOENT") {
+    // At the default path, ENOTDIR (a FILE where the `local` folder would be) is
+    // absent too: nothing there can be an override. Every other error (EACCES,
+    // ELOOP, …) fails closed. A path the variable names fails closed on any error.
+    if (code(e) === "ENOENT" || (code(e) === "ENOTDIR" && location.source === "default")) {
       if (location.source === "env") return fail(`${LOCAL_SETTINGS_ENV} names ${location.path}, and there is no file there`);
       return { state: "absent", location };
     }
@@ -133,7 +142,18 @@ export function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /** Keys JSON.parse can produce that would reach an object's prototype through an assignment. */
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const FORBIDDEN_PROTO_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/**
+ * A key the override may not use: a prototype key, an empty key, or a key with
+ * a `.` in it. Overridden keys are handled as dotted paths, so `a.b` as ONE key
+ * would be read as two levels, and a save would put a value the synced file
+ * never had into data.json (#582 review 1).
+ */
+function badKey(k: string): boolean {
+  return FORBIDDEN_PROTO_KEYS.has(k) || k === "" || k.includes(".");
+}
+const FORBIDDEN_KEYS = { has: badKey };
 
 /**
  * Lists of strings by path. Their default is an empty list, so the shape
@@ -172,8 +192,8 @@ function kind(v: unknown): string {
  *   • a value has the type of the default it replaces (a list for a list, an
  *     object for an object, a boolean for a boolean, …), and a list of
  *     strings holds only strings;
- *   • `null` is never a value, and `__proto__`, `constructor` and `prototype`
- *     are never keys.
+ *   • `null` is never a value, and `__proto__`, `constructor`, `prototype`, an
+ *     empty key and a key holding a `.` are never keys.
  *
  * Values inside an open map are checked only for `null` and forbidden keys.
  * A value the setting's own normalizer would change (an unknown mode, a path
@@ -189,7 +209,7 @@ export function checkOverride(raw: unknown, shape: Record<string, unknown>): str
     }
     if (open) {
       if (isPlainObject(value)) for (const [k, v] of Object.entries(value)) {
-        if (FORBIDDEN_KEYS.has(k)) problems.push(`${at}.${k} is not an allowed key`);
+        if (FORBIDDEN_KEYS.has(k)) problems.push(`${at}.${k} is not an allowed key (a prototype key, an empty key, or a key with a dot)`);
         else walk(v, undefined, `${at}.${k}`, true);
       } else if (Array.isArray(value)) value.forEach((v, i) => v === null && problems.push(`${at}[${i}] is null`));
       return;
@@ -216,7 +236,7 @@ export function checkOverride(raw: unknown, shape: Record<string, unknown>): str
       const openMap = Object.keys(d).length === 0;
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
         const p = `${at}.${k}`;
-        if (FORBIDDEN_KEYS.has(k)) problems.push(`${p} is not an allowed key`);
+        if (FORBIDDEN_KEYS.has(k)) problems.push(`${p} is not an allowed key (a prototype key, an empty key, or a key with a dot)`);
         else if (openMap) walk(v, undefined, p, true);
         else if (!Object.prototype.hasOwnProperty.call(d, k)) problems.push(`${p} is not a setting`);
         else walk(v, d[k], p, false);
@@ -224,7 +244,7 @@ export function checkOverride(raw: unknown, shape: Record<string, unknown>): str
     }
   };
   for (const [k, v] of Object.entries(raw)) {
-    if (FORBIDDEN_KEYS.has(k)) problems.push(`${k} is not an allowed key`);
+    if (FORBIDDEN_KEYS.has(k)) problems.push(`${k} is not an allowed key (a prototype key, an empty key, or a key with a dot)`);
     else if (!Object.prototype.hasOwnProperty.call(shape, k)) problems.push(`${k} is not a setting`);
     else walk(v, shape[k], k, false);
   }
@@ -319,8 +339,22 @@ export function forSyncedFile(
   for (const p of paths) {
     const now = getPath(syncedNow, p);
     const base = now.present ? now : getPath(syncedBase, p);
-    if (base.present) setPath(out, p, clone(base.value));
-    else deletePath(out, p);
+    if (base.present) {
+      setPath(out, p, clone(base.value));
+      continue;
+    }
+    deletePath(out, p);
+    // An object that only held overridden keys (`modules.scheme` when the
+    // override alone sets `modules.scheme.enabled`) is left out too, rather than
+    // written as `{}`: the synced file never had it (#582 review 1).
+    const segs = split(p);
+    for (let i = segs.length - 1; i > 0; i--) {
+      const parent = segs.slice(0, i).join(".");
+      const there = getPath(out, parent);
+      if (!there.present || !isPlainObject(there.value) || Object.keys(there.value).length > 0) break;
+      if (getPath(syncedNow, parent).present || getPath(syncedBase, parent).present) break;
+      deletePath(out, parent);
+    }
   }
   return out;
 }
@@ -373,4 +407,19 @@ export function localSettingsReport(load: LocalSettingsLoad): Record<string, unk
     overridden_keys: load.state === "loaded" ? [...load.keys] : [],
     ...(load.state === "error" ? { error: load.error } : {}),
   };
+}
+
+/**
+ * Checks of overridden values that no load-time normalizer makes, because the
+ * setting is otherwise judged only where it is used (#582 review 1): an
+ * archive pattern that does not compile would match nothing, so a record
+ * folder rule the override meant to add would be silently off.
+ */
+export function useTimeProblems(override: Record<string, unknown>, compiles: (pattern: string) => boolean): string[] {
+  const problems: string[] = [];
+  const pattern = getPath(override, "recordFolders.archivePattern");
+  if (pattern.present && typeof pattern.value === "string" && pattern.value.trim() !== "" && !compiles(pattern.value)) {
+    problems.push("recordFolders.archivePattern does not compile as a regular expression");
+  }
+  return problems;
 }
