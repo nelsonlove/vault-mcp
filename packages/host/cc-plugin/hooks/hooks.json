@@ -1,5 +1,5 @@
 {
-  "description": "vault-mcp connectivity (SessionStart health warning) + record-class write guard (PreToolUse on Bash and mcp__(vault-mcp|governor)__* \u2014 refuses non-append writes under 'Machinery record/').",
+  "description": "vault-mcp connectivity (SessionStart health warning) + record write guard (PreToolUse on Bash and mcp__(vault-mcp|governor)__* \u2014 refuses a non-append write to a note whose frontmatter carries record: true, and fails closed on a target it cannot read).",
   "hooks": {
     "SessionStart": [
       {
