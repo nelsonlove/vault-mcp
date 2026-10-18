@@ -55,7 +55,7 @@ function publish(specs, { settings = { readOnly: false, allowlist: [] }, syncGua
 function clockGuard(stateOf) {
   let t = NOW;
   const sleeps = [];
-  const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 5 }), read: () => stateOf(t), now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+  const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 5, strictWaitSeconds: 5 }), read: () => stateOf(t), now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
   return { guard, sleeps, elapsed: () => t - NOW };
 }
 

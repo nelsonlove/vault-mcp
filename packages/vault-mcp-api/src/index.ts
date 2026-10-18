@@ -66,7 +66,7 @@ export interface SyncDeclaration {
     | "structure"
     | "content"
     | { arg: string; values: Record<string, "structure" | "content">; otherwise: "structure" | "content" };
-  /** The strict list: a rename, move or delete, which also waits for "Fully synced". Structure only. */
+  /** The strict list: a rename, move or delete, which also waits (up to `strictWaitSeconds`) for "Fully synced". Structure only. */
   strictStatus?: boolean;
   /** The destination-unnamed list: the tool does not name where it writes, so a
    *  server change waiting anywhere in the vault counts. Structure only. */

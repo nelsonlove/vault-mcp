@@ -46,6 +46,12 @@ export interface SyncGuardSettings {
   mode: SyncGuardMode;
   /** How long to wait for Sync to catch up (connected, nothing pending at the write's paths), in seconds. */
   waitSeconds: number;
+  /**
+   * How long a rename, move or delete (the `STATUS_STRICT` tools) waits, in seconds, in place of
+   * `waitSeconds`. Longer, because it waits for a moment Sync is idle, and on a busy day those moments
+   * are short and far apart: measured, 354 "Fully synced" moments in about 16.6 h, the longest gap 58 min.
+   */
+  strictWaitSeconds: number;
   /** When the Sync object is missing or its fields have changed shape. */
   onUnknown: SyncGuardOnUnknown;
 }
@@ -54,6 +60,7 @@ export const DEFAULT_SYNC_GUARD: Readonly<SyncGuardSettings> = Object.freeze({
   enabled: false,
   mode: "refuse",
   waitSeconds: 30,
+  strictWaitSeconds: 120,
   onUnknown: "warn",
 });
 
@@ -65,11 +72,12 @@ export function normalizeSyncGuard(v: unknown): SyncGuardSettings {
   const o = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   const mode = o.mode === "refuse" || o.mode === "wait" || o.mode === "warn" ? o.mode : DEFAULT_SYNC_GUARD.mode;
   const onUnknown = o.onUnknown === "warn" || o.onUnknown === "refuse" ? o.onUnknown : DEFAULT_SYNC_GUARD.onUnknown;
-  const w = typeof o.waitSeconds === "number" && Number.isFinite(o.waitSeconds) ? o.waitSeconds : DEFAULT_SYNC_GUARD.waitSeconds;
+  const seconds = (x: unknown, dflt: number) => Math.min(MAX_WAIT_SECONDS, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : dflt));
   return {
     enabled: o.enabled === true,
     mode,
-    waitSeconds: Math.min(MAX_WAIT_SECONDS, Math.max(0, w)),
+    waitSeconds: seconds(o.waitSeconds, DEFAULT_SYNC_GUARD.waitSeconds),
+    strictWaitSeconds: seconds(o.strictWaitSeconds, DEFAULT_SYNC_GUARD.strictWaitSeconds),
     onUnknown,
   };
 }
@@ -293,13 +301,15 @@ export interface SyncGuardDeps {
   pollMs?: number;
   /** Judge at once, with no wait: set by createSyncGuard while a recent wait has already run out. */
   skipWait?: boolean;
-  /** Told when a wait ran out with Sync still behind. */
-  onWaitExpired?: (v: SyncVerdict) => void;
+  /** Told when a wait ran out with Sync still behind, and how long that wait was, in seconds. */
+  onWaitExpired?: (v: SyncVerdict, waitedSeconds: number) => void;
 }
 
 /**
  * Decide one call. Waits first (unless the structure mode is `warn`), up to
- * `waitSeconds`, for the Sync state to be synced; then refuses a structure
+ * `waitSeconds` (`strictWaitSeconds` for a rename, move or delete), looking
+ * again every `pollMs`, for the Sync state to be synced, and goes on at the
+ * first look that finds it so; then refuses a structure
  * write in `refuse` mode, and lets everything else go on with a warning.
  * Returns null when the call goes on with nothing to say.
  */
@@ -321,8 +331,10 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   // A "status" cause (this Mac still uploading) is held only for the rename, move and delete tools that judge it.
   const held = deps.skipWait === true && v.kind === "behind" && (v.scope === "connection" || (v.scope === "status" && strictStatus));
   const shouldWait = !held && (kind === "content" || settings.mode !== "warn");
+  // A rename, move or delete waits longer (`strictWaitSeconds`): it waits for a moment Sync is idle.
+  const waitSeconds = strictStatus ? settings.strictWaitSeconds : settings.waitSeconds;
   if (shouldWait) {
-    const deadline = deps.now() + settings.waitSeconds * 1000;
+    const deadline = deps.now() + waitSeconds * 1000;
     const poll = Math.max(50, deps.pollMs ?? 500);
     while (v.kind === "behind" && deps.now() < deadline) {
       await deps.sleep(Math.min(poll, Math.max(0, deadline - deps.now())));
@@ -330,9 +342,9 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
-    deps.onWaitExpired?.(v);
+    deps.onWaitExpired?.(v, waitSeconds);
   }
-  const waited = shouldWait ? ` after waiting ${settings.waitSeconds} s` : "";
+  const waited = shouldWait ? ` after waiting ${waitSeconds} s` : "";
   if (kind === "structure" && settings.mode === "refuse") {
     return {
       refuse: {
@@ -365,7 +377,7 @@ function unknownDecision(tool: string, why: string, settings: SyncGuardSettings)
  * The guard as the host uses it: `decideSync` with one shared memory. Once a
  * wait has run out with Sync still behind for a connection cause (or a status
  * cause, which only a `STATUS_STRICT` tool can meet), the calls that follow within the
- * next `waitSeconds` are judged at once, with no second wait, so a batch (each
+ * next `waitSeconds` (`strictWaitSeconds` after a status cause) are judged at once, with no second wait, so a batch (each
  * `obsidian_write_notes` item is its own guarded call) or a burst of calls pays
  * the wait once, not once per call. A call that finds Sync synced clears it.
  */
@@ -376,11 +388,14 @@ export function createSyncGuard(base: () => Omit<SyncGuardDeps, "skipWait" | "on
     const d = await decideSync(tool, args, {
       ...deps,
       skipWait: deps.now() < holdUntil,
-      onWaitExpired: (v) => {
+      onWaitExpired: (v, waitedSeconds) => {
         // A connection cause meets every write, so it is held for the next calls. A status cause is
         // held too (#533); only a STATUS_STRICT tool can meet it, because decideSync
         // judges the status text for those tools alone. A pending change at one write's paths says nothing of others' (#529 review).
-        if (v.kind === "behind" && (v.scope === "connection" || v.scope === "status")) holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
+        // A connection hold lasts `waitSeconds`, as before, since every write meets it; a status hold lasts
+        // the rename-kind wait that ran out (`strictWaitSeconds`).
+        if (v.kind === "behind" && v.scope === "connection") holdUntil = deps.now() + deps.settings.waitSeconds * 1000;
+        else if (v.kind === "behind" && v.scope === "status") holdUntil = deps.now() + waitedSeconds * 1000;
       },
     }, declared);
     // Clear the hold only after a call that was really judged and found clean:
