@@ -82,3 +82,26 @@ For example, a tool that moves a note to a computed address:
 A spec that declares none of the three is an apiVersion-2 spec and behaves exactly as before. The host refuses a malformed declaration at registration, and registers nothing from that call: an unknown key (a misspelt `strictStatus` would otherwise be silently off), a class or kind outside the closed set, an argument the tool's `inputSchema` does not declare or that is a kernel argument (`if_rev`, `idempotency_key`, `intent`), a path argument the walk does not recognize, a path listed twice, the two Sync lists on a content-only tool, `protection` or `sync` on a tool that claims `readOnly`, and a mutating tool that declares `sync` or `paths` but no `protection`. A host's own tables always win: a declaration rules only a tool the host does not know.
 
 On a host below apiVersion 3 the SDK fails closed: a tool that declares any of the three is left out, with one console warning naming it, because that host would run it with none of the protection it asked for. The other tools register as before. `API_VERSION_DECLARATIONS` (3) is the level, and `declaresWrites(spec)` and `specsForHost(api, specs)` are exported for your own tests.
+
+## Session refusal purpose and the rotate check (SDK 1.3)
+
+The host replaces a connection's session when it expires while the connection stays open: it opens a new session whose `continuedFrom` is the old id. A revoked session must never be replaced that way, so before a rotation the host asks every session-refusal hook about the OLD id with a second argument, `purpose: "rotate"`. Inside the write queue it passes `"dequeue"`; an older host passes nothing, which means `"dequeue"`.
+
+A rotation needs a positive "not revoked". A hook that returns `null` when it cannot read its own revocation state looks the same to the host as a hook that checked and found nothing, so the host only trusts a hook that declares it handles `"rotate"`: pass `sessionRefusalPurposes: ["rotate"]` to `registerGovernance` (or `{ purposes: ["rotate"] }` as the third argument of `registerSessionRefusal`). While any registered hook does not declare it, the host refuses every rotation (`session_rotation_unsupported`) and an expired session keeps refusing, as before. With no hook registered, rotation goes ahead, because nothing can revoke a session.
+
+Declare it only when your hook, for `"rotate"`, refuses whenever it cannot tell:
+
+    registerGovernance(this, {
+      sessionRefusal: async (sessionId, purpose) => {
+        try {
+          return await store.revocationRefusal(sessionId);
+        } catch (e) {
+          // Silence at dequeue degrades to the host's own expiry floor; a rotation
+          // must not go past a revocation the store could not show.
+          return purpose === "rotate" ? { code: "session_store_unreadable", detail: String(e) } : null;
+        }
+      },
+      sessionRefusalPurposes: ["rotate"],
+    });
+
+An older host (one without session rotation) passes no purpose, ignores the declaration, and never rotates.

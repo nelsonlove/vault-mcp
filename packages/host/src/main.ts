@@ -349,7 +349,7 @@ export default class VaultMcpPlugin extends Plugin {
     apiVersion: 3,
     registerTools: (owner, tools) => externalRegistryOf(this).registerTools(owner, tools),
     registerWriteObserver: (id, observe) => seamOf(this).seam.registerWriteObserver(id, observe),
-    registerSessionRefusal: (id, refuse) => seamOf(this).seam.registerSessionRefusal(id, refuse),
+    registerSessionRefusal: (id, refuse, options) => seamOf(this).seam.registerSessionRefusal(id, refuse, options),
     // Resolved on every call, never captured: an operator edit reaches the
     // provider without either plugin reloading. A copy is returned so a caller
     // cannot mutate the host's own array through the reference.

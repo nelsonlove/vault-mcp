@@ -1,6 +1,6 @@
 {
   "name": "vault-mcp-api",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Publisher SDK for the vault-mcp host's external tool registry \u2014 let your Obsidian plugin publish MCP tools to Claude Code through vault-mcp (plugin id `vault-mcp`; `governor` between 0.12.0 and the host/provider split). The package name is unchanged by those renames.",
   "type": "module",
   "main": "dist/index.js",

@@ -362,6 +362,9 @@ export default class GovernorPlugin extends Plugin {
         // silence at dequeue and a refusal before a rotation: see
         // wiring/session-refusal.ts.
         sessionRefusal: sessionRefusalFrom(sessionStore),
+        // The hook reads its second argument and refuses a "rotate" it cannot
+        // answer, so it declares the rotate check (vault-mcp-api 1.3).
+        sessionRefusalPurposes: ["rotate"],
       })
     );
 

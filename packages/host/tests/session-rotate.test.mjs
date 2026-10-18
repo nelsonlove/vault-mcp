@@ -166,8 +166,10 @@ describe("a revoked session never rotates", () => {
   test("a provider refusal of the OLD id (revocation) keeps the old session, and the call refuses", async () => {
     const { seam, consult } = createGovernanceSeam();
     let revoked = null;
-    seam.registerSessionRefusal("gov", async (id) =>
-      id !== null && id === revoked ? { code: "session_revoked", detail: `session ${id} was revoked` } : null
+    seam.registerSessionRefusal(
+      "gov",
+      async (id) => (id !== null && id === revoked ? { code: "session_revoked", detail: `session ${id} was revoked` } : null),
+      { purposes: ["rotate"] }
     );
     const f = fixture({ refuse: (id) => consult.refuseSession(id) });
     const old = f.conn.current();
@@ -235,7 +237,7 @@ describe("a store read error refuses a rotation, but not a call", () => {
   test("end to end through the seam: a store read error means NO rotation", async () => {
     const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
     const { seam, consult } = createGovernanceSeam();
-    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => { throw new Error("unreadable"); } }));
+    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => { throw new Error("unreadable"); } }), { purposes: ["rotate"] });
     const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
     const old = f.conn.current();
     f.set(AFTER_TTL);
@@ -247,11 +249,65 @@ describe("a store read error refuses a rotation, but not a call", () => {
   test("MUTATION CHECK: the same seam with a readable store rotates", async () => {
     const { sessionRefusalFrom } = await import("../../governor/src/wiring/session-refusal.ts");
     const { seam, consult } = createGovernanceSeam();
-    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => null }));
+    seam.registerSessionRefusal("gov", sessionRefusalFrom({ revocationRefusal: async () => null }), { purposes: ["rotate"] });
     const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
     f.set(AFTER_TTL);
     await f.conn.refresh();
     assert.equal(f.mints(), 2);
+  });
+});
+
+describe("a provider must DECLARE the rotate check before a session rotates", () => {
+  // An older governor build, or a third-party provider, ignores `purpose` and
+  // may return silence on a store failure. The host cannot tell that silence
+  // from "not revoked", so it rotates only past hooks that declare "rotate".
+  test("a provider that does not declare it: no rotation, and the expiry refusal (with the new text) stays", async () => {
+    const { seam, consult } = createGovernanceSeam();
+    seam.registerSessionRefusal("old-governor", async () => null);
+    const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
+    const old = f.conn.current();
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.conn.current().id, old.id, "no rotation");
+    assert.equal(f.mints(), 1);
+    const r = await f.conn.refusal();
+    assert.equal(r.code, "session_not_live");
+    assert.ok(r.detail.includes(NO_DIRECT), r.detail);
+  });
+
+  test("MUTATION CHECK: the same provider, declaring it, lets the session rotate", async () => {
+    const { seam, consult } = createGovernanceSeam();
+    seam.registerSessionRefusal("governor", async () => null, { purposes: ["rotate"] });
+    const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.mints(), 2);
+  });
+
+  test("one declaring and one non-declaring provider: no rotation (every hook must declare)", async () => {
+    const { seam, consult } = createGovernanceSeam();
+    seam.registerSessionRefusal("governor", async () => null, { purposes: ["rotate"] });
+    seam.registerSessionRefusal("third-party", async () => null);
+    assert.equal((await consult.refuseSession("s-1", "rotate")).code, "session_rotation_unsupported");
+  });
+
+  test("no provider at all: rotation proceeds (the host's floor has no revocation)", async () => {
+    const { consult } = createGovernanceSeam();
+    const f = fixture({ refuse: (id, purpose) => consult.refuseSession(id, purpose) });
+    f.set(AFTER_TTL);
+    await f.conn.refresh();
+    assert.equal(f.mints(), 2);
+  });
+
+  test("a malformed declaration is refused at registration", () => {
+    const { seam } = createGovernanceSeam();
+    assert.throws(() => seam.registerSessionRefusal("p", async () => null, { purposes: "rotate" }), TypeError);
+  });
+
+  test("the governor declares the rotate check, pinned at the source", async () => {
+    const fs = await import("node:fs");
+    const main = fs.readFileSync(new URL("../../governor/src/main.ts", import.meta.url), "utf8");
+    assert.match(main, /sessionRefusalPurposes: \["rotate"\]/);
   });
 });
 
@@ -296,11 +352,13 @@ describe("through the write path: the call succeeds under the new session", () =
     return registry;
   }
 
-  function wired(f, { refresh = true, executor = false, handler } = {}) {
+  function wired(f, { refresh = true, executor = false, handler, syncGuard } = {}) {
     const { kernel, records } = fixtureKernel();
     let ran = 0;
     const operations = [];
+    const closed = [];
     const guarded = makeGuarded({
+      ...(syncGuard ? { syncGuard } : {}),
       getSettings: () => ({ readOnly: false, allowlist: [] }),
       kernel,
       actor: () => ({ transport: "mcp", connection: "c-1", session: f.conn.current().id }),
@@ -313,6 +371,7 @@ describe("through the write path: the call succeeds under the new session", () =
               actor: () => ({ binding: "c-1", clientClaim: null }),
               sessionId: () => f.conn.current().id,
               propose: (operation) => { operations.push(operation.sessionId); },
+              onClose: (operation) => { closed.push(operation.sessionId); },
             }),
           }
         : {}),
@@ -322,8 +381,41 @@ describe("through the write path: the call succeeds under the new session", () =
       handler ?? (async () => { ran++; return { content: [{ type: "text", text: "wrote" }] }; }),
       "obsidian_write_note"
     );
-    return { call, records, ran: () => ran, operations };
+    return { call, records, ran: () => ran, operations, closed };
   }
+
+  test("a rotation by a concurrent call INSIDE an awaited guard cannot split one call across two sessions", async () => {
+    const f = fixture();
+    const s1 = f.conn.current();
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    // Call A is parked in the Sync guard (an await between the executor
+    // building its operation and the call reaching the queue).
+    const w = wired(f, {
+      executor: true,
+      syncGuard: async (_name, args) => { if (args.path === "a.md") await gate; return null; },
+    });
+    const a = w.call({ path: "a.md" });
+    await new Promise((r) => setTimeout(r, 5));
+    // S1 expires, and call B rotates the connection to S2 while A waits.
+    f.set(AFTER_TTL);
+    const resB = await w.call({ path: "b.md" });
+    assert.equal(resB.isError, undefined);
+    const s2 = f.conn.current();
+    assert.equal(s2.continuedFrom, s1.id);
+    release();
+    const resA = await a;
+    // A's operation, A's journal actor and A's dequeue check all name S1: one
+    // session id everywhere, so A refuses (S1 is expired) instead of running
+    // under S2's check while its operation names S1.
+    assert.deepEqual(w.closed, [s2.id, s1.id], "B's operation names S2, A's names S1");
+    const recA = w.records.find((r) => r.target?.path === "a.md");
+    assert.equal(recA.actor.session, s1.id, "A's journal names S1 too");
+    assert.equal(resA.isError, true);
+    assert.match(resA.content.map((c) => c.text).join("\n"), /session_not_live/);
+    const recB = w.records.find((r) => r.target?.path === "b.md");
+    assert.equal(recB.actor.session, s2.id);
+  });
 
   test("the operation record, the journal actor and the observer all name the NEW session", async () => {
     const f = fixture();

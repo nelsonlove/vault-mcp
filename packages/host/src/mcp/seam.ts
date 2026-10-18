@@ -127,6 +127,20 @@ export type WriteObserver = (facts: WriteFacts) => void | Promise<void>;
  * its old behaviour.
  */
 export type SessionRefusalPurpose = "dequeue" | "rotate";
+
+/**
+ * What a session-refusal hook declares about itself at registration. A hook
+ * that lists `"rotate"` in `purposes` says it reads the second argument and
+ * answers `"rotate"` with a positive "not revoked" (it refuses when it cannot
+ * tell). A hook that does not declare it, such as an older provider build or a
+ * third-party one, may return silence on a store failure, and the host cannot
+ * tell that silence from "not revoked"; so for such a hook every `"rotate"`
+ * consultation refuses, and no session rotates while it is registered. With no
+ * hook at all a rotation goes ahead: nothing can revoke a session then.
+ */
+export interface SessionRefusalOptions {
+  purposes?: readonly SessionRefusalPurpose[];
+}
 export type SessionRefusalHook = (
   sessionId: string | null,
   purpose?: SessionRefusalPurpose
@@ -156,7 +170,7 @@ export interface GovernanceSeam {
    * Return a refusal to abort the mutation, `null` to say nothing. A throw is a
    * refusal — a hook that cannot answer must not be read as consent.
    */
-  registerSessionRefusal(id: string, refuse: SessionRefusalHook): () => void;
+  registerSessionRefusal(id: string, refuse: SessionRefusalHook, options?: SessionRefusalOptions): () => void;
 }
 
 /**
@@ -188,6 +202,8 @@ export interface SeamConsult {
 interface HookEntry<T> {
   id: string;
   fn: T;
+  /** Session-refusal hooks only: whether the hook declared the `"rotate"` purpose. */
+  rotate?: boolean;
 }
 
 interface HookState {
@@ -243,9 +259,15 @@ export function createGovernanceSeam(): { seam: GovernanceSeam; consult: SeamCon
         drop(state().observers, entry);
       };
     },
-    registerSessionRefusal(id, refuse) {
+    registerSessionRefusal(id, refuse, options) {
       if (typeof refuse !== "function") throw new TypeError(`vault-mcp: session refusal for '${id}' is not a function`);
-      const entry: HookEntry<SessionRefusalHook> = { id: String(id), fn: refuse };
+      const purposes = options?.purposes;
+      if (purposes !== undefined && !Array.isArray(purposes)) {
+        throw new TypeError(`vault-mcp: session refusal options for '${id}': purposes must be an array`);
+      }
+      // Read once, at registration: a declaration cannot be widened later
+      // through a kept reference to the options object.
+      const entry: HookEntry<SessionRefusalHook> = { id: String(id), fn: refuse, rotate: purposes?.includes("rotate") === true };
       state().sessionRefusals.push(entry);
       let disposed = false;
       return () => {
@@ -282,7 +304,15 @@ export function createGovernanceSeam(): { seam: GovernanceSeam; consult: SeamCon
       }
     },
     async refuseSession(sessionId, purpose = "dequeue") {
-      for (const { id, fn } of state().sessionRefusals) {
+      for (const { id, fn, rotate } of state().sessionRefusals) {
+        // A hook that never declared the rotate check cannot give the positive
+        // "not revoked" a rotation needs: its silence might be a store failure.
+        if (purpose === "rotate" && !rotate) {
+          return {
+            code: "session_rotation_unsupported",
+            detail: `the governance provider '${id}' does not declare the rotate check, so an expired session is not rotated; reconnect to open a new session`,
+          };
+        }
         try {
           const refusal = await fn(sessionId, purpose);
           if (refusal) return { code: refusal.code, detail: refusal.detail };
