@@ -27,7 +27,8 @@ function build(opts = {}, basesResult = { bases: [] }) {
     },
     metadataCache: { getFileCache: () => null, resolvedLinks: {}, unresolvedLinks: {}, on: () => ({}) },
     workspace: { layoutReady: true, iterateAllLeaves: (cb) => cb({}), getActiveFile: () => null, on: () => ({}) },
-    plugins: { plugins: {}, manifests: {}, enabledPlugins: new Set() },
+    // The satellite owner is present, so its tools answer (the stale-publisher check, F6).
+    plugins: { plugins: { "vaultmcp-bases": {} }, manifests: {}, enabledPlugins: new Set() },
     internalPlugins: { getPluginById: () => null },
     commands: { commands: {}, executeCommandById: () => true },
   };
@@ -35,7 +36,7 @@ function build(opts = {}, basesResult = { bases: [] }) {
     pluginVersion: "0.0.0", socketPath: "/tmp/none.sock", vaultName: "test", enabledPlugins: () => [],
     getSettings: () => ({ allowlist: [], readOnly: false, trustedReadOnlyPlugins: [] }),
     getExternalTools: () => [
-      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }, handler: async () => basesResult },
+      { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_list", spec: { description: "list bases", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true }, handler: async () => basesResult } },
       { ownerId: "vaultmcp-bases", toolName: "vaultmcp_bases_create", spec: { description: "make a base", inputSchema: { type: "object", properties: { path: { type: "string" } } }, annotations: { readOnlyHint: false } }, handler: async () => ({}) },
     ],
   };
@@ -157,24 +158,26 @@ describe("profile read+message: the secret scanner", () => {
   // A made-up key; never a real one.
   const FAKE = "ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE";
   const result = { bases: [`Notes/b.base`, `token: ${FAKE}`, `password: fake-pass`] };
+  const call = async (profile) => {
+    const client = await connect(build(profile ? { profile } : {}, result));
+    const r = JSON.stringify(await client.callTool({ name: "vaultmcp_bases_list", arguments: {} }));
+    await client.close();
+    return r;
+  };
 
-  test("a reply under read+message is blanked; under full and read it is sent as it is", async () => {
-    const m = build({ profile: "read+message" }, result)._registeredTools;
-    const r = JSON.stringify(await m.vaultmcp_bases_list.handler({}, {}));
+  test("over MCP: a reply under read+message is blanked", async () => {
+    const r = await call("read+message");
+    assert.doesNotMatch(r, /isError":true/, r);
     assert.ok(!r.includes(FAKE), r);
     assert.ok(!r.includes("fake-pass"), r);
     assert.match(r, /redacted:github-token/);
     assert.match(r, /Notes\/b\.base/);
-    for (const p of [undefined, "read"]) {
-      const t = build(p ? { profile: p } : {}, result)._registeredTools;
-      assert.ok(JSON.stringify(await t.vaultmcp_bases_list.handler({}, {})).includes(FAKE), String(p));
-    }
   });
 
-  test("over MCP under read+message: the reply the client receives is blanked", async () => {
-    const client = await connect(build({ profile: "read+message" }, result));
-    const r = JSON.stringify(await client.callTool({ name: "vaultmcp_bases_list", arguments: {} }));
-    assert.ok(!r.includes(FAKE), r);
-    await client.close();
+  test("over MCP: under full and read the same reply is sent as it is", async () => {
+    for (const p of [undefined, "read"]) {
+      const r = await call(p);
+      assert.ok(r.includes(FAKE), `${p}: ${r}`);
+    }
   });
 });
