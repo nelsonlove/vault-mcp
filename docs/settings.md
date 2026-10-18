@@ -54,7 +54,7 @@ Listing `governor` here is what restores read-only treatment to the governance p
 | Default | Empty (the scanner is off) |
 | Effect | Names connection profiles (such as `read+message`) whose tool replies pass through the secret scanner, which blanks key- and token-shaped strings as `[redacted:<kind>]`. Listing `full` scans local connections too. See `packages/server/README.md`, "Secret scanner" |
 | Takes effect | New connections |
-| Risk | A best-effort filter: it cannot catch every form of a secret. While a profile is listed, an unknown name or a refused config gives every remote connection (and a local one when `full` is listed) no tools until it is fixed |
+| Risk | A best-effort filter: it cannot catch every form of a secret. While a profile is listed, an unknown name or a refused config gives every remote connection (and a local one when `full` is listed) no tools until it is fixed; a line that cannot be parsed (a broken JSON array) refuses every connection, local ones included |
 | Recovery | Fix the name or the config, or empty the list, and reconnect clients |
 
 ### Secret scanner: config
@@ -65,7 +65,7 @@ Listing `governor` here is what restores read-only treatment to the governance p
 | Default | Blank (the shipped defaults) |
 | Effect | JSON text: `keyNames` and `patterns` replace the shipped key names and provider token shapes; `extraKeyNames` and `extraPatterns` (`{kind, regex, ignoreCase?}`) add to them. The structural rules (private key blocks, JWTs, Authorization and bearer values, URL credentials) always run |
 | Takes effect | New connections |
-| Risk | A pattern you add is run as given: a pattern with nested repeats can make a scan slow |
+| Risk | A pattern you add is run as given: a pattern with nested repeats can make a scan slow. An empty `keyNames` or `patterns`, or a pattern that can match an empty span, is refused |
 | Recovery | Blank the field and reconnect clients |
 
 ## Posture
