@@ -208,6 +208,12 @@ export type MarkPhase = (phase: OperationPhase) => void;
  */
 export interface HandlerContext {
   setSources: (paths: string[]) => void;
+  /**
+   * The session id this operation's record names. The guard journals and
+   * checks the same id, so the operation, the journal actor and the dequeue
+   * check can never name two different sessions.
+   */
+  sessionId: string | null;
 }
 
 export interface OperationExecutor {
@@ -447,7 +453,7 @@ export function createOperationExecutor(opts: OperationExecutorOpts): OperationE
         let resolvedSources: string[] | null = null;
         const result = await handler(
           (phase) => mark(operation, phase),
-          { setSources: (paths) => { resolvedSources = paths; } }
+          { setSources: (paths) => { resolvedSources = paths; }, sessionId: operation.sessionId }
         );
 
         // Capture AFTER the handler, on what it actually returned, and only
