@@ -1,6 +1,6 @@
 {
   "name": "vault-mcp-connect",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Session-start health check and status command for the Vault MCP Obsidian bridge (plugin id 'vault-mcp') \u2014 warns when the mcp__vault-mcp__* tools (or the legacy server name's) will fail because Obsidian isn't serving the socket. Also ships the record-class write guard: PreToolUse hook refusing non-append Bash/MCP writes to 'Machinery record/' fold archives.",
   "author": {
     "name": "Nelson Love",
