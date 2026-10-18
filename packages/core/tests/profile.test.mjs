@@ -1,12 +1,12 @@
 // The connection profile (#521): names, resolution, and the call-time check.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { READ_PROFILE_TOOLS, INBOX_WRITE_SCOPE, PROFILE_NAMES, resolveProfile, profileAllows, profileCallRefusal } from "../src/profile.ts";
+import { READ_PROFILE_TOOLS, READ_MESSAGE_PROFILE_TOOLS, MESSAGE_TOOL, INBOX_WRITE_SCOPE, PROFILE_NAMES, resolveProfile, profileAllows, profileCallRefusal } from "../src/profile.ts";
 import { inWriteScope } from "../src/write-scope.ts";
 
 describe("profiles", () => {
   test("the names a front may use", () => {
-    assert.deepEqual([...PROFILE_NAMES].sort(), ["full", "read", "read+inbox"]);
+    assert.deepEqual([...PROFILE_NAMES].sort(), ["full", "read", "read+inbox", "read+message"]);
   });
 
   test("absent is full; an unknown or malformed name is none (no tools), never full", () => {
@@ -24,6 +24,23 @@ describe("profiles", () => {
     for (const t of READ_PROFILE_TOOLS) assert.ok(profileAllows(p, t), t);
     for (const t of ["obsidian_write_note", "obsidian_write_notes", "obsidian_call_tool", "obsidian_run_command"]) assert.equal(profileAllows(p, t), false, t);
     assert.equal(p.writeScope, undefined);
+  });
+
+  test("read+message: exactly the 15 note reads plus the message tool; no write, no machine state", () => {
+    const p = resolveProfile("read+message");
+    assert.equal(READ_MESSAGE_PROFILE_TOOLS.length, 16);
+    assert.equal(MESSAGE_TOOL, "vaultmcp_send_message");
+    assert.deepEqual([...p.tools].sort(), [...READ_MESSAGE_PROFILE_TOOLS].sort());
+    for (const t of READ_MESSAGE_PROFILE_TOOLS) if (t !== MESSAGE_TOOL) assert.ok(READ_PROFILE_TOOLS.includes(t), `${t} is also a read-profile tool`);
+    for (const t of [
+      "obsidian_write_note", "obsidian_write_notes", "obsidian_append_note", "obsidian_patch_note", "obsidian_create_note",
+      "obsidian_call_tool", "obsidian_run_command", "obsidian_get_active_note", "obsidian_vault_info", "obsidian_environment_info",
+      "obsidian_plugin_info", "obsidian_get_command_ids", "obsidian_list_bookmarks", "obsidian_list_workspaces", "obsidian_snippets_list",
+      "obsidian_snippet_read", "vaultmcp_conformance_debt", "vaultmcp_bases_query", "obsidian_periodic_note", "obsidian_doctor",
+    ]) assert.equal(profileAllows(p, t), false, t);
+    assert.equal(p.writeScope, undefined);
+    assert.equal(profileCallRefusal(p, MESSAGE_TOOL, true, { text: "hi" }, () => false), null, "the message tool is offered");
+    assert.equal(profileCallRefusal(p, "obsidian_write_note", true, { path: "a.md" }, () => false)?.code, "profile_refused");
   });
 
   test("the call-time check refuses a name outside the profile", () => {

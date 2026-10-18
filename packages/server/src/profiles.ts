@@ -1,7 +1,7 @@
 // profiles.ts — which connection profile a credential gets on the front (#521).
 //
 // The mapping is one environment variable, VAULT_MCP_PROFILES, holding a JSON object from a
-// CREDENTIAL ID to a profile name (core's profile.ts: "full", "read", "read+inbox"):
+// CREDENTIAL ID to a profile name (core's profile.ts: "full", "read", "read+inbox", "read+message"):
 //
 //   VAULT_MCP_PROFILES='{"token":"full","sub:user_2abc":"read+inbox"}'
 //
