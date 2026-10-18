@@ -97,11 +97,6 @@ export interface ConnProfile {
   tools: ReadonlySet<string> | null;
   /** A write rule for this connection alone, checked on top of the vault-wide one. */
   writeScope?: WriteScope;
-  /**
-   * Pass every tool reply through the secret scanner (secret-scan.ts) before it is sent: key- and
-   * token-shaped strings become `[redacted:<kind>]`. Absent ⇒ false; replies are sent as they are.
-   */
-  redactSecrets?: boolean;
 }
 
 const PROFILES: Record<Exclude<ProfileName, "none">, ConnProfile> = {

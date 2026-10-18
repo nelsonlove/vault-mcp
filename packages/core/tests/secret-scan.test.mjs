@@ -2,7 +2,8 @@
 // linear and fails closed. Every key here is made up and obviously fake.
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
-import { redactSecrets, redactToolResult, redactingHandler, SCAN_FAILED_TEXT } from "../src/secret-scan.ts";
+import { redactSecrets, redactToolResult, redactingHandler, SCAN_FAILED_TEXT, createSecretScanner, SecretScanConfigError } from "../src/secret-scan.ts";
+import { buildRedaction, parseProfileList, scannerFor, RedactionSettingsError } from "../src/redaction.ts";
 import { resolveProfile } from "../src/profile.ts";
 
 const A = (n) => "A".repeat(n);
@@ -501,8 +502,66 @@ describe("tool results and handlers", () => {
     await assert.rejects(t({}), (e) => e.message === "bad [redacted:github-token]");
   });
 
-  test("only read+message turns the scanner on", () => {
-    assert.equal(resolveProfile("read+message").redactSecrets, true);
-    for (const n of [undefined, "full", "read", "read+inbox", "nonsense"]) assert.ok(!resolveProfile(n).redactSecrets, String(n));
+  test("no profile turns the scanner on in code", () => {
+    for (const n of [undefined, "full", "read", "read+inbox", "read+message", "nonsense"]) assert.equal(resolveProfile(n).redactSecrets, undefined, String(n));
+  });
+});
+
+describe("configuration", () => {
+  test("extraKeyNames adds names; the shipped ones stay", () => {
+    const s = createSecretScanner({ extraKeyNames: ["licence code", "pin_code", "otp"] });
+    assert.equal(s.redactSecrets("Licence Code: fake-1"), "Licence Code: [redacted:secret]");
+    assert.equal(s.redactSecrets("PIN-code = 1234"), "PIN-code = [redacted:secret]");
+    assert.equal(s.redactSecrets("otp: 123456"), "otp: [redacted:secret]");
+    assert.equal(s.redactSecrets("photp: x"), "photp: x");
+    assert.equal(s.redactSecrets("password: fake"), "password: [redacted:secret]");
+    assert.deepEqual(JSON.parse(s.redactSecrets(JSON.stringify({ licenceCode: "fake" }))), { licenceCode: "[redacted:secret]" });
+    assert.equal(redactSecrets("Licence Code: fake-1"), "Licence Code: fake-1", "the default scanner is unchanged");
+  });
+
+  test("keyNames replaces the shipped names", () => {
+    const s = createSecretScanner({ keyNames: ["licence code"] });
+    assert.equal(s.redactSecrets("Licence Code: fake"), "Licence Code: [redacted:secret]");
+    assert.equal(s.redactSecrets("password: kept"), "password: kept");
+  });
+
+  test("extraPatterns adds token shapes; patterns replaces the provider shapes, the structural rules stay", () => {
+    const tok = ["acme", "FAKE".repeat(5)].join("_");
+    const s = createSecretScanner({ extraPatterns: [{ kind: "acme-token", regex: "acme_[A-Z]{20}" }] });
+    assert.equal(s.redactSecrets(`x ${tok} y`), "x [redacted:acme-token] y");
+    assert.equal(s.redactSecrets(K.ghp), "[redacted:github-token]");
+    const r = createSecretScanner({ patterns: [{ kind: "acme-token", regex: "ACME_[a-z]{20}", ignoreCase: true }] });
+    assert.equal(r.redactSecrets(tok), "[redacted:acme-token]");
+    assert.equal(r.redactSecrets(K.ghp), K.ghp);
+    assert.equal(r.redactSecrets(K.jwt), "[redacted:jwt]");
+    assert.equal(r.redactSecrets("Authorization: Bearer fake.value123"), "Authorization: Bearer [redacted:authorization]");
+  });
+
+  test("a config the scanner refuses throws; it never yields a scanner that scans less", () => {
+    for (const bad of [
+      "x", [], { unknown: [] }, { keyNames: [] }, { keyNames: "password" }, { extraKeyNames: ["pa$$"] }, { extraKeyNames: [""] },
+      { extraPatterns: [{ kind: "x", regex: "(" }] }, { extraPatterns: [{ kind: "x", regex: "a*" }] }, { extraPatterns: [{ kind: "Bad Kind", regex: "a" }] },
+      { extraPatterns: [{ kind: "x", regex: "a", flags: "g" }] }, { patterns: [{ kind: "x" }] }, { extraPatterns: [{ kind: "x", regex: "a".repeat(600) }] },
+    ]) assert.throws(() => createSecretScanner(bad), SecretScanConfigError, JSON.stringify(bad));
+    assert.doesNotThrow(() => createSecretScanner({}));
+    assert.doesNotThrow(() => createSecretScanner(null));
+  });
+
+  test("buildRedaction: known profile names only; the config is checked even when no profile is listed", () => {
+    assert.throws(() => buildRedaction(["read+mesage"]), RedactionSettingsError);
+    assert.throws(() => buildRedaction([], { keyNames: [] }), RedactionSettingsError);
+    const r = buildRedaction(["read+message"]);
+    assert.ok(scannerFor(r, "read+message"));
+    assert.equal(scannerFor(r, "read"), undefined);
+    assert.equal(scannerFor(undefined, "read+message"), undefined);
+  });
+
+  test("parseProfileList: a JSON array or a comma or line list", () => {
+    assert.deepEqual(parseProfileList(undefined), []);
+    assert.deepEqual(parseProfileList("  "), []);
+    assert.deepEqual(parseProfileList('["read+message", "read"]'), ["read+message", "read"]);
+    assert.deepEqual(parseProfileList("read+message, read\nfull"), ["read+message", "read", "full"]);
+    assert.throws(() => parseProfileList('["read"'), RedactionSettingsError);
+    assert.throws(() => parseProfileList("[1]"), RedactionSettingsError);
   });
 });

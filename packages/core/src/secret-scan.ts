@@ -1,9 +1,10 @@
 // secret-scan.ts — blank key- and token-shaped strings in what a connection is sent.
 //
-// A connection profile may ask for it (`redactSecrets` on ConnProfile, profile.ts). Every tool
-// reply on such a connection passes through `redactToolResult` before it leaves the server: the
-// text of each content item, and every key and string in any structured content. Nothing else
-// changes: not the tool's arguments, not what a tool writes to disk.
+// OFF BY DEFAULT: a deployment names the connection profiles to scan (redaction.ts), and may
+// extend or replace the key names and token patterns (`SecretScanConfig`, `createSecretScanner`).
+// Every tool reply on such a connection passes through the scanner before it leaves the server:
+// the text of each content item, and every key and string in any structured content. Nothing
+// else changes: not the tool's arguments, not what a tool writes to disk.
 //
 // WHAT IT BLANKS. Known key and token shapes (provider prefixes, AWS key ids, JWTs, PEM and PGP
 // private key blocks), bearer and Authorization header values, the credentials in a URL
@@ -22,9 +23,10 @@
 // that is itself a token is blanked. Structured content is scanned the same way. Booleans, null
 // and empty values are kept.
 //
-// SEARCH SNIPPETS. A search hit carries one line, often without its key. Under `snippets` (the
-// wrapper of obsidian_search_notes) a snippet that looks like a secret body is blanked as well: a
-// line of only base64 or hex (a PEM or PGP body line), or an indented one-token value.
+// SEARCH SNIPPETS. A search hit carries one trimmed line, often without its key. Under `snippets`
+// (the wrapper of obsidian_search_notes) a snippet that looks like a secret body is blanked as
+// well: a line of only base64 or hex (a PEM or PGP body line), a one-token line or list item, and
+// the secret-looking cells of a table row.
 //
 // WHAT IT NEVER BLANKS ON ITS OWN. A long or random-looking string is not enough: uids, uuids,
 // hashes and commit shas pass unchanged (outside search snippets). Only a shape or a key name
@@ -69,7 +71,8 @@ interface Rule {
 
 const tokenRule = (kind: string, body: string): Rule => ({ kind, re: new RegExp(`${START}${body}`, "g") });
 
-const TOKEN_RULES: Rule[] = [
+// Structural rules that always run first: private key blocks and JWTs.
+const RULES_BEFORE: Rule[] = [
   // PEM and PGP private key blocks: a whole block, then any BEGIN header left without an END (a cut read).
   {
     kind: "private-key",
@@ -82,19 +85,27 @@ const TOKEN_RULES: Rule[] = [
   },
   // JSON Web Tokens: three base64url segments, the first a JSON header (`eyJ`).
   tokenRule("jwt", String.raw`eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*`),
-  // Provider key shapes.
-  tokenRule("anthropic-key", String.raw`sk-ant-[A-Za-z0-9_-]{20,}`),
-  tokenRule("stripe-key", String.raw`(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}`),
-  tokenRule("api-key", String.raw`sk-[A-Za-z0-9_-]{20,}`),
-  tokenRule("github-token", String.raw`(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})`),
-  tokenRule("gitlab-token", String.raw`glpat-[A-Za-z0-9_-]{20,}`),
-  tokenRule("slack-token", String.raw`(?:xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[0-9]+-[A-Za-z0-9-]{10,})`),
-  tokenRule("huggingface-token", String.raw`hf_[A-Za-z0-9]{30,}`),
-  tokenRule("npm-token", String.raw`npm_[A-Za-z0-9]{36,}`),
-  tokenRule("tailscale-key", String.raw`tskey-[A-Za-z0-9-]{10,}`),
-  tokenRule("sendgrid-key", String.raw`SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}`),
-  tokenRule("aws-key-id", String.raw`(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])`),
-  tokenRule("google-api-key", String.raw`AIza[0-9A-Za-z_-]{35}`),
+];
+
+// The provider key shapes shipped by default (generic, public prefixes). A config can extend
+// them (`extraPatterns`) or replace them (`patterns`); the structural rules always run.
+export const DEFAULT_TOKEN_PATTERNS: ReadonlyArray<TokenPattern> = Object.freeze([
+  { kind: "anthropic-key", regex: String.raw`sk-ant-[A-Za-z0-9_-]{20,}` },
+  { kind: "stripe-key", regex: String.raw`(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{10,}` },
+  { kind: "api-key", regex: String.raw`sk-[A-Za-z0-9_-]{20,}` },
+  { kind: "github-token", regex: String.raw`(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})` },
+  { kind: "gitlab-token", regex: String.raw`glpat-[A-Za-z0-9_-]{20,}` },
+  { kind: "slack-token", regex: String.raw`(?:xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[0-9]+-[A-Za-z0-9-]{10,})` },
+  { kind: "huggingface-token", regex: String.raw`hf_[A-Za-z0-9]{30,}` },
+  { kind: "npm-token", regex: String.raw`npm_[A-Za-z0-9]{36,}` },
+  { kind: "tailscale-key", regex: String.raw`tskey-[A-Za-z0-9-]{10,}` },
+  { kind: "sendgrid-key", regex: String.raw`SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}` },
+  { kind: "aws-key-id", regex: String.raw`(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Za-z0-9])` },
+  { kind: "google-api-key", regex: String.raw`AIza[0-9A-Za-z_-]{35}` },
+]);
+
+// Structural rules that always run last: Authorization and bearer values, URL credentials.
+const RULES_AFTER: Rule[] = [
   // An Authorization header (or key) value; the scheme word is kept.
   {
     kind: "authorization",
@@ -115,9 +126,9 @@ const TOKEN_RULES: Rule[] = [
   },
 ];
 
-function scanTokens(text: string): string {
+function scanTokens(R: Compiled, text: string): string {
   let out = text;
-  for (const rule of TOKEN_RULES) {
+  for (const rule of R.tokenRules) {
     rule.re.lastIndex = 0;
     out = rule.replace
       ? out.replace(rule.re, rule.replace as (m: string, ...g: string[]) => string)
@@ -136,17 +147,16 @@ const J = String.raw`[ _-]{0,3}`;
 // (`tokens`, `secretary`) or by `_x` (`token_count`), because a separator must come next. `pass`
 // and `pw` need a boundary before them too, so `bypass` and `compass` are not keys. A bare `pin`
 // is not a key: it blanks too much.
-const SECRET_WORDS = String.raw`(?:password|passwd|passphrase|pass${J}code|(?<![A-Za-z0-9])pass|(?<![A-Za-z0-9])pw|pwd|secret|token|cookie|credentials?|api${J}key|apikey|(?:access|private|secret|encryption|signing|master|session|client)${J}key)`;
+const DEFAULT_SECRET_WORDS = String.raw`(?:password|passwd|passphrase|pass${J}code|(?<![A-Za-z0-9])pass|(?<![A-Za-z0-9])pw|pwd|secret|token|cookie|credentials?|api${J}key|apikey|(?:access|private|secret|encryption|signing|master|session|client)${J}key)`;
 // A key may end in a form word: `privateKeyPem`, `api_key_value`.
-const SECRET_KEY = String.raw`${SECRET_WORDS}(?:${J}(?:pem|value|b64|base64))?`;
+const keyFragment = (words: string): string => String.raw`${words}(?:${J}(?:pem|value|b64|base64))?`;
 
 // An object key (or a table header cell) that names a secret: the name ends the key.
 // `authorization` too, since a header object carries it; camelCase `dbPass` and `dbPw` as well.
-const SECRET_KEY_NAME = new RegExp(String.raw`(?:${SECRET_KEY}|authorization)$`, "i");
 const CAMEL_PASS = /[a-z0-9](?:Pass|Pw)$/;
 
-function isSecretKeyName(k: string): boolean {
-  return k.length <= 256 && (SECRET_KEY_NAME.test(k) || CAMEL_PASS.test(k));
+function isSecretKeyName(R: Compiled, k: string): boolean {
+  return k.length <= 256 && (R.keyName.test(k) || CAMEL_PASS.test(k));
 }
 
 // ── values ──────────────────────────────────────────────────────────────────
@@ -161,14 +171,14 @@ const isRedacted = (s: string): boolean => s.startsWith("[redacted:");
 const WRAP = String.raw`(?:\*{1,2}|_{1,2}|\x60)?`;
 // The separators: `:` (also full-width `：`), `=`, `=>`, ` - ` and a tab.
 const SEP = String.raw`(?:[ \t]{0,16}(?:=>|[:=\uFF1A])|\t+|[ \t]{1,16}-(?=[ \t]))`;
-const HEAD = String.raw`(${SECRET_KEY}(?![A-Za-z0-9])${WRAP}\\?["']?${SEP}${WRAP}(?![ \t]*\[redacted:)[ \t]*)`;
+const headOf = (SECRET_KEY: string): string => String.raw`(${SECRET_KEY}(?![A-Za-z0-9])${WRAP}\\?["']?${SEP}${WRAP}(?![ \t]*\[redacted:)[ \t]*)`;
 // The value, in text with real line breaks: a bracket (blanked to its match, below),
 // double-quoted (with escapes), single-quoted (never past a `"`), or bare to the end of the line.
 // No value is capped, so no tail leaks; none has a backtracking path.
-const KV_PLAIN = new RegExp(String.raw`${HEAD}(?:([\[{])|("(?:[^"\\\r\n]|\\.)*"?|'[^'"\\\r\n]*'?|[^\r\n]+))`, "gi");
+const kvPlainOf = (HEAD: string): RegExp => new RegExp(String.raw`${HEAD}(?:([\[{])|("(?:[^"\\\r\n]|\\.)*"?|'[^'"\\\r\n]*'?|[^\r\n]+))`, "gi");
 // The same in JSON-escaped text (no real line breaks, `\n` as two characters): a value may be
 // `\"…\"`, and a bare value stops at an escaped line break or a `"` (the end of the JSON string).
-const KV_ESCAPED = new RegExp(
+const kvEscapedOf = (HEAD: string): RegExp => new RegExp(
   String.raw`${HEAD}(?:([\[{])|("(?:[^"\\\r\n]|\\.)*"?|\\"(?:[^"\\]|\\\\\\"|\\\\|\\[^"\\])*(?:\\")?|'[^'"\\\r\n]*'?|(?:\\[^nrt]|[^"\\\r\n])+))`,
   "gi"
 );
@@ -238,8 +248,8 @@ function endOfBlock(text: string, i: number, escaped: boolean): number {
 }
 
 /** Blank every value after a secret key, in one pass (a bracket jumps to its match). */
-function replaceKeyValues(text: string, escaped: boolean): string {
-  const re = escaped ? KV_ESCAPED : KV_PLAIN;
+function replaceKeyValues(R: Compiled, text: string, escaped: boolean): string {
+  const re = escaped ? R.kvEscaped : R.kvPlain;
   re.lastIndex = 0;
   let out = "";
   let last = 0;
@@ -263,9 +273,9 @@ function replaceKeyValues(text: string, escaped: boolean): string {
 }
 
 // An XML element that names a secret: `<password>x</password>`.
-const XML_ELEMENT = new RegExp(String.raw`(<[A-Za-z0-9_.:-]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])(?:\s[^<>]{0,256})?>)([^<]+)`, "gi");
+const xmlOf = (SECRET_KEY: string): RegExp => new RegExp(String.raw`(<[A-Za-z0-9_.:-]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])(?:\s[^<>]{0,256})?>)([^<]+)`, "gi");
 // An HTML input that names a secret: `name="password" … value="x"`.
-const HTML_PAIR = new RegExp(
+const htmlOf = (SECRET_KEY: string): RegExp => new RegExp(
   String.raw`(\bname[ \t]*=[ \t]*["']?[^"'\s>]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])[^"'\s>]{0,16}["']?[^<>]{0,512}?\bvalue[ \t]*=[ \t]*)("[^"]*"?|'[^']*'?|[^\s>"']+)`,
   "gi"
 );
@@ -283,7 +293,7 @@ function blankCell(cell: string): string {
 const TABLE_SEP = /^[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*\r?$/;
 // A YAML key that names a secret, with its value on the lines below (nothing after the colon but
 // a block indicator or a comment). Run on one line at a time, anchored at its start.
-const YAML_HEAD = new RegExp(String.raw`^([ \t]*)((?:- )?[^:\r\n]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])${WRAP}["']?[ \t]*:)[ \t]*(?:[|>][+-]?[0-9]?[ \t]*)?(?:#.*)?\r?$`, "i");
+const yamlHeadOf = (SECRET_KEY: string): RegExp => new RegExp(String.raw`^([ \t]*)((?:- )?[^:\r\n]{0,64}?${SECRET_KEY}(?![A-Za-z0-9])${WRAP}["']?[ \t]*:)[ \t]*(?:[|>][+-]?[0-9]?[ \t]*)?(?:#.*)?\r?$`, "i");
 // A blockquote or callout prefix (`> `, `>> `, `> > `), nested quotes included.
 const QUOTE_PREFIX = /^(?:[ \t]{0,3}>[ \t]?)+/;
 // A table cell boundary: a pipe that is not escaped (`[[Note\|alias]]` keeps its pipe).
@@ -315,7 +325,7 @@ function splitQuote(line: string): QLine {
  * it, and a header cell that names a secret blanks its column in every body row to the end of the
  * table.
  */
-function scanLines(text: string): string {
+function scanLines(R: Compiled, text: string): string {
   if (!text.includes("\n") && !text.includes("|")) return text;
   const lines = text.split("\n").map(splitQuote);
   const out: string[] = [];
@@ -326,7 +336,7 @@ function scanLines(text: string): string {
     if (table && table.depth !== depth) table = null;
     // A YAML block or list under a secret key. Only lines that hold a colon are tried, and only
     // up to a length, so the anchored pattern stays cheap. The block stays at the same quote depth.
-    const y = body.length <= 512 && body.includes(":") ? YAML_HEAD.exec(body) : null;
+    const y = body.length <= 512 && body.includes(":") ? R.yamlHead.exec(body) : null;
     if (y) {
       const indent = y[1].length;
       const headIsItem = /^[ \t]*- /.test(body);
@@ -372,14 +382,14 @@ function scanLines(text: string): string {
     const lastEx = parts.length > first + 1 && parts[parts.length - 1].trim() === "" ? parts.length - 1 : parts.length;
     if (isHeader) {
       const cols = new Set<number>();
-      for (let k = first; k < lastEx; k++) if (isSecretKeyName(cellText(parts[k]))) cols.add(k - first);
+      for (let k = first; k < lastEx; k++) if (isSecretKeyName(R, cellText(parts[k]))) cols.add(k - first);
       table = { depth, cols };
       out.push(prefix + body);
       continue;
     }
     let changed = false;
     for (let k = first; k < lastEx; k++) {
-      const blankThis = (table?.cols.has(k - first) ?? false) || (k > first && isSecretKeyName(cellText(parts[k - 1])));
+      const blankThis = (table?.cols.has(k - first) ?? false) || (k > first && isSecretKeyName(R, cellText(parts[k - 1])));
       if (blankThis) {
         const b = blankCell(parts[k]);
         if (b !== parts[k]) {
@@ -395,14 +405,14 @@ function scanLines(text: string): string {
 }
 
 /** The text rules, for text that is not JSON. */
-function scanPlain(text: string): string {
+function scanPlain(R: Compiled, text: string): string {
   // JSON-escaped text: no real line break, and `\n` or `\"` as two characters.
   const escaped = !/[\r\n]/.test(text) && /\\[nrt"]/.test(text);
-  let out = scanTokens(text);
-  out = out.replace(HTML_PAIR, (_m, head: string, value: string) => head + blankValue(value));
-  out = out.replace(XML_ELEMENT, (_m, head: string, body: string) => head + blankCell(body));
-  if (!escaped) out = scanLines(out);
-  return replaceKeyValues(out, escaped);
+  let out = scanTokens(R, text);
+  out = out.replace(R.html, (_m, head: string, value: string) => head + blankValue(value));
+  out = out.replace(R.xml, (_m, head: string, body: string) => head + blankCell(body));
+  if (!escaped) out = scanLines(R, out);
+  return replaceKeyValues(R, out, escaped);
 }
 
 // ── search snippets ─────────────────────────────────────────────────────────
@@ -488,35 +498,35 @@ function put(o: Record<string, unknown>, k: string, v: unknown): void {
  * token is blanked; every other string is scanned as text. Plain objects and arrays are copied;
  * other objects (Date, Map, class instances) are kept as they are.
  */
-function scanValue(v: unknown, depth: number, ctx: Ctx): unknown {
+function scanValue(R: Compiled, v: unknown, depth: number, ctx: Ctx): unknown {
   if (depth > 64) {
     ctx.changed = true;
     return SCAN_FAILED_TEXT;
   }
   if (typeof v === "string") {
-    const s = scanText(v, depth + 1, ctx.snippets);
+    const s = scanText(R, v, depth + 1, ctx.snippets);
     if (s !== v) ctx.changed = true;
     return s;
   }
-  if (Array.isArray(v)) return v.map((x) => scanValue(x, depth + 1, ctx));
+  if (Array.isArray(v)) return v.map((x) => scanValue(R, x, depth + 1, ctx));
   if (isPlainObject(v)) {
     const out: Record<string, unknown> = Object.getPrototypeOf(v) === null ? Object.create(null) : {};
     for (const [k, x] of Object.entries(v)) {
-      let key = scanTokens(k);
+      let key = scanTokens(R, k);
       if (key !== k) {
         ctx.changed = true;
         let n = 2;
         const base = key;
         while (Object.prototype.hasOwnProperty.call(out, key)) key = `${base}#${n++}`;
       }
-      if (isSecretKeyName(k) && blankable(x)) {
+      if (isSecretKeyName(R, k) && blankable(x)) {
         put(out, key, SECRET_MARK);
         ctx.changed = true;
       } else if (ctx.snippets && k === "snippet" && typeof x === "string") {
-        const s = scanText(scanSnippet(x), depth + 1, true);
+        const s = scanText(R, scanSnippet(x), depth + 1, true);
         if (s !== x) ctx.changed = true;
         put(out, key, s);
-      } else put(out, key, scanValue(x, depth + 1, ctx));
+      } else put(out, key, scanValue(R, x, depth + 1, ctx));
     }
     return out;
   }
@@ -528,7 +538,7 @@ function scanValue(v: unknown, depth: number, ctx: Ctx): unknown {
  * and written back in the same layout, so it still parses; when nothing changed the text is
  * returned as it was. Any other text gets the text rules.
  */
-function scanText(text: string, depth: number, snippets: boolean): string {
+function scanText(R: Compiled, text: string, depth: number, snippets: boolean): string {
   if (depth <= 64 && /^\s*[{[]/.test(text)) {
     let parsed: unknown;
     let ok = false;
@@ -540,7 +550,7 @@ function scanText(text: string, depth: number, snippets: boolean): string {
     }
     if (ok) {
       const ctx: Ctx = { changed: false, snippets };
-      const out = scanValue(parsed, depth + 1, ctx);
+      const out = scanValue(R, parsed, depth + 1, ctx);
       if (!ctx.changed) return text;
       const body = text.trim();
       const indent = /^[{[]\r?\n([ \t]+)/.exec(body)?.[1];
@@ -549,66 +559,58 @@ function scanText(text: string, depth: number, snippets: boolean): string {
       return lead + JSON.stringify(out, null, indent) + trail;
     }
   }
-  return scanPlain(text);
-}
-
-/**
- * Blank every secret-shaped string in a text. Pure; linear in the input; never throws (on an
- * internal error it returns `SCAN_FAILED_TEXT`, never the raw text). JSON text stays valid JSON.
- */
-export function redactSecrets(text: string, opts: ScanOpts = {}): string {
-  try {
-    if (typeof text !== "string") return SCAN_FAILED_TEXT;
-    return scanText(text, 0, opts.snippets === true);
-  } catch {
-    return SCAN_FAILED_TEXT;
-  }
+  return scanPlain(R, text);
 }
 
 /** A content item with its text blanked. Binary items (image, audio data) are left as they are. */
-function redactContentItem(item: unknown, opts: ScanOpts): unknown {
+function redactContentItem(R: Compiled, item: unknown, opts: ScanOpts): unknown {
   if (!item || typeof item !== "object") return item;
   const it = item as Record<string, unknown>;
   const copy: Record<string, unknown> = { ...it };
-  if (typeof it.text === "string") copy.text = redactSecrets(it.text, opts);
+  if (typeof it.text === "string") copy.text = scanString(R, it.text, opts);
   if (it.type === "resource" && it.resource && typeof it.resource === "object") {
     const res = { ...(it.resource as Record<string, unknown>) };
-    if (typeof res.text === "string") res.text = redactSecrets(res.text, opts);
-    if (typeof res.uri === "string") res.uri = redactSecrets(res.uri);
+    if (typeof res.text === "string") res.text = scanString(R, res.text, opts);
+    if (typeof res.uri === "string") res.uri = scanString(R, res.uri);
     copy.resource = res;
   }
   if (it.type === "resource_link") {
-    for (const k of ["uri", "name", "title", "description"]) if (typeof it[k] === "string") copy[k] = redactSecrets(it[k] as string);
+    for (const k of ["uri", "name", "title", "description"]) if (typeof it[k] === "string") copy[k] = scanString(R, it[k] as string);
   }
   return copy;
 }
 
-/**
- * A tool result with every secret-shaped string blanked: the text of each content item, and
- * every key and string in `structuredContent`. Returns a new object; the input is not changed.
- * Never throws: on an internal error it returns an error result that carries no text from the input.
- */
-export function redactToolResult<T>(result: T, opts: ScanOpts = {}): T {
+/** A tool result scanned with one compiled rule set. Never throws (see `SecretScanner`). */
+function scanResult<T>(R: Compiled, result: T, opts: ScanOpts): T {
   try {
-    if (!result || typeof result !== "object") return (typeof result === "string" ? redactSecrets(result, opts) : result) as T;
+    if (!result || typeof result !== "object") return (typeof result === "string" ? scanString(R, result, opts) : result) as T;
     const r = result as Record<string, unknown>;
     const out: Record<string, unknown> = { ...r };
-    if (Array.isArray(r.content)) out.content = r.content.map((c) => redactContentItem(c, opts));
-    if (r.structuredContent !== undefined) out.structuredContent = scanValue(r.structuredContent, 0, { changed: false, snippets: opts.snippets === true });
+    if (Array.isArray(r.content)) out.content = r.content.map((c) => redactContentItem(R, c, opts));
+    if (r.structuredContent !== undefined) out.structuredContent = scanValue(R, r.structuredContent, 0, { changed: false, snippets: opts.snippets === true });
     return out as T;
   } catch {
     return { content: [{ type: "text", text: SCAN_FAILED_TEXT }], isError: true } as unknown as T;
   }
 }
 
+function scanString(R: Compiled, text: string, opts: ScanOpts = {}): string {
+  try {
+    if (typeof text !== "string") return SCAN_FAILED_TEXT;
+    return scanText(R, text, 0, opts.snippets === true);
+  } catch {
+    return SCAN_FAILED_TEXT;
+  }
+}
+
 /** A thrown error with its message blanked (the SDK turns a thrown error's message into the reply). */
-function redactThrown(e: unknown): unknown {
+function redactThrown(R: Compiled, e: unknown): unknown {
   try {
     if (e instanceof Error) {
-      e.message = redactSecrets(e.message);
+      e.message = scanString(R, e.message);
       return e;
     }
-    return typeof e === "string" ? redactSecrets(e) : e;
+    return typeof e === "string" ? scanString(R, e) : e;
   } catch {
     return new Error(SCAN_FAILED_TEXT);
   }
@@ -617,18 +619,179 @@ function redactThrown(e: unknown): unknown {
 /** The tools whose replies are search hits, scanned with `snippets`. */
 export const SNIPPET_TOOLS: ReadonlySet<string> = new Set(["obsidian_search_notes"]);
 
+// ── configuration ───────────────────────────────────────────────────────────
+
+/** One token pattern: a kind for the marker and a regular expression (source text). */
+export interface TokenPattern {
+  kind: string;
+  regex: string;
+  ignoreCase?: boolean;
+}
+
 /**
- * Wrap a tool handler so its reply passes through `redactToolResult`, and a thrown error's
- * message through `redactSecrets`. The arguments reach the handler unchanged.
+ * What a deployment may change. Every field is optional; an empty config is the shipped defaults.
+ * - `keyNames` replaces the shipped secret key names; `extraKeyNames` adds to them (or to `keyNames`).
+ * - `patterns` replaces the shipped provider token shapes; `extraPatterns` adds to them. The
+ *   structural rules (private key blocks, JWTs, Authorization and bearer values, URL credentials)
+ *   always run.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function redactingHandler<H extends (...args: any[]) => any>(handler: H, opts: ScanOpts = {}): H {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (async (...args: any[]) => {
-    try {
-      return redactToolResult(await handler(...args), opts);
-    } catch (e) {
-      throw redactThrown(e);
+export interface SecretScanConfig {
+  keyNames?: string[];
+  extraKeyNames?: string[];
+  patterns?: TokenPattern[];
+  extraPatterns?: TokenPattern[];
+}
+
+/** A config the scanner refuses. The caller must not serve the profiles it covers unscanned. */
+export class SecretScanConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SecretScanConfigError";
+  }
+}
+
+const CONFIG_KEYS = new Set(["keyNames", "extraKeyNames", "patterns", "extraPatterns"]);
+const KEY_NAME_RE = /^[A-Za-z0-9]+(?:[ _-][A-Za-z0-9]+)*$/;
+const KIND_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+function keyNameList(v: unknown, field: string): string[] {
+  if (!Array.isArray(v)) throw new SecretScanConfigError(`${field} must be a list of key names`);
+  return v.map((n, i) => {
+    if (typeof n !== "string" || n.length > 64 || !KEY_NAME_RE.test(n.trim())) {
+      throw new SecretScanConfigError(`${field}[${i}] must be 1 to 64 letters or digits, words joined by a space, '_' or '-'`);
     }
-  }) as unknown as H;
+    return n.trim();
+  });
+}
+
+function patternList(v: unknown, field: string): TokenPattern[] {
+  if (!Array.isArray(v)) throw new SecretScanConfigError(`${field} must be a list of { kind, regex } objects`);
+  return v.map((p, i) => {
+    const at = `${field}[${i}]`;
+    if (!p || typeof p !== "object" || Array.isArray(p)) throw new SecretScanConfigError(`${at} must be a { kind, regex } object`);
+    const o = p as Record<string, unknown>;
+    for (const k of Object.keys(o)) if (k !== "kind" && k !== "regex" && k !== "ignoreCase") throw new SecretScanConfigError(`${at} has an unknown field '${k}'`);
+    if (typeof o.kind !== "string" || !KIND_RE.test(o.kind)) throw new SecretScanConfigError(`${at}.kind must be 1 to 40 lower-case letters, digits or '-'`);
+    if (typeof o.regex !== "string" || o.regex.length === 0 || o.regex.length > 512) throw new SecretScanConfigError(`${at}.regex must be a regular expression of 1 to 512 characters`);
+    if (o.ignoreCase !== undefined && typeof o.ignoreCase !== "boolean") throw new SecretScanConfigError(`${at}.ignoreCase must be true or false`);
+    try {
+      if (new RegExp(`^(?:${o.regex})$`).test("")) throw new SecretScanConfigError(`${at}.regex matches the empty string`);
+      new RegExp(`(?:${o.regex})`, "g");
+    } catch (e) {
+      if (e instanceof SecretScanConfigError) throw e;
+      throw new SecretScanConfigError(`${at}.regex does not compile: ${(e as Error).message}`);
+    }
+    return { kind: o.kind, regex: o.regex, ...(o.ignoreCase === true ? { ignoreCase: true } : {}) };
+  });
+}
+
+/** Check a config value (parsed JSON). Throws `SecretScanConfigError`; never returns a partial config. */
+export function parseSecretScanConfig(v: unknown): SecretScanConfig {
+  if (v === undefined || v === null) return {};
+  if (typeof v !== "object" || Array.isArray(v)) throw new SecretScanConfigError("the scanner config must be a JSON object");
+  const o = v as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!CONFIG_KEYS.has(k)) throw new SecretScanConfigError(`unknown scanner config field '${k}'; known: ${[...CONFIG_KEYS].join(", ")}`);
+  const cfg: SecretScanConfig = {};
+  if (o.keyNames !== undefined) {
+    cfg.keyNames = keyNameList(o.keyNames, "keyNames");
+    if (cfg.keyNames.length === 0) throw new SecretScanConfigError("keyNames, when given, must name at least one key (it replaces the shipped list)");
+  }
+  if (o.extraKeyNames !== undefined) cfg.extraKeyNames = keyNameList(o.extraKeyNames, "extraKeyNames");
+  if (o.patterns !== undefined) cfg.patterns = patternList(o.patterns, "patterns");
+  if (o.extraPatterns !== undefined) cfg.extraPatterns = patternList(o.extraPatterns, "extraPatterns");
+  return cfg;
+}
+
+/** A key name as a regex fragment: its words joined like the shipped names; a short name needs a boundary before it. */
+function keyNameFragment(name: string): string {
+  const words = name.split(/[ _-]+/).map(escapeRe).join(J);
+  return name.length <= 3 ? `(?<![A-Za-z0-9])${words}` : words;
+}
+
+interface Compiled {
+  tokenRules: Rule[];
+  keyName: RegExp;
+  kvPlain: RegExp;
+  kvEscaped: RegExp;
+  xml: RegExp;
+  html: RegExp;
+  yamlHead: RegExp;
+}
+
+function compile(cfg: SecretScanConfig): Compiled {
+  const words: string[] = [];
+  if (cfg.keyNames) words.push(...cfg.keyNames.map(keyNameFragment));
+  else words.push(DEFAULT_SECRET_WORDS);
+  if (cfg.extraKeyNames) words.push(...cfg.extraKeyNames.map(keyNameFragment));
+  const SECRET_KEY = keyFragment(`(?:${words.join("|")})`);
+  const provider = [...(cfg.patterns ?? DEFAULT_TOKEN_PATTERNS), ...(cfg.extraPatterns ?? [])].map(
+    (p): Rule => ({ kind: p.kind, re: new RegExp(`${START}(?:${p.regex})`, p.ignoreCase ? "gi" : "g") })
+  );
+  const HEAD = headOf(SECRET_KEY);
+  return {
+    tokenRules: [...RULES_BEFORE, ...provider, ...RULES_AFTER],
+    keyName: new RegExp(String.raw`(?:${SECRET_KEY}|authorization)$`, "i"),
+    kvPlain: kvPlainOf(HEAD),
+    kvEscaped: kvEscapedOf(HEAD),
+    xml: xmlOf(SECRET_KEY),
+    html: htmlOf(SECRET_KEY),
+    yamlHead: yamlHeadOf(SECRET_KEY),
+  };
+}
+
+/** A compiled scanner. Its methods are pure, linear in the input for the shipped rules, and never throw. */
+export interface SecretScanner {
+  /** Blank every secret-shaped string in a text. On an internal error: `SCAN_FAILED_TEXT`. JSON text stays valid JSON. */
+  redactSecrets(text: string, opts?: ScanOpts): string;
+  /**
+   * A tool result with every secret-shaped string blanked: the text of each content item, and
+   * every key and string in `structuredContent`. Returns a new object; the input is not changed.
+   * On an internal error: an error result that carries no text from the input.
+   */
+  redactToolResult<T>(result: T, opts?: ScanOpts): T;
+  /** Wrap a tool handler: its reply, and a thrown error's message, are scanned. Arguments pass unchanged. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wrap<H extends (...args: any[]) => any>(handler: H, opts?: ScanOpts): H;
+}
+
+/**
+ * A scanner for a config (parsed JSON, or a checked `SecretScanConfig`); absent ⇒ the shipped
+ * defaults. Throws `SecretScanConfigError` on a config it refuses, so a bad config can never turn
+ * into a scanner that scans less than it says.
+ */
+export function createSecretScanner(config?: unknown): SecretScanner {
+  const R = compile(parseSecretScanConfig(config));
+  return {
+    redactSecrets: (text, opts = {}) => scanString(R, text, opts),
+    redactToolResult: (result, opts = {}) => scanResult(R, result, opts),
+    wrap: (handler, opts = {}) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (async (...args: any[]) => {
+        try {
+          return scanResult(R, await handler(...args), opts);
+        } catch (e) {
+          throw redactThrown(R, e);
+        }
+      }) as unknown as typeof handler,
+  };
+}
+
+/** The scanner with the shipped defaults. */
+export const DEFAULT_SECRET_SCANNER: SecretScanner = createSecretScanner();
+
+/** `DEFAULT_SECRET_SCANNER.redactSecrets`. */
+export function redactSecrets(text: string, opts: ScanOpts = {}): string {
+  return DEFAULT_SECRET_SCANNER.redactSecrets(text, opts);
+}
+
+/** `DEFAULT_SECRET_SCANNER.redactToolResult`. */
+export function redactToolResult<T>(result: T, opts: ScanOpts = {}): T {
+  return DEFAULT_SECRET_SCANNER.redactToolResult(result, opts);
+}
+
+/** `scanner.wrap(handler, opts)`, the shipped defaults when no scanner is given. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function redactingHandler<H extends (...args: any[]) => any>(handler: H, opts: ScanOpts = {}, scanner: SecretScanner = DEFAULT_SECRET_SCANNER): H {
+  return scanner.wrap(handler, opts);
 }
