@@ -219,9 +219,9 @@ describe("readSyncSnapshot — only the named fields", () => {
     assert.doesNotMatch(JSON.stringify(s), /secret/);
   });
   test("copies the named fields and nothing else: never the key or the salt, only each pending change's path", () => {
-    const inst = { ready: true, error: null, pause: false, syncStatus: "Indexing...", newServerFiles: [{ path: "a.md", hash: "HASH-1", device: "MacBook Air" }, { path: "b/c.md" }], server: { lastMessageTs: NOW, socket: { readyState: 1 } }, key: "KEY-BYTES", salt: "SALT-BYTES", deviceName: "MacBook Pro" };
+    const inst = { ready: true, error: null, pause: false, syncStatus: "Indexing...", newServerFiles: [{ path: "a.md", hash: "HASH-1", device: "MacBook Air" }, { path: "b/c.md" }], server: { lastMessageTs: NOW, socket: { readyState: 1 } }, syncing: true, dirty: false, key: "KEY-BYTES", salt: "SALT-BYTES", deviceName: "MacBook Pro" };
     const s = readSyncSnapshot({ internalPlugins: { plugins: { sync: { enabled: true, instance: inst } } } });
-    assert.deepEqual(s, { state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Indexing...", pendingPaths: ["a.md", "b/c.md"], socketOpen: true, lastMessageTs: NOW } });
+    assert.deepEqual(s, { state: "fields", fields: { ready: true, error: null, pause: false, syncStatus: "Indexing...", pendingPaths: ["a.md", "b/c.md"], socketOpen: true, lastMessageTs: NOW, syncing: true, dirty: false } });
     assert.doesNotMatch(JSON.stringify(s), /KEY|SALT|HASH|MacBook/);
   });
   test("no socket, or one that is not open, is socketOpen false", () => {
@@ -535,5 +535,44 @@ describe("a rename, move or delete polls up to strictWaitSeconds (120 s) for a F
     t += 40_000;
     await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
     assert.ok(sleeps.length > n, "a connection hold lasts 30 s, as before, even after a 120 s wait");
+  });
+});
+
+describe("Sync's own flags are a second proof for a rename, move or delete: syncing === false && dirty === false", () => {
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, strictWaitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const MOVE = ["obsidian_move_note", { from: "A.md", to: "B.md" }];
+  test("both flags false: the rename goes on while the status text is not Fully synced", async () => {
+    for (const st of ["Indexing...", "Uploading a.md", "anything"]) {
+      assert.equal(await decideSync(...MOVE, deps(synced({ syncStatus: st, syncing: false, dirty: false }))), null, st);
+    }
+    assert.equal(await decideSync("obsidian_trash", { path: "A.md" }, deps(synced({ syncStatus: "Indexing...", syncing: false, dirty: false }))), null);
+    assert.equal(await decideSync(...MOVE, deps(synced({ syncStatus: undefined, syncing: false, dirty: false }))), null, "the flags prove it even with no status text");
+  });
+  test("a flag that is true, absent or not a boolean does not count: only the status text does", async () => {
+    for (const flags of [{ syncing: true, dirty: false }, { syncing: false, dirty: true }, {}, { syncing: false }, { dirty: false }, { syncing: 0, dirty: 0 }, { syncing: "false", dirty: "false" }, { syncing: null, dirty: null }]) {
+      const d = await decideSync(...MOVE, deps(synced({ syncStatus: "Indexing...", ...flags })));
+      assert.equal(d.refuse.code, SYNC_BEHIND, JSON.stringify(flags));
+      assert.match(d.refuse.message, /own changes are still going up/);
+      assert.equal(await decideSync(...MOVE, deps(synced({ syncStatus: "Fully synced", ...flags }))), null, `text proves it: ${JSON.stringify(flags)}`);
+    }
+  });
+  test("the flags do not override a connection cause or a pending change at the write's path", async () => {
+    const idle = { syncStatus: "Indexing...", syncing: false, dirty: false };
+    assert.match((await decideSync(...MOVE, deps(synced({ ...idle, socketOpen: false })))).refuse.message, /disconnected/);
+    assert.match((await decideSync(...MOVE, deps(synced({ ...idle, pendingPaths: ["A.md"] })))).refuse.message, /not yet pulled/);
+    const d = await decideSync("obsidian_refile_address", { path: "A.md" }, deps(synced({ ...idle, pendingPaths: ["Elsewhere/X.md"] })));
+    assert.match(d.refuse.message, /does not name where it writes/, "the destination-unnamed check stays");
+  });
+  test("creates unchanged: they judge neither the text nor the flags", async () => {
+    assert.equal(await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, deps(synced({ syncStatus: "Indexing...", syncing: true, dirty: true }))), null);
+    assert.match((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, deps(synced({ syncing: false, dirty: false, socketOpen: false })))).refuse.message, /disconnected/);
+  });
+  test("a wait ends at the first look where the flags say idle", async () => {
+    let t = NOW;
+    const states = [synced({ syncStatus: "Indexing...", syncing: true, dirty: true }), synced({ syncStatus: "Indexing...", syncing: false, dirty: true }), synced({ syncStatus: "Indexing...", syncing: false, dirty: false })];
+    let i = 0;
+    const d = await decideSync(...MOVE, { settings: normalizeSyncGuard({ enabled: true }), read: () => states[Math.min(i++, states.length - 1)], now: () => t, sleep: async (ms) => { t += ms; }, pollMs: 500 });
+    assert.equal(d, null);
+    assert.equal(t - NOW, 1000);
   });
 });

@@ -12,7 +12,9 @@
 // create) that is still behind, and lets a CONTENT write (edit, append) go on
 // with a warning. Since #528 it does not judge Sync's status text, which says
 // "Indexing..." for most of a busy day, except for a rename, move or delete,
-// which waits for "Fully synced" again (#533): that is the 2026-10-10 case.
+// which waits (up to `strictWaitSeconds`, 120 s) for "Fully synced" again
+// (#533), or for Sync's own flags to say it is idle (`syncing` and `dirty`
+// both false): that is the 2026-10-10 case.
 //
 // Obsidian-free and pure: the Sync state arrives as a plain snapshot
 // (server.ts reads it from Obsidian's internal Sync plugin, one named field at
@@ -95,7 +97,8 @@ export interface SyncFields {
   error: unknown;
   pause: unknown;
   /** The status text ("Fully synced", "Indexing...", "Uploading …"). Judged only for a rename, move or
-   *  delete (#533); measured 2026-10-12, it says "Indexing..." for most of the day while the fleet writes (#528). */
+   *  delete (#533), where `syncing`/`dirty` both false is a second proof; measured 2026-10-12, it says
+   *  "Indexing..." for most of the day while the fleet writes (#528). */
   syncStatus: unknown;
   /** The paths of `newServerFiles` (server changes not yet pulled), or undefined when it is not an array. */
   pendingPaths: unknown;
@@ -103,6 +106,10 @@ export interface SyncFields {
   socketOpen: unknown;
   /** `server.lastMessageTs`, ms since the epoch. */
   lastMessageTs: unknown;
+  /** `syncing`: true while Sync is in a sync pass. With `dirty`, a second proof that this Mac is idle, for a rename, move or delete. */
+  syncing: unknown;
+  /** `dirty`: true while this Mac has local changes not yet synced. */
+  dirty: unknown;
 }
 
 /** The Sync plugin is off (or absent) in this vault: the guard does nothing. */
@@ -116,7 +123,7 @@ export type SyncSnapshot =
  * `app.internalPlugins.plugins.sync`: absent or not enabled ⇒ `off` (the
  * guard does nothing in a vault without Sync); enabled with no instance, or
  * any throw ⇒ `unknown`. The instance also holds the vault's encryption key
- * and salt, so only the six fields below are copied, and the instance is never
+ * and salt, so only the named fields below are copied, and the instance is never
  * returned, logged or put in an error message.
  */
 export function readSyncSnapshot(app: unknown): SyncSnapshot {
@@ -139,6 +146,8 @@ export function readSyncSnapshot(app: unknown): SyncSnapshot {
         pendingPaths: Array.isArray(nsf) ? nsf.map((e: { path?: unknown }) => (typeof e?.path === "string" ? e.path : "")).filter(Boolean) : undefined,
         socketOpen: socket == null ? false : socket.readyState === 1,
         lastMessageTs: inst.server?.lastMessageTs,
+        syncing: inst.syncing,
+        dirty: inst.dirty,
       },
     };
   } catch {
@@ -158,7 +167,7 @@ export type SyncVerdict =
 
 /**
  * Structure writes that rename, move or delete an existing note (#533, Nelson's pick A): for them
- * the status text is judged again, so they wait for "Fully synced". Creates are not in this set:
+ * the status text is judged again, so they wait for "Fully synced" (or Sync's flags saying idle). Creates are not in this set:
  * judging the text for them refused nearly every create on a busy day (#528).
  */
 export const STATUS_STRICT: ReadonlySet<string> = new Set([
@@ -204,7 +213,8 @@ function pendingTouches(pending: string, target: string): boolean {
  * on the Pro on 2026-10-12, it said "Indexing..." through 45 minutes of fleet
  * writes while the socket was open and changes flowed, so judging it refused
  * nearly every create. With `strictStatus` (a rename, move or delete, #533)
- * anything but "Fully synced" is behind, because a rename made while this
+ * it is behind unless the status text says "Fully synced" or Sync's own flags
+ * say `syncing === false && dirty === false`, because a rename made while this
  * Mac's own changes are still going up is how the 2026-10-10 twin came back.
  * Unknown when a field the test needs is missing or of another type.
  */
@@ -240,8 +250,11 @@ export function judgeSync(s: SyncSnapshot, now: number, targets: readonly string
   }
   // A rename, move or delete also waits for this Mac's own changes to go up (#533, Nelson's pick A):
   // the 2026-10-10 twin was a rename made while this Mac still said "Indexing...", and Sync gives no
-  // per-file upload signal, so only "Fully synced" proves this Mac's side is up. Creates do not judge it.
+  // per-file upload signal. Two proofs count: the status text "Fully synced", or Sync's own flags
+  // `syncing === false && dirty === false` (not in a sync pass, no local change waiting). The flags count
+  // only when both are booleans; absent or of another type, only the text counts. Creates judge neither.
   if (strictStatus) {
+    if (f.syncing === false && f.dirty === false) return { kind: "synced" };
     if (typeof f.syncStatus !== "string") return { kind: "unknown", why: "Sync fields missing or changed: syncStatus" };
     if (f.syncStatus !== "Fully synced") return { kind: "behind", status: `this Mac's own changes are still going up (${f.syncStatus})`, scope: "status" };
   }
