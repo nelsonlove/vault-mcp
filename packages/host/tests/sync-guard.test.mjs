@@ -26,12 +26,15 @@ const synced = (over = {}) => ({ state: "fields", fields: { ready: true, error: 
 const behind = () => synced({ socketOpen: false });
 
 describe("settings", () => {
-  test("ships off, refuse, 30 s, warn on unknown", () => {
-    assert.deepEqual({ ...DEFAULT_SYNC_GUARD }, { enabled: false, mode: "refuse", waitSeconds: 30, onUnknown: "warn" });
+  test("ships off, refuse, 30 s (120 s for a rename, move or delete), warn on unknown", () => {
+    assert.deepEqual({ ...DEFAULT_SYNC_GUARD }, { enabled: false, mode: "refuse", waitSeconds: 30, strictWaitSeconds: 120, onUnknown: "warn" });
     assert.deepEqual(normalizeSyncGuard(undefined), { ...DEFAULT_SYNC_GUARD });
   });
   test("a hand-edited value is coerced, never a crash; enabled only on a literal true; the wait is clamped", () => {
-    assert.deepEqual(normalizeSyncGuard({ enabled: "yes", mode: "nope", waitSeconds: "5", onUnknown: 3 }), { ...DEFAULT_SYNC_GUARD });
+    assert.deepEqual(normalizeSyncGuard({ enabled: "yes", mode: "nope", waitSeconds: "5", strictWaitSeconds: "9", onUnknown: 3 }), { ...DEFAULT_SYNC_GUARD });
+    assert.equal(normalizeSyncGuard({ strictWaitSeconds: -1 }).strictWaitSeconds, 0);
+    assert.equal(normalizeSyncGuard({ strictWaitSeconds: 1e9 }).strictWaitSeconds, MAX_WAIT_SECONDS);
+    assert.equal(normalizeSyncGuard({ waitSeconds: 5 }).strictWaitSeconds, 120, "the strict wait is its own key");
     assert.equal(normalizeSyncGuard({ enabled: true }).enabled, true);
     assert.equal(normalizeSyncGuard({ waitSeconds: -4 }).waitSeconds, 0);
     assert.equal(normalizeSyncGuard({ waitSeconds: 1e9 }).waitSeconds, MAX_WAIT_SECONDS);
@@ -139,7 +142,7 @@ describe("decideSync", () => {
   });
   test("refuse: a structure write waits the whole wait, then is refused with sync_behind and the status", async () => {
     const c = clock([behind()]);
-    const d = await decideSync("obsidian_move_note", {}, c.deps({ waitSeconds: 5 }));
+    const d = await decideSync("obsidian_move_note", {}, c.deps({ waitSeconds: 5, strictWaitSeconds: 5 }));
     assert.equal(d.refuse.code, SYNC_BEHIND);
     assert.match(d.refuse.message, /disconnected/);
     assert.match(d.refuse.message, /Nothing was written/);
@@ -151,7 +154,7 @@ describe("decideSync", () => {
     assert.equal(c.sleeps.length, 2);
   });
   test("mode wait: waits, then goes on with a warning", async () => {
-    const d = await decideSync("obsidian_move_note", {}, clock([behind()]).deps({ mode: "wait", waitSeconds: 2 }));
+    const d = await decideSync("obsidian_move_note", {}, clock([behind()]).deps({ mode: "wait", waitSeconds: 2, strictWaitSeconds: 2 }));
     assert.match(d.warn, /behind after waiting 2 s/);
   });
   test("mode warn: no wait at all, only a warning", async () => {
@@ -313,7 +316,7 @@ describe("makeGuarded with the Sync guard", () => {
 });
 
 describe("#528: decideSync judges pending changes at the call's own paths", () => {
-  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, strictWaitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
   test("a move whose source has a server change waiting is refused; one elsewhere goes on", async () => {
     const s = synced({ pendingPaths: ["Inbox/A.md"] });
     assert.equal((await decideSync("obsidian_move_note", { from: "Inbox/A.md", to: "Done/A.md" }, deps(s))).refuse.code, SYNC_BEHIND);
@@ -325,7 +328,7 @@ describe("#528: decideSync judges pending changes at the call's own paths", () =
 });
 
 describe("#529 review: tools that do not name where they write, the hold, and the message", () => {
-  const deps = (state, settings = {}) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, ...settings }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const deps = (state, settings = {}) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, strictWaitSeconds: 0, ...settings }), read: () => state, now: () => NOW, sleep: async () => {} });
   test("the scheme tools and periodic_note check every pending change", async () => {
     const s = synced({ pendingPaths: ["Elsewhere/X.md"] });
     for (const [tool, args] of [["obsidian_renumber_address", { path: "A.md", to_address: "06.20" }], ["obsidian_assign_address", { path: "A.md", scope: "06" }], ["obsidian_refile_address", { path: "A.md" }], ["obsidian_periodic_note", { period: "daily" }], ["obsidian_base_create", { path: "Bases/X.base", name: "N" }]]) {
@@ -345,7 +348,7 @@ describe("#529 review: tools that do not name where they write, the hold, and th
     let t = NOW;
     let state = synced({ pendingPaths: ["A.md"] });
     const sleeps = [];
-    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2, strictWaitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
     await guard("obsidian_move_note", { from: "A.md", to: "Z.md" });
     const after1 = sleeps.length;
     assert.ok(after1 > 0);
@@ -365,7 +368,7 @@ describe("#529 review 2: the hold skips only a connection wait, and only a check
     let t = NOW;
     let state = synced({ socketOpen: false });
     const sleeps = [];
-    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2, strictWaitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
     await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
     const n = sleeps.length;
     state = synced({ pendingPaths: ["C.md"] });
@@ -376,7 +379,7 @@ describe("#529 review 2: the hold skips only a connection wait, and only a check
     let t = NOW;
     const state = synced({ socketOpen: false });
     const sleeps = [];
-    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2, strictWaitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
     await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
     const n = sleeps.length;
     assert.equal(await guard("obsidian_snippet_write", { name: "x" }), null);
@@ -389,7 +392,7 @@ describe("#529 review 2: the hold skips only a connection wait, and only a check
 });
 
 describe("#533 (Nelson's pick A): a rename, move or delete waits for Fully synced again; a create does not", () => {
-  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, strictWaitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
   const busy = synced({ syncStatus: "Indexing...", pendingPaths: [] });
   test("move, move_notes, the scheme moves, delete and trash are refused while this Mac's own changes go up", async () => {
     for (const [tool, args] of [
@@ -431,7 +434,7 @@ describe("#533 (Nelson's pick A): a rename, move or delete waits for Fully synce
 });
 
 describe("#533 review 1", () => {
-  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
+  const deps = (state) => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 0, strictWaitSeconds: 0 }), read: () => state, now: () => NOW, sleep: async () => {} });
   test("the refusal for the status cause says to wait for Fully synced", async () => {
     const d = await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, deps(synced({ syncStatus: "Indexing..." })));
     assert.match(d.refuse.message, /Retry when Sync says Fully synced/);
@@ -444,7 +447,7 @@ describe("#533 review 1", () => {
     let t = NOW;
     const sleeps = [];
     const state = synced({ syncStatus: "Indexing..." });
-    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 2, strictWaitSeconds: 2 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
     await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
     const n = sleeps.length;
     assert.ok(n > 0);
@@ -457,5 +460,80 @@ describe("#533 review 1", () => {
     const structure = MCP_SURFACE_INVENTORY.filter((r) => r.syncKind === "structure").map((r) => r.tool);
     for (const t of structure) if (!CREATES.has(t)) assert.ok(STATUS_STRICT.has(t), `${t} renames, moves or deletes but is not in STATUS_STRICT`);
     for (const t of STATUS_STRICT) assert.ok(structure.includes(t), `${t} is in STATUS_STRICT but its row is not syncKind structure`);
+  });
+});
+
+describe("a rename, move or delete polls up to strictWaitSeconds (120 s) for a Fully synced moment", () => {
+  const busy = synced({ syncStatus: "Indexing..." });
+  // The server keeps talking while the fake clock runs: a fresh lastMessageTs at each look.
+  const fresh = (st, t) => ({ ...st, fields: { ...st.fields, lastMessageTs: t - 1000 } });
+  // A fake clock whose Sync state is a function of the elapsed time.
+  const timed = (stateAt, settings = {}) => {
+    let t = NOW;
+    const sleeps = [];
+    return {
+      sleeps,
+      elapsed: () => t - NOW,
+      deps: { settings: normalizeSyncGuard({ enabled: true, ...settings }), read: () => fresh(stateAt(t - NOW), t), now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 500 },
+    };
+  };
+  test("Fully synced first seen at 40 s: the rename goes on then, past the 30 s that is still the general wait", async () => {
+    const c = timed((ms) => (ms >= 40_000 ? synced() : busy));
+    assert.equal(await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, c.deps), null);
+    assert.equal(c.elapsed(), 40_000, "it went on at the first look that found Fully synced");
+    assert.ok(c.sleeps.every((ms) => ms <= 500), "it looked again every 500 ms");
+  });
+  test("a moment of Fully synced shorter than a second between busy stretches is caught", async () => {
+    const c = timed((ms) => (ms >= 75_200 && ms < 75_700 ? synced() : busy));
+    assert.equal(await decideSync("obsidian_trash", { path: "A.md" }, c.deps), null);
+    assert.equal(c.elapsed(), 75_500);
+  });
+  test("never Fully synced: refused at 120 s with the same sync_behind refusal", async () => {
+    const c = timed(() => busy);
+    const d = await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, c.deps);
+    assert.equal(d.refuse.code, SYNC_BEHIND);
+    assert.match(d.refuse.message, /after waiting 120 s: this Mac's own changes are still going up \(Indexing\.\.\.\)/);
+    assert.match(d.refuse.message, /Retry when Sync says Fully synced/);
+    assert.equal(c.elapsed(), 120_000);
+  });
+  test("the strict wait is its own setting", async () => {
+    const c = timed(() => busy, { strictWaitSeconds: 45 });
+    assert.match((await decideSync("obsidian_delete_note", { path: "A.md" }, c.deps)).refuse.message, /after waiting 45 s/);
+    assert.equal(c.elapsed(), 45_000);
+  });
+  test("every other caller keeps waitSeconds: a create and a content write wait 30 s, not 120 s", async () => {
+    const off = synced({ socketOpen: false });
+    const create = timed(() => off);
+    assert.equal((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, create.deps)).refuse.code, SYNC_BEHIND);
+    assert.equal(create.elapsed(), 30_000);
+    const append = timed(() => off);
+    assert.match((await decideSync("obsidian_append_note", { path: "N.md", content: "x" }, append.deps)).warn, /after waiting 30 s/);
+    assert.equal(append.elapsed(), 30_000);
+  });
+  test("a create while Indexing is unchanged: it goes on at once", async () => {
+    const c = timed(() => busy);
+    assert.equal(await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, c.deps), null);
+    assert.equal(c.elapsed(), 0);
+  });
+  test("createSyncGuard: a status hold lasts the strict wait; a connection hold still lasts waitSeconds", async () => {
+    let t = NOW;
+    let state = busy;
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true }), read: () => fresh(state, t), now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 500 }));
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    let n = sleeps.length;
+    t += 100_000;
+    assert.equal((await guard("obsidian_trash", { path: "C.md" })).refuse.code, SYNC_BEHIND);
+    assert.equal(sleeps.length, n, "100 s later, still inside the 120 s status hold: no second wait");
+    t += 25_000;
+    await guard("obsidian_trash", { path: "C.md" });
+    assert.ok(sleeps.length > n, "past the 120 s hold: it waits again");
+    state = synced({ socketOpen: false });
+    t += 1_000_000;
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    n = sleeps.length;
+    t += 40_000;
+    await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
+    assert.ok(sleeps.length > n, "a connection hold lasts 30 s, as before, even after a 120 s wait");
   });
 });

@@ -915,7 +915,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
     // ── Sync guard (01.43, Nelson's pick A of 2026-10-12) ─────────────────────
     // Before a write, wait for this Mac's Obsidian Sync; then refuse a rename,
     // move, delete or create that is still behind, and warn on an edit or
-    // append. kernel/sync-guard.ts holds the rule; these four keys drive it.
+    // append. kernel/sync-guard.ts holds the rule; these five keys drive it.
     containerEl.createEl("h4", { text: "Sync guard" });
     const sg = this.plugin.settings.syncGuard;
     new Setting(containerEl)
@@ -957,6 +957,25 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           }
           this.plugin.settings.syncGuard.waitSeconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, n));
           t.setValue(String(this.plugin.settings.syncGuard.waitSeconds));
+          await this.plugin.saveSettings();
+        });
+      });
+    new Setting(containerEl)
+      .setName("Wait for a rename, move or delete (seconds)")
+      .setDesc(
+        `How long a rename, move or delete waits, in place of the wait above, for a moment Sync is idle (it says Fully synced). On a busy day those moments are short and far apart, so it looks again every half second and goes on at the first one. 0 to ${MAX_WAIT_SECONDS}. Saved when you leave the field.`
+      )
+      .addText((t) => {
+        t.setValue(String(sg.strictWaitSeconds));
+        t.inputEl.addEventListener("change", async () => {
+          const raw = t.getValue().trim();
+          const n = Number(raw);
+          if (raw === "" || !Number.isFinite(n)) {
+            t.setValue(String(this.plugin.settings.syncGuard.strictWaitSeconds));
+            return;
+          }
+          this.plugin.settings.syncGuard.strictWaitSeconds = Math.min(MAX_WAIT_SECONDS, Math.max(0, n));
+          t.setValue(String(this.plugin.settings.syncGuard.strictWaitSeconds));
           await this.plugin.saveSettings();
         });
       });
