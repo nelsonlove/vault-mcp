@@ -39,6 +39,7 @@ import { normalizeCliPolicy, type OpaqueSnapshotEntry } from "./mcp/cli-policy.j
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
 import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
 import { DEFAULT_WRITE_SCOPE, normalizeWriteScope, type WriteScope } from "@vault-mcp/core";
+import { DEFAULT_FILE_MOVE_EXTENSIONS, normalizeFileMoveExtensions } from "@vault-mcp/core";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
   DEFAULT_RECORD_FOLDERS,
@@ -245,6 +246,15 @@ interface VaultMcpSettings {
    */
   createNoteFlow: string;
   /**
+   * The file types obsidian_move_file moves besides `.base` and `.canvas`: extensions, lower case,
+   * without the dot. Default: core's DEFAULT_FILE_MOVE_EXTENSIONS (images, audio, video, PDF, and
+   * docx xlsx pptx odt zip). Empty: only `.base` and `.canvas`. A note (`md`) is never on it; it
+   * moves with obsidian_move_note. Only the move widens: obsidian_write_file and
+   * obsidian_edit_file stay `.base` and `.canvas`. Coerced through `normalizeFileMoveExtensions`
+   * on load; read live per call.
+   */
+  fileMoveExtensions: string[];
+  /**
    * What agents may WRITE, separate from what they may read (core's
    * write-scope.ts): `mode` "all" (no rule) or "create-only" (a new note at a
    * path matching one of `paths`, glob patterns; every other write refused).
@@ -328,6 +338,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   recordFolders: { ...DEFAULT_RECORD_FOLDERS, folders: [...DEFAULT_RECORD_FOLDERS.folders] },
   syncGuard: { ...DEFAULT_SYNC_GUARD },
   createNoteFlow: "",
+  fileMoveExtensions: [...DEFAULT_FILE_MOVE_EXTENSIONS],
   writeScope: { ...DEFAULT_WRITE_SCOPE, paths: [] },
   host: { ...DEFAULT_HOST_SETTINGS },
 };
@@ -460,6 +471,8 @@ export default class VaultMcpPlugin extends Plugin {
     // The Sync guard: a partial or hand-edited value is coerced, never a crash; absent ⇒ off.
     this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
     if (typeof this.settings.createNoteFlow !== "string") this.settings.createNoteFlow = "";
+    // Absent (an older data.json) ⇒ the default list; a hand-edited entry is trimmed, lower-cased or dropped.
+    this.settings.fileMoveExtensions = normalizeFileMoveExtensions(this.settings.fileMoveExtensions);
     this.settings.writeScope = normalizeWriteScope(this.settings.writeScope);
     this.settings.host = normalizeHostSettings(this.settings.host);
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any
@@ -938,6 +951,8 @@ export default class VaultMcpPlugin extends Plugin {
         guardedTerritories: this.settings.guardedTerritories,
         // Live per call: an operator who narrows or widens the write scope does not wait for a reconnect.
         writeScope: this.settings.writeScope,
+        // Live per call: obsidian_move_file reads the list on each move.
+        fileMoveExtensions: this.settings.fileMoveExtensions,
       }),
       // The record settings, live per call through their own thunks — the same
       // two getters the kernel's guard probe above takes — and deliberately not

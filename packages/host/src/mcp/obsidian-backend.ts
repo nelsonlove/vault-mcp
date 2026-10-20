@@ -45,6 +45,7 @@ import {
   parseGuardFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
   assertFilePath,
+  assertMovePair,
   validateFileContent,
   applyFileEdit,
 } from "@vault-mcp/core";
@@ -762,10 +763,11 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
   async moveFile(
     fromRel: string,
     toRel: string,
-    options: { update_backlinks: boolean; overwrite: boolean },
+    options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null; link_check?: LinkCheck }> {
-    const kind = assertFilePath(fromRel);
-    if (assertFilePath(toRel) !== kind) throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type`);
+    // A .base or .canvas file, or an attachment whose extension is on the operator's list (core's
+    // assertMovePair; a note is refused, it moves with obsidian_move_note); the extension kept.
+    assertMovePair(fromRel, toRel, options.extensions ?? []);
     if (fromRel === toRel) throw new Error("from and to are the same path");
     // Before anything is trashed or any folder is made: a refused name moves nothing.
     await assertMoveName(this.app, fromRel, toRel, options.overwrite);

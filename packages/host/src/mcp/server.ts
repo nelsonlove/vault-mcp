@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { inRecordFolder } from "./records.js";
 import { TFile, stringifyYaml, parseYaml, type App } from "obsidian";
-import { registerFsTools, registerFileTools, normalizeWriteScope, ok,
+import { registerFsTools, registerFileTools, normalizeWriteScope, normalizeFileMoveExtensions, ok,
   CHARACTER_LIMIT,
   noteLengthFrom,
   WholeReads,
@@ -596,7 +596,8 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
         }
       : {}),
   });
-  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files through the same
+  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files (and, for the move,
+  // the attachment types the operator lists) through the same
   // backend and the same guarded registerTool, so every kernel rule above applies to them. No
   // profile option: the patched registerTool filters by profile here, as for every tool.
   // pathScope: a .base is a query (#580 review 1), so while the allowlist or a vault-wide write
@@ -608,6 +609,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
       if (normalizeWriteScope(st.writeScope).mode !== "all") return "the vault's write scope";
       return null;
     },
+    // The attachment types obsidian_move_file moves besides .base and .canvas: the operator's
+    // fileMoveExtensions setting, read per call (absent ⇒ the shipped default list).
+    moveExtensions: () => normalizeFileMoveExtensions(ctx.getSettings().fileMoveExtensions),
   });
 
   // ── remaining tools — live-only, complementary, nav, integrations ────────────

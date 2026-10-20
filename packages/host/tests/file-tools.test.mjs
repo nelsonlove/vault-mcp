@@ -352,6 +352,116 @@ describe("obsidian_move_file", () => {
   });
 });
 
+describe("obsidian_move_file on attachment files (the operator's fileMoveExtensions list)", () => {
+  const PDF = "%PDF-1.7 made-up bytes\n";
+  const ZIP = "PK\u0003\u0004 made-up bytes";
+  test("a PDF and a zip move between folders, keep their bytes, and links and embeds in notes are rewritten", async () => {
+    const index = "Scan: ![[Scan.pdf]], page: ![[Inbox/Scan.pdf#page=2]], bundle: [[Inbox/Bundle.zip|the bundle]], md embed: ![scan](Inbox/Scan.pdf).\n";
+    const h = await harness({ "Inbox/Scan.pdf": PDF, "Inbox/Bundle.zip": ZIP, "Notes/Index.md": index });
+    try {
+      const k = key();
+      let r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/2026/Scan 2026.pdf", idempotency_key: k });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.equal(h.text.get("Files/2026/Scan 2026.pdf"), PDF, "the file's bytes are not read or changed");
+      assert.equal(h.text.has("Inbox/Scan.pdf"), false);
+      assert.equal(data(r).link_check.ok, true, JSON.stringify(data(r).link_check));
+      assert.equal(data(r).backlinks_updated, 3);
+      r = await h.call("obsidian_move_file", { from: "Inbox/Bundle.zip", to: "Files/Bundle 2026.zip", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.equal(h.text.get("Files/Bundle 2026.zip"), ZIP);
+      const idx = h.text.get("Notes/Index.md");
+      assert.match(idx, /!\[\[Scan 2026\.pdf\]\]/, idx);
+      assert.match(idx, /!\[\[Scan 2026\.pdf#page=2\]\]/, idx);
+      assert.match(idx, /\[\[Bundle 2026\.zip\|the bundle\]\]/, idx);
+      assert.match(idx, /!\[scan\]\(Files\/2026\/Scan%202026\.pdf\)/, idx);
+      assert.equal(idx.includes("Inbox/"), false, idx);
+      const again = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/2026/Scan 2026.pdf", idempotency_key: k });
+      assert.equal(again.isError, undefined, errText(again));
+      assert.deepEqual(h.records().filter((x) => x.op === "obsidian_move_file").map((x) => x.outcome), ["ok", "ok", "deduped"], "journaled, and a retry is replayed");
+    } finally { await h.close(); }
+  });
+
+  test("a type off the list is refused (unsupported_file), and an empty list moves only .base and .canvas", async () => {
+    const h = await harness({ "Inbox/run.exe": "x", "Inbox/Data.json": "{}" });
+    try {
+      for (const from of ["Inbox/run.exe", "Inbox/Data.json"]) {
+        const r = await h.call("obsidian_move_file", { from, to: from.replace("Inbox/", "Files/"), idempotency_key: key() });
+        assert.match(errText(r), /^Error \[unsupported_file\]: .*does not move here/, from);
+      }
+      assert.equal(h.text.has("Inbox/run.exe"), true);
+    } finally { await h.close(); }
+    const narrow = await harness({ "Inbox/Scan.pdf": PDF, "Boards/Plan.canvas": CANVAS }, { settings: { fileMoveExtensions: [] } });
+    try {
+      let r = await narrow.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/Scan.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[unsupported_file\]/);
+      assert.equal(narrow.text.get("Inbox/Scan.pdf"), PDF);
+      r = await narrow.call("obsidian_move_file", { from: "Boards/Plan.canvas", to: "Archive/Plan.canvas", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+    } finally { await narrow.close(); }
+    const custom = await harness({ "Inbox/Photo.heic": "x" }, { settings: { fileMoveExtensions: ["HEIC"] } });
+    try {
+      const r = await custom.call("obsidian_move_file", { from: "Inbox/Photo.heic", to: "Files/Photo.heic", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+    } finally { await custom.close(); }
+  });
+
+  test("a rename may not change the extension, a note is refused (it moves with obsidian_move_note), and new names and hidden folders are checked", async () => {
+    const h = await harness({ "Inbox/Scan.pdf": PDF, "Notes/Plan.md": "# Plan\n" });
+    try {
+      for (const to of ["Inbox/Scan.zip", "Inbox/Scan.PDF", "Inbox/Scan"]) {
+        const r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to, idempotency_key: key() });
+        assert.match(errText(r), /^Error \[unsupported_file\]/, to);
+      }
+      let r = await h.call("obsidian_move_file", { from: "Notes/Plan.md", to: "Archive/Plan.md", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[unsupported_file\]: .*obsidian_move_note/);
+      assert.equal(h.text.has("Notes/Plan.md"), true);
+      r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/a:b.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[unsafe_name\]/);
+      r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: ".hidden/Scan.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[unsupported_file\]/);
+      r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "../Scan.pdf", idempotency_key: key() });
+      assert.equal(r.isError, true);
+      assert.equal(h.text.get("Inbox/Scan.pdf"), PDF, "nothing moved");
+    } finally { await h.close(); }
+  });
+
+  test("the path allowlist checks both ends of the move", async () => {
+    const h = await harness({ "Inbox/Scan.pdf": PDF, "Other/Old.pdf": PDF }, { settings: { allowlist: ["Inbox", "Files"] } });
+    try {
+      let r = await h.call("obsidian_move_file", { from: "Other/Old.pdf", to: "Files/Old.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[out_of_allowlist\]/, "the source outside");
+      r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Other/Scan.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[out_of_allowlist\]/, "the destination outside");
+      assert.equal(h.text.get("Inbox/Scan.pdf"), PDF);
+      assert.equal(h.text.get("Other/Old.pdf"), PDF);
+      r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/Scan.pdf", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+    } finally { await h.close(); }
+    const scoped = await harness({ "Inbox/Scan.pdf": PDF }, { settings: { writeScope: { mode: "create-only", paths: ["**"] } } });
+    try {
+      const r = await scoped.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/Scan.pdf", idempotency_key: key() });
+      assert.match(errText(r), /^Error \[write_scope\]/);
+    } finally { await scoped.close(); }
+  });
+
+  test("only the move widens: obsidian_write_file and obsidian_edit_file still refuse a PDF; obsidian_trash takes one", async () => {
+    const h = await harness({ "Inbox/Scan.pdf": PDF });
+    try {
+      let r = await h.call("obsidian_write_file", { path: "Inbox/New.pdf", content: PDF });
+      assert.match(errText(r), /^Error \[unsupported_file\]/);
+      assert.equal(h.text.has("Inbox/New.pdf"), false);
+      r = await h.call("obsidian_write_file", { path: "Inbox/Scan.pdf", content: "x", overwrite: true, if_rev: h.mtime("Inbox/Scan.pdf") });
+      assert.match(errText(r), /^Error \[unsupported_file\]/);
+      r = await h.call("obsidian_edit_file", { path: "Inbox/Scan.pdf", op: "remove_node", key: "a", if_rev: h.mtime("Inbox/Scan.pdf") });
+      assert.match(errText(r), /^Error \[unsupported_file\]/);
+      assert.equal(h.text.get("Inbox/Scan.pdf"), PDF);
+      r = await h.call("obsidian_trash", { path: "Inbox/Scan.pdf", if_rev: h.mtime("Inbox/Scan.pdf"), idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.deepEqual(h.trashed, [{ path: "Inbox/Scan.pdf", system: true }]);
+    } finally { await h.close(); }
+  });
+});
+
 describe("obsidian_trash on a .base and a .canvas", () => {
   test("trash takes either file with if_rev and idempotency_key", async () => {
     const h = await harness({ "Boards/Tasks.base": BASE, "Boards/Plan.canvas": CANVAS });

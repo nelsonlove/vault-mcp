@@ -68,6 +68,10 @@ export interface ServerCtx {
    * `resolveTerritories` and never match on the raw array — a stray blank
    * entry would match every path. */
   guardedTerritories?: string[];
+  /** The file types obsidian_move_file moves besides `.base` and `.canvas` (main.ts's
+   * `fileMoveExtensions`); coerced through `normalizeFileMoveExtensions` where read. Absent ⇒ the
+   * shipped default list. */
+  fileMoveExtensions?: string[];
   // `historyEnabled` / `historyScope` were here until S3c. They were always the
   // GOVERNANCE PROVIDER's facts — the Git history store, its D10 scope, and the
   // decision to record at all belong to whoever owns the standing chain — and
