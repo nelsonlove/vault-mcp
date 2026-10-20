@@ -118,6 +118,8 @@ export type {
 
 // ── Filesystem backend ──────────────────────────────────────────────────────
 
+// Fenced code blocks by line: one rule for the link rewriter and the patch parser (#593).
+export { LEAD, FENCE_LEAD, linesOf, fencedSpans } from "./fences.js";
 // Where a heading's section or a `^id` block sits, found on the text (#593).
 export {
   outlineNote,
