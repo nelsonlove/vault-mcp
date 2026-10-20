@@ -455,9 +455,64 @@ describe("obsidian_move_file on attachment files (the operator's fileMoveExtensi
       r = await h.call("obsidian_edit_file", { path: "Inbox/Scan.pdf", op: "remove_node", key: "a", if_rev: h.mtime("Inbox/Scan.pdf") });
       assert.match(errText(r), /^Error \[unsupported_file\]/);
       assert.equal(h.text.get("Inbox/Scan.pdf"), PDF);
-      r = await h.call("obsidian_trash", { path: "Inbox/Scan.pdf", if_rev: h.mtime("Inbox/Scan.pdf"), idempotency_key: key() });
+      const rev = data(await h.call("obsidian_read_note", { path: "Inbox/Scan.pdf" })).rev;
+      assert.equal(rev, h.mtime("Inbox/Scan.pdf"), "the binary read gives the rev trash needs");
+      r = await h.call("obsidian_trash", { path: "Inbox/Scan.pdf", if_rev: rev, idempotency_key: key() });
       assert.equal(r.isError, undefined, errText(r));
       assert.deepEqual(h.trashed, [{ path: "Inbox/Scan.pdf", system: true }]);
+    } finally { await h.close(); }
+  });
+});
+
+describe("attachments: no overwrite, a narrow link scan, a binary read (#594 review 1)", () => {
+  const PDF = "%PDF-1.7 made-up bytes\n";
+  test("a move never replaces an attachment: overwrite: true is refused, nothing is trashed, both files stay", async () => {
+    const h = await harness({ "Inbox/Scan.pdf": "new", "Files/Scan.pdf": "original" });
+    try {
+      const r = await h.call("obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/Scan.pdf", overwrite: true, idempotency_key: key() });
+      assert.match(errText(r), /^Error \[overwrite_refused\]/);
+      assert.equal(h.text.get("Files/Scan.pdf"), "original");
+      assert.equal(h.text.get("Inbox/Scan.pdf"), "new");
+      assert.deepEqual(h.trashed, []);
+    } finally { await h.close(); }
+  });
+
+  test("the link scan matches an attachment by its full name: a note that only says 'scan' is not a candidate", async () => {
+    const h = await harness({
+      "Inbox/scan.pdf": PDF,
+      "Notes/Prose.md": "I will scan the receipts. Scan again later.\n",
+      "Notes/Other.md": "See [[scan]] for the scan note.\n",
+      "Notes/Embeds.md": "![[scan.pdf]] and ![s](Inbox/scan.pdf)\n",
+    });
+    try {
+      const r = await h.call("obsidian_move_file", { from: "Inbox/scan.pdf", to: "Files/scan 2.pdf", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.equal(data(r).link_check.candidates, 1, JSON.stringify(data(r).link_check));
+      assert.equal(data(r).link_check.ok, true);
+      assert.equal(h.text.get("Notes/Embeds.md"), "![[scan 2.pdf]] and ![s](Files/scan%202.pdf)\n");
+      assert.equal(h.text.get("Notes/Prose.md"), "I will scan the receipts. Scan again later.\n");
+    } finally { await h.close(); }
+  });
+
+  test("obsidian_read_note on a binary file returns {path, rev, size, binary: true} and no content, with or without full", async () => {
+    const h = await harness({ "Inbox/Scan.pdf": PDF, "Inbox/blob.dat": "ab\u0000cd", "Inbox/readme.txt": "hello", "Notes/Plan.md": "# Plan\n" });
+    try {
+      for (const full of [undefined, true]) {
+        const r = await h.call("obsidian_read_note", { path: "Inbox/Scan.pdf", ...(full ? { full } : {}) });
+        assert.equal(r.isError, undefined, errText(r));
+        assert.deepEqual(data(r), { path: "Inbox/Scan.pdf", rev: h.mtime("Inbox/Scan.pdf"), size: PDF.length, binary: true });
+        assert.equal(JSON.stringify(r.content).includes("made-up bytes"), false, "no content in the text block either");
+      }
+      assert.deepEqual(data(await h.call("obsidian_read_note", { path: "Inbox/blob.dat" })), { path: "Inbox/blob.dat", rev: h.mtime("Inbox/blob.dat"), size: 5, binary: true });
+      assert.equal(data(await h.call("obsidian_read_note", { path: "Inbox/readme.txt" })).content, "hello");
+      assert.equal(data(await h.call("obsidian_read_note", { path: "Notes/Plan.md" })).content, "# Plan\n");
+    } finally { await h.close(); }
+  });
+
+  test("obsidian_doctor reports the list obsidian_move_file uses now", async () => {
+    const h = await harness({}, { settings: { fileMoveExtensions: ["pdf", "zip"] } });
+    try {
+      assert.deepEqual(data(await h.call("obsidian_doctor", {})).file_move_extensions, ["pdf", "zip"]);
     } finally { await h.close(); }
   });
 });

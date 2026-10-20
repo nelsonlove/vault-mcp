@@ -301,6 +301,48 @@ describe("obsidian_move_file on attachment files (VAULT_MCP_FILE_MOVE_EXTENSIONS
     }
   });
 
+  test("a move never replaces an attachment: overwrite: true is refused and both files stay (fs.rename would destroy one)", async () => {
+    await put("Inbox/Five.pdf", "new");
+    await put("Files/Five.pdf", "original");
+    const c = await client();
+    const r = await call(c, "obsidian_move_file", { from: "Inbox/Five.pdf", to: "Files/Five.pdf", overwrite: true });
+    assert.match(err(r), /^Error \[overwrite_refused\]/);
+    assert.equal(await read("Files/Five.pdf"), "original");
+    assert.equal(await read("Inbox/Five.pdf"), "new");
+    await c.close();
+  });
+
+  test("a set but malformed variable means only .base and .canvas move, never the default", async () => {
+    await put("Inbox/Six.pdf", PDF);
+    process.env[ENV] = "pdf;zip";
+    try {
+      const c = await client();
+      const r = await call(c, "obsidian_move_file", { from: "Inbox/Six.pdf", to: "Files/Six.pdf" });
+      assert.match(err(r), /^Error \[unsupported_file\]/);
+      assert.equal(existsSync(path.join(vault, "Inbox", "Six.pdf")), true);
+      await c.close();
+    } finally {
+      delete process.env[ENV];
+    }
+  });
+
+  test("obsidian_read_note on a binary file returns {path, size, binary: true} and no content", async () => {
+    await put("Inbox/Seven.pdf", PDF);
+    await put("Inbox/blob.dat", Buffer.from([1, 2, 0, 3]));
+    await put("Inbox/readme.txt", "hello");
+    const c = await client();
+    for (const full of [false, true]) {
+      const r = await call(c, "obsidian_read_note", { path: "Inbox/Seven.pdf", ...(full ? { full } : {}) });
+      assert.equal(r.isError, undefined, err(r));
+      assert.deepEqual(r.structuredContent, { path: "Inbox/Seven.pdf", size: PDF.length, binary: true });
+    }
+    let r = await call(c, "obsidian_read_note", { path: "Inbox/blob.dat" });
+    assert.deepEqual(r.structuredContent, { path: "Inbox/blob.dat", size: 4, binary: true });
+    r = await call(c, "obsidian_read_note", { path: "Inbox/readme.txt" });
+    assert.equal(r.structuredContent?.content, "hello");
+    await c.close();
+  });
+
   test("only the move widens: obsidian_write_file still refuses a PDF", async () => {
     const c = await client();
     const r = await call(c, "obsidian_write_file", { path: "Inbox/New.pdf", content: "%PDF-1.7" });
