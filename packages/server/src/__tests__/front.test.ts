@@ -343,10 +343,11 @@ describe("parsePrewarmDelay (#583)", () => {
     assert.equal(parsePrewarmDelay("  "), DEFAULT_FS_PREWARM_DELAY_MS);
     assert.equal(parsePrewarmDelay("2500"), 2500);
     assert.equal(parsePrewarmDelay("0"), 0);
+    assert.equal(parsePrewarmDelay("2147483647"), 2147483647, "the longest delay setTimeout keeps");
   });
 
   test("a value that is not a whole number ⇒ the default, with one warning naming the variable", () => {
-    for (const raw of ["-5", "1.5", "10s", "abc"]) {
+    for (const raw of ["-5", "1.5", "10s", "abc", "2147483648", "99999999999999999999"]) {
       const warnings: string[] = [];
       assert.equal(parsePrewarmDelay(raw, (m) => warnings.push(m)), DEFAULT_FS_PREWARM_DELAY_MS, raw);
       assert.equal(warnings.length, 1, raw);
@@ -426,6 +427,37 @@ describe("createEbadfGuard (#583)", () => {
       assert.equal(body.bridgeSpawnEbadf?.watcherStops, 1);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  test("/health: healthExtra cannot replace the core fields, and one that throws is dropped", async () => {
+    for (const healthExtra of [
+      () => ({ status: "bad", mode: "x", authEnabled: "x", extra: 1 }),
+      () => {
+        throw new Error("boom");
+      },
+    ]) {
+      const app = buildFront({
+        cfg,
+        token: "t",
+        presence: { isLive: () => false },
+        fs: { handle: async () => {} },
+        live: { handle: async () => {} },
+        healthExtra,
+      });
+      const server = app.listen(0, "127.0.0.1");
+      await new Promise<void>((r) => server.once("listening", () => r()));
+      try {
+        const { port } = server.address() as AddressInfo;
+        const resp = await fetch(`http://127.0.0.1:${port}/health`);
+        assert.equal(resp.status, 200);
+        const body = (await resp.json()) as Record<string, unknown>;
+        assert.equal(body.status, "ok");
+        assert.equal(body.mode, "fs");
+        assert.equal(body.authEnabled, cfg.enabled);
+      } finally {
+        await new Promise<void>((r) => server.close(() => r()));
+      }
     }
   });
 });

@@ -125,14 +125,22 @@ export function buildFront(deps: FrontDeps): express.Express {
   // permitted at all — FS mode has no journal/serialized queue (those live in
   // the plugin's kernel), so writes made there are refused unless the deployment
   // opted in via VAULT_MCP_FS_ALLOW_WRITES. A boolean, not a secret.
+  // Extra fields come first, so they can never replace the ones below; one that throws is dropped.
+  const healthExtra = (): Record<string, unknown> => {
+    try {
+      return deps.healthExtra?.() ?? {};
+    } catch {
+      return {};
+    }
+  };
   app.get("/health", (_req, res) => {
     res.json({
+      ...healthExtra(),
       status: "ok",
       mode: presence.isLive() ? "live" : "fs",
       authEnabled: cfg.enabled,
       fsWriteSyncCaveat: true,
       fsWritesEnabled: isFsWritesEnabled(),
-      ...(deps.healthExtra ? deps.healthExtra() : {}),
     });
   });
 
@@ -199,16 +207,19 @@ const LIST_CHANGED = {
 export const FS_PREWARM_DELAY_ENV_VAR = "VAULT_MCP_FS_PREWARM_DELAY_MS";
 /** The prewarm delay when the env var is unset: longer than a plugin reload (a disable and an enable). */
 export const DEFAULT_FS_PREWARM_DELAY_MS = 10_000;
+/** The longest delay setTimeout keeps (2^31-1 ms); a longer one fires at once. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 /**
- * VAULT_MCP_FS_PREWARM_DELAY_MS: a whole number of milliseconds, 0 for "prewarm at once" (the
- * behaviour before #583). Unset or empty ⇒ the default; any other value ⇒ the default, with a warning.
+ * VAULT_MCP_FS_PREWARM_DELAY_MS: a whole number of milliseconds up to 2147483647, 0 for "prewarm at
+ * once" (the behaviour before #583). Unset or empty ⇒ the default; any other value ⇒ the default, with a warning.
  */
 export function parsePrewarmDelay(raw: string | undefined, warn: (msg: string) => void = console.error): number {
   const v = (raw ?? "").trim();
   if (v === "") return DEFAULT_FS_PREWARM_DELAY_MS;
-  if (/^\d+$/.test(v)) return Number(v);
-  warn(`[front] ${FS_PREWARM_DELAY_ENV_VAR}=${JSON.stringify(raw)} is not a whole number of milliseconds; using ${DEFAULT_FS_PREWARM_DELAY_MS}`);
+  // setTimeout fires at once for a delay above 2^31-1 ms, so such a value is refused too.
+  if (/^\d+$/.test(v) && Number(v) <= MAX_TIMER_MS) return Number(v);
+  warn(`[front] ${FS_PREWARM_DELAY_ENV_VAR}=${JSON.stringify(raw)} is not a whole number of milliseconds from 0 to ${MAX_TIMER_MS}; using ${DEFAULT_FS_PREWARM_DELAY_MS}`);
   return DEFAULT_FS_PREWARM_DELAY_MS;
 }
 
@@ -423,7 +434,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
     pollMs: Number(process.env.VAULT_MCP_PRESENCE_POLL_MS ?? 5000),
   });
 
-  const fsHandler = createFsHandler({ indexStatus: true });
+  // #583: in LIVE mode no vault watcher may start, even for a late FS request.
+  const fsHandler = createFsHandler({ indexStatus: true, watchAllowed: () => !presence.isLive() });
 
   // #583: an EBADF bridge spawn while the FS watcher runs in LIVE mode stops the watcher.
   const ebadf = createEbadfGuard({ presence, fs: fsHandler });
