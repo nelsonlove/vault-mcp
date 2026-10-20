@@ -199,23 +199,22 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
 
   if (offered(MOVE_FILE_TOOL)) {
     const extensions = () => opts.moveExtensions?.() ?? [];
-    const listed = extensions();
     reg.registerTool(
       MOVE_FILE_TOOL,
       {
         title: "Move or rename a .base, .canvas or attachment file",
         description:
           "Move (or rename) a .base or .canvas file, or an attachment file whose type the operator allows, to another vault path with the same extension (the same case, too). " +
-          `Allowed types when this connection was made: .base .canvas${listed.map((e) => ` .${e}`).join("")}; any other type is refused with \`unsupported_file\`. A note (.md) is refused here: move it with obsidian_move_note. No path may be in a hidden folder. ` +
-          "`to` may keep the file's own name and the folders it is already in, but any NEW name or folder may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`. Refuses if `to` exists unless overwrite: true (on the live Obsidian server the file replaced goes to the system trash). Parent folders are created as needed. " +
-          "Links TO the file: on the live Obsidian server, with update_backlinks true (the default), links and embeds in notes ([[Board.canvas]], ![[Tasks.base]], ![[Scan.pdf]], ![](Photo.png)) are rewritten to the new path and checked for damage (`link_check`), as obsidian_move_note does; the file's own text is never rewritten, and links inside other .canvas files are not tracked (Obsidian's link index does not count them). The file-system server does not rewrite links to these files at all (`links_note` says so). " +
+          "The allowed types are .base, .canvas and the extensions the operator lists (the `fileMoveExtensions` setting on the live Obsidian server, `VAULT_MCP_FILE_MOVE_EXTENSIONS` on the file-system server), read on each call; by default images, audio, video, PDF, and docx xlsx pptx odt zip. A type off the list is refused with `unsupported_file`, and that error names the current list (obsidian_doctor reports it too, as `file_move_extensions`). A note (.md) is refused here: move it with obsidian_move_note. No path may be in a hidden folder. " +
+          "`to` may keep the file's own name and the folders it is already in, but any NEW name or folder may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`. Refuses if `to` exists unless overwrite: true, which is allowed only for a .base or .canvas (on the live Obsidian server the file replaced goes to the system trash); an attachment is never replaced (`overwrite_refused`). Parent folders are created as needed. " +
+          "Links TO the file: on the live Obsidian server, with update_backlinks true (the default), links and embeds in notes ([[Board.canvas]], ![[Tasks.base]], ![[Scan.pdf]], ![](Photo.png)) are rewritten to the new path and checked for damage (`link_check`), as obsidian_move_note does; the file's own text is never rewritten, and links inside other .canvas files and HTML embeds in notes (<img src>, <video src>, <audio src>) are not tracked or rewritten. The file-system server does not rewrite links to these files at all (`links_note` says so). " +
           SCOPE +
           "The file's content is not read or changed, so no validation runs. To delete one of these files, use obsidian_trash on the live Obsidian server.",
         inputSchema: schema({
           from: z.string().min(1).describe("Existing vault-relative path of the file, e.g. 'Inbox/Scan.pdf'."),
           to: z.string().min(1).describe("New vault-relative path, with the same extension."),
           update_backlinks: z.boolean().default(true).describe("Rewrite links in notes that reach `from` (live Obsidian server). false: rename only. Ignored by the file-system server, which rewrites none."),
-          overwrite: z.boolean().default(false).describe("Replace `to` if it already exists. Default false (refuses)."),
+          overwrite: z.boolean().default(false).describe("Replace `to` if it already exists, for a .base or .canvas only; refused for an attachment. Default false (refuses)."),
         }),
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
