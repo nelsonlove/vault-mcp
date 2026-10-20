@@ -98,11 +98,9 @@ export const DISPOSITIONS: ReadonlyArray<DispositionDescriptor> = Object.freeze(
     surface: "pending-item",
     label: "Accept",
     effect:
-      "the ONE accept, context-aware across both lifecycles (#221/#164 convergence): advance this note's " +
-      "baseline to its current content; iff the note is acceptance-status: proposed, ALSO stamp the accepted " +
-      "family (acceptance-status: accepted, accepted-by: <configured identity>, accepted-on: <local minutes " +
-      "precision>) via processFrontMatter, with the baseline advanced from the post-stamp content. Notes " +
-      "without proposed status get baseline-advance only (byte-untouched); revising notes are never stamped",
+      "advance this note's baseline to its current content. The note itself is never edited: Accept writes " +
+      "no acceptance-status, accepted-by or accepted-on (those keys are retired; only a `verified` entry " +
+      "confirms a note, and only Nelson writes it)",
   } as const),
   Object.freeze({
     id: "revert",
@@ -118,7 +116,7 @@ export const DISPOSITIONS: ReadonlyArray<DispositionDescriptor> = Object.freeze(
     label: "Request changes…",
     input: true,
     effect:
-      "set acceptance-status: revising and insert the feedback as a [!revision-request] callout below the note's H1",
+      "insert the feedback as a [!revision-request] callout below the note's H1 (writes no frontmatter)",
   } as const),
   Object.freeze({
     id: "adopt",
@@ -133,7 +131,7 @@ export const DISPOSITIONS: ReadonlyArray<DispositionDescriptor> = Object.freeze(
     authority: "human",
     surface: "revising-item",
     label: "Withdraw",
-    effect: "remove the [!revision-request] callout(s) this pane inserted and set acceptance-status: proposed",
+    effect: "remove the [!revision-request] callout(s) this pane inserted (writes no frontmatter)",
   } as const),
   Object.freeze({
     id: "submit-revision",
@@ -175,13 +173,10 @@ export function gestureGatedDispositions(): DispositionDescriptor[] {
 }
 
 /**
- * The context-aware Accept's per-note effect text (#221/#164): what THIS click will do,
- * surfaced on the button (tooltip/aria) so the human sees what will be stamped before the
- * one click. Pure display string — no callable, no capability; still exactly one click.
+ * The Accept button's effect text, surfaced on the button (tooltip/aria) so the human sees what
+ * the click will do before it. Pure display string — no callable, no capability; still exactly
+ * one click. Accept never edits the note, whatever its status.
  */
-export function acceptEffectFor(status: string | null | undefined, acceptedBy: string): string {
-  return status === "proposed"
-    ? "Accept: advances the baseline AND stamps acceptance-status: accepted, " +
-        `accepted-by: ${acceptedBy}, accepted-on: <now, minutes precision> into the note's frontmatter`
-    : "Accept: advances the baseline only — the note itself is not edited";
+export function acceptEffectFor(): string {
+  return "Accept: advances the baseline only — the note itself is not edited";
 }

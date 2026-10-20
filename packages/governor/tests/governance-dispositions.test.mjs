@@ -82,25 +82,23 @@ describe("the declared set: completeness + authority classes", () => {
     assert.equal(dispositionById("submit-revision").label, SUBMIT_REVISION_TOOL);
   });
 
-  test("the accept descriptor declares the CONVERGED semantics (#221/#164): context-aware, stamp on proposed", () => {
+  test("the accept descriptor says Accept advances the baseline and writes none of the retired keys (#599)", () => {
     const accept = dispositionById("accept");
-    assert.match(accept.effect, /context-aware/);
-    assert.match(accept.effect, /proposed/);
-    assert.match(accept.effect, /accepted-by/);
-    assert.match(accept.effect, /minutes/i, "the effect must state minutes precision (date-only was a fixed bug)");
-    assert.match(accept.effect, /revising notes are never stamped/);
+    assert.match(accept.effect, /advance this note's baseline/);
+    assert.match(accept.effect, /never edited/);
+    assert.match(accept.effect, /no acceptance-status, accepted-by or accepted-on/);
   });
 
-  test("acceptEffectFor surfaces what the one click will do — stamp text ONLY for proposed", () => {
-    const proposed = acceptEffectFor("proposed", "local-human");
-    assert.match(proposed, /stamps acceptance-status: accepted/);
-    assert.match(proposed, /accepted-by: local-human/);
-    assert.match(proposed, /minutes precision/);
-    for (const status of [null, undefined, "revising", "accepted", "anything-else"]) {
-      const other = acceptEffectFor(status, "local-human");
-      assert.match(other, /baseline only/);
-      assert.ok(!/stamps/.test(other), `no stamp text for status ${String(status)}`);
+  test("no human disposition effect promises a write of acceptance-status (#599)", () => {
+    for (const id of ["request-changes", "withdraw"]) {
+      assert.ok(!/acceptance-status/.test(dispositionById(id).effect), `${id} must not promise an acceptance-status write`);
     }
+  });
+
+  test("acceptEffectFor says the click advances the baseline only, whatever the note's status", () => {
+    const text = acceptEffectFor();
+    assert.match(text, /baseline only/);
+    assert.ok(!/stamps/.test(text));
   });
 });
 

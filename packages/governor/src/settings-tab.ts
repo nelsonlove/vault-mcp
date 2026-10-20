@@ -121,9 +121,9 @@ export class GovernorSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Accepted-by identity")
       .setDesc(
-        "The identity the pane's Accept stamps as `accepted-by` (and records in the acceptance log) when accepting " +
-          "a note whose frontmatter is `acceptance-status: proposed`. Human-set by construction — this settings tab " +
-          "is not agent-reachable, and agent transports can never write the accepted family."
+        "The identity recorded on the baseline and in the acceptance log when the pane's Accept advances a " +
+          "baseline. Accept does not write it into the note. Human-set by construction — this settings tab " +
+          "is not agent-reachable."
       )
       .addText((t) =>
         t
