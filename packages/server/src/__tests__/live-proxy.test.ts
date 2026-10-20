@@ -177,7 +177,11 @@ describe("createLiveProxy", () => {
 
   // ── #583: a backend that fails to start ────────────────────────────────────
 
-  test("#583: a spawn failure calls onSpawnError, answers 503, and frees its slot", async () => {
+  test("#583: a spawn failure calls onSpawnError, answers 503, and frees its slot", async (t) => {
+    const logged: string[] = [];
+    t.mock.method(console, "error", (...args: unknown[]) => {
+      logged.push(args.map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : String(a))).join(" "));
+    });
     const seen: unknown[] = [];
     const ebadf = Object.assign(new Error("spawn EBADF"), { code: "EBADF" });
     const live = createLiveProxy({
@@ -204,6 +208,9 @@ describe("createLiveProxy", () => {
     }
     assert.deepEqual(seen, [ebadf, ebadf, ebadf], "each failure reaches the listener");
     assert.equal(live.sessionCount() + live.pendingCount(), 0, "no dead backend holds a slot");
+    assert.equal(logged.filter((l) => /closed/.test(l)).length, 0, "a backend that never started is not logged as a closed session");
+    assert.equal(logged.filter((l) => /spawn EBADF/.test(l)).length, 1, "the spawn error is logged in full once");
+    assert.equal(logged.filter((l) => /handler error/.test(l)).length, 0, "not again as a handler error");
   });
 
   // ── 4. notifyAll ────────────────────────────────────────────────────────────

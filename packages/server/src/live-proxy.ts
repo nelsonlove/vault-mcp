@@ -107,6 +107,14 @@ export interface LiveProxy {
   ): void;
 }
 
+/** A backend that failed to start; carries the spawn error as its cause. */
+class SpawnFailedError extends Error {
+  constructor(cause: unknown) {
+    super(`bridge spawn failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = "SpawnFailedError";
+  }
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /** Reap a backend whose initialize never completes within this window. */
@@ -187,6 +195,8 @@ export function createLiveProxy(opts: {
     }) as unknown as HttpTransportLike;
 
     let torndown = false;
+    // Set once the backend has started; a backend that never started is not a session to report closed.
+    let started = false;
     const teardown = () => {
       if (torndown) return;
       torndown = true;
@@ -196,7 +206,7 @@ export function createLiveProxy(opts: {
       if (sid) sessions.delete(sid);
       backend.close().catch(() => {});
       http.close().catch(() => {});
-      console.error(`[live-proxy] session ${sid ?? "(uninitialized)"} closed (${liveBackends} live)`);
+      if (started) console.error(`[live-proxy] session ${sid ?? "(uninitialized)"} closed (${liveBackends} live)`);
     };
 
     // Client → plugin.  If the backend is gone, answer the pending request with a
@@ -239,15 +249,33 @@ export function createLiveProxy(opts: {
       // A backend that never started holds no process: release its slot now, or
       // repeated spawn failures fill maxSessions with dead backends.
       teardown();
+      logSpawnFailure(e);
       try {
         opts.onSpawnError?.(e);
       } catch {
         // the listener's own failure must not change the answer
       }
-      throw e;
+      throw new SpawnFailedError(e);
     }
+    started = true;
     await http.start();
     return http;
+  }
+
+  // ── Spawn failures ─────────────────────────────────────────────────────────
+
+  // In a storm (every spawn failing with EBADF, #583) one stack is enough: the
+  // first failure is logged whole, later ones are counted, with a one-line
+  // count at 10, 100, 1000 and so on.
+  let spawnFailures = 0;
+  function logSpawnFailure(e: unknown): void {
+    spawnFailures++;
+    if (spawnFailures === 1) {
+      console.error("[live-proxy] bridge spawn failed (later failures are counted, not logged in full)", e);
+    } else if (Number.isInteger(Math.log10(spawnFailures))) {
+      const code = (e as { code?: string } | null)?.code;
+      console.error(`[live-proxy] bridge spawn failed ${spawnFailures} times so far${code ? ` (last: ${code})` : ""}`);
+    }
   }
 
   // ── Routing ────────────────────────────────────────────────────────────────
@@ -310,8 +338,8 @@ export function createLiveProxy(opts: {
         await r.handleRequest(req, res, req.body);
       } catch (e) {
         // The usual cause: backend died (Obsidian closed / plugin disabled / socket gone).
-        // Surface that distinctly from a real proxy bug.
-        console.error("[live-proxy] handler error", e);
+        // Surface that distinctly from a real proxy bug. A spawn failure was logged where it happened.
+        if (!(e instanceof SpawnFailedError)) console.error("[live-proxy] handler error", e);
         if (!((res as { headersSent?: boolean }).headersSent)) {
           res.status(503).json({
             jsonrpc: "2.0",
