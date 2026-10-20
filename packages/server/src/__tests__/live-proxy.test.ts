@@ -175,6 +175,37 @@ describe("createLiveProxy", () => {
     live.teardownAll();
   });
 
+  // ── #583: a backend that fails to start ────────────────────────────────────
+
+  test("#583: a spawn failure calls onSpawnError, answers 503, and frees its slot", async () => {
+    const seen: unknown[] = [];
+    const ebadf = Object.assign(new Error("spawn EBADF"), { code: "EBADF" });
+    const live = createLiveProxy({
+      bridgePath: "/dev/null",
+      maxSessions: 1,
+      makeBackend: () => {
+        const b = makeStubBackend();
+        b.start = async () => {
+          throw ebadf;
+        };
+        return b;
+      },
+      onSpawnError: (e) => {
+        seen.push(e);
+        throw new Error("a listener that throws changes nothing");
+      },
+    });
+    live.stop();
+    for (let i = 0; i < 3; i++) {
+      const res = makeResStub();
+      await live.handle(makeReqStub({ body: { method: "initialize", jsonrpc: "2.0", id: i } }), res as unknown as Response);
+      assert.equal(res._status, 503, "backend unavailable");
+      assert.match(JSON.stringify(res._body), /backend unavailable/, "not the session cap");
+    }
+    assert.deepEqual(seen, [ebadf, ebadf, ebadf], "each failure reaches the listener");
+    assert.equal(live.sessionCount() + live.pendingCount(), 0, "no dead backend holds a slot");
+  });
+
   // ── 4. notifyAll ────────────────────────────────────────────────────────────
 
   test("notifyAll({...}) calls http.send() on live session; no-throw with zero sessions", () => {

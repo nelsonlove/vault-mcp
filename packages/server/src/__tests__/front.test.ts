@@ -16,7 +16,15 @@ import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import type express from "express";
-import { buildFront, wireFailover } from "../front.js";
+import type { AddressInfo } from "node:net";
+import {
+  buildFront,
+  wireFailover,
+  createEbadfGuard,
+  parsePrewarmDelay,
+  DEFAULT_FS_PREWARM_DELAY_MS,
+  FS_PREWARM_DELAY_ENV_VAR,
+} from "../front.js";
 import type { AuthConfig } from "../auth.js";
 
 // ── Auth config — static-token only (enabled=false) ──────────────────────────
@@ -242,12 +250,12 @@ describe("wireFailover", () => {
     };
   }
 
-  test('"down" calls live.notifyAll(LIST_CHANGED) then live.teardownAll() and prewarms fs.ready()', () => {
+  test('"down" calls live.notifyAll(LIST_CHANGED) then live.teardownAll() and prewarms fs.ready() (delay 0)', () => {
     const presence = makePresenceStub();
     const live = makeLiveStub();
     const fs = makeFsStub();
 
-    wireFailover({ presence, live, fs });
+    wireFailover({ presence, live, fs, prewarmDelayMs: 0 });
     presence.fire("down");
 
     assert.deepEqual(
@@ -291,6 +299,134 @@ describe("wireFailover", () => {
       "notifications/tools/list_changed",
       "notifyAll must receive a notifications/tools/list_changed message",
     );
+  });
+
+  // ── #583: the prewarm waits out a short "down" ──────────────────────────────
+
+  test('#583: with no delay given, "down" prewarms only after the default delay', async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const presence = makePresenceStub();
+    const fs = makeFsStub();
+    wireFailover({ presence, live: makeLiveStub(), fs });
+    presence.fire("down");
+    assert.ok(!fs.calls.includes("ready"), "no prewarm at once");
+    t.mock.timers.tick(DEFAULT_FS_PREWARM_DELAY_MS - 1);
+    assert.ok(!fs.calls.includes("ready"), "no prewarm before the delay");
+    t.mock.timers.tick(1);
+    assert.deepEqual(fs.calls, ["ready"], "one prewarm once the delay has passed");
+  });
+
+  test('#583: "up" inside the delay cancels the prewarm; a repeated "down" restarts the delay', async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const presence = makePresenceStub();
+    const fs = makeFsStub();
+    wireFailover({ presence, live: makeLiveStub(), fs, prewarmDelayMs: 1000 });
+    presence.fire("down");
+    t.mock.timers.tick(500);
+    presence.fire("up");
+    t.mock.timers.tick(5000);
+    assert.deepEqual(fs.calls, ["stop"], "the reload never started the FS machinery");
+
+    presence.fire("down");
+    t.mock.timers.tick(800);
+    presence.fire("down");
+    t.mock.timers.tick(800);
+    assert.ok(!fs.calls.includes("ready"), "the second down restarted the delay");
+    t.mock.timers.tick(200);
+    assert.equal(fs.calls.filter((c) => c === "ready").length, 1, "one prewarm, not two");
+  });
+});
+
+describe("parsePrewarmDelay (#583)", () => {
+  test("unset or empty ⇒ the default; a whole number ⇒ itself; 0 ⇒ 0", () => {
+    assert.equal(parsePrewarmDelay(undefined), DEFAULT_FS_PREWARM_DELAY_MS);
+    assert.equal(parsePrewarmDelay("  "), DEFAULT_FS_PREWARM_DELAY_MS);
+    assert.equal(parsePrewarmDelay("2500"), 2500);
+    assert.equal(parsePrewarmDelay("0"), 0);
+  });
+
+  test("a value that is not a whole number ⇒ the default, with one warning naming the variable", () => {
+    for (const raw of ["-5", "1.5", "10s", "abc"]) {
+      const warnings: string[] = [];
+      assert.equal(parsePrewarmDelay(raw, (m) => warnings.push(m)), DEFAULT_FS_PREWARM_DELAY_MS, raw);
+      assert.equal(warnings.length, 1, raw);
+      assert.match(warnings[0], new RegExp(FS_PREWARM_DELAY_ENV_VAR));
+    }
+  });
+});
+
+describe("createEbadfGuard (#583)", () => {
+  function makeFs(watching: boolean) {
+    const fs = {
+      stops: 0,
+      on: watching,
+      watching: () => fs.on,
+      stop: async () => {
+        fs.stops++;
+        fs.on = false;
+      },
+    };
+    return fs;
+  }
+  const ebadf = Object.assign(new Error("spawn EBADF"), { code: "EBADF" });
+
+  test("EBADF while the watcher runs in LIVE mode stops the watcher and logs loudly once", () => {
+    const fs = makeFs(true);
+    const logs: string[] = [];
+    const g = createEbadfGuard({ presence: { isLive: () => true }, fs, log: (m) => logs.push(m) });
+    g.onSpawnError(ebadf);
+    assert.equal(fs.stops, 1, "the watcher is stopped");
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /EBADF/);
+    assert.match(logs[0], /stopping the watcher/);
+    g.onSpawnError(ebadf);
+    assert.equal(logs.length, 1, "logged once only");
+    assert.deepEqual({ count: g.status().count, watcherStops: g.status().watcherStops }, { count: 2, watcherStops: 1 });
+    assert.ok(g.status().lastAt, "the time of the last one is kept");
+  });
+
+  test("EBADF with no watcher in LIVE mode stops nothing and says so; other errors are ignored", () => {
+    const fs = makeFs(false);
+    const logs: string[] = [];
+    const g = createEbadfGuard({ presence: { isLive: () => true }, fs, log: (m) => logs.push(m) });
+    g.onSpawnError(Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
+    g.onSpawnError(new Error("no code"));
+    g.onSpawnError(undefined);
+    assert.equal(logs.length, 0);
+    assert.equal(g.status().count, 0);
+    g.onSpawnError(ebadf);
+    assert.equal(fs.stops, 0);
+    assert.match(logs[0], /not running in LIVE mode/);
+  });
+
+  test("EBADF in FS mode (presence down) does not stop the FS watcher", () => {
+    const fs = makeFs(true);
+    const g = createEbadfGuard({ presence: { isLive: () => false }, fs, log: () => {} });
+    g.onSpawnError(ebadf);
+    assert.equal(fs.stops, 0);
+  });
+
+  test("/health carries the guard's counts through healthExtra", async () => {
+    const g = createEbadfGuard({ presence: { isLive: () => true }, fs: makeFs(true), log: () => {} });
+    g.onSpawnError(ebadf);
+    const app = buildFront({
+      cfg,
+      token: "t",
+      presence: { isLive: () => true },
+      fs: { handle: async () => {} },
+      live: { handle: async () => {} },
+      healthExtra: () => ({ bridgeSpawnEbadf: g.status() }),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((r) => server.once("listening", () => r()));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const body = (await (await fetch(`http://127.0.0.1:${port}/health`)).json()) as { bridgeSpawnEbadf?: { count: number; watcherStops: number } };
+      assert.equal(body.bridgeSpawnEbadf?.count, 1);
+      assert.equal(body.bridgeSpawnEbadf?.watcherStops, 1);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });
 
