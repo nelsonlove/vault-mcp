@@ -62,6 +62,8 @@ export interface FrontDeps {
   logWrite?: (line: string) => void;
   /** Express "trust proxy": who may name the client IP in X-Forwarded-For. Absent ⇒ "loopback" (tailscale serve, cloudflared). */
   trustProxy?: boolean | number | string;
+  /** Extra fields for GET /health (the EBADF guard's counts, #583). Absent ⇒ none. */
+  healthExtra?: () => Record<string, unknown>;
 }
 
 /**
@@ -130,6 +132,7 @@ export function buildFront(deps: FrontDeps): express.Express {
       authEnabled: cfg.enabled,
       fsWriteSyncCaveat: true,
       fsWritesEnabled: isFsWritesEnabled(),
+      ...(deps.healthExtra ? deps.healthExtra() : {}),
     });
   });
 
@@ -192,31 +195,118 @@ const LIST_CHANGED = {
   params: {},
 } as const;
 
+/** Env var: how long presence must stay "down" before the FS index and watcher are prewarmed (#583). */
+export const FS_PREWARM_DELAY_ENV_VAR = "VAULT_MCP_FS_PREWARM_DELAY_MS";
+/** The prewarm delay when the env var is unset: longer than a plugin reload (a disable and an enable). */
+export const DEFAULT_FS_PREWARM_DELAY_MS = 10_000;
+
+/**
+ * VAULT_MCP_FS_PREWARM_DELAY_MS: a whole number of milliseconds, 0 for "prewarm at once" (the
+ * behaviour before #583). Unset or empty ⇒ the default; any other value ⇒ the default, with a warning.
+ */
+export function parsePrewarmDelay(raw: string | undefined, warn: (msg: string) => void = console.error): number {
+  const v = (raw ?? "").trim();
+  if (v === "") return DEFAULT_FS_PREWARM_DELAY_MS;
+  if (/^\d+$/.test(v)) return Number(v);
+  warn(`[front] ${FS_PREWARM_DELAY_ENV_VAR}=${JSON.stringify(raw)} is not a whole number of milliseconds; using ${DEFAULT_FS_PREWARM_DELAY_MS}`);
+  return DEFAULT_FS_PREWARM_DELAY_MS;
+}
+
 export function wireFailover(deps: {
   presence: { on(ev: "up" | "down", cb: () => void): void };
   live: { teardownAll(): void; notifyAll(msg: object): void };
   fs: { ready(): Promise<void>; stop(): Promise<void> };
+  /**
+   * Prewarm the FS index and watcher only after presence has stayed "down" this long (#583), so a
+   * short flap (a plugin reload) never starts the FS machinery. 0 ⇒ at once. Absent ⇒ the default.
+   * An FS-mode request in the meantime still builds it on demand (fs-mode.ts handle()).
+   */
+  prewarmDelayMs?: number;
 }): void {
   const { presence, live, fs } = deps;
+  const prewarmDelayMs = deps.prewarmDelayMs ?? DEFAULT_FS_PREWARM_DELAY_MS;
+  let prewarmTimer: ReturnType<typeof setTimeout> | null = null;
+  const cancelPrewarm = (): void => {
+    if (prewarmTimer) clearTimeout(prewarmTimer);
+    prewarmTimer = null;
+  };
+  const prewarm = (): void => {
+    void fs.ready().catch(() => {});
+  };
 
   // When Obsidian closes: push list_changed to any open SSE channels, tear down
-  // live sessions (their plugin backend is gone), and prewarm the FS index so
-  // the first FS-mode request is fast.
+  // live sessions (their plugin backend is gone), and — once the backend has
+  // stayed down for prewarmDelayMs — prewarm the FS index so the first FS-mode
+  // request is fast. A repeated "down" restarts the delay; it never starts a
+  // second build (ready() is idempotent).
   presence.on("down", () => {
     live.notifyAll(LIST_CHANGED);
     live.teardownAll();
-    void fs.ready().catch(() => {});
+    cancelPrewarm();
+    if (prewarmDelayMs <= 0) {
+      prewarm();
+      return;
+    }
+    prewarmTimer = setTimeout(() => {
+      prewarmTimer = null;
+      prewarm();
+    }, prewarmDelayMs);
+    // Never keep the process (or a test runner) alive on its own.
+    prewarmTimer.unref?.();
   });
 
   // When Obsidian comes back: best-effort nudge; new connects resolve to LIVE
-  // via the request-time isLive() check. Do NOT tear down live sessions. STOP
-  // the FS vault watcher — it must not run during LIVE mode, where a live
-  // watcher corrupts child_process fd setup under launchd and EBADFs the bridge
-  // spawn. fs.stop() re-arms ready() so a later FS return rebuilds it.
+  // via the request-time isLive() check. Do NOT tear down live sessions. Cancel
+  // a pending prewarm, and STOP the FS vault watcher — it must not run during
+  // LIVE mode, where a live watcher corrupts child_process fd setup under
+  // launchd and EBADFs the bridge spawn. fs.stop() also cancels a build still
+  // in flight, and re-arms ready() so a later FS return rebuilds it.
   presence.on("up", () => {
+    cancelPrewarm();
     live.notifyAll(LIST_CHANGED);
     void fs.stop().catch(() => {});
   });
+}
+
+/**
+ * The safety net for #583: a bridge spawn that fails with EBADF while the FS watcher runs in LIVE
+ * mode. The watcher is the known cause (it breaks child_process fd setup under launchd), so it is
+ * stopped, and the first time this happens it is logged loudly. The front keeps running. Returns
+ * the handler for createLiveProxy's onSpawnError, and a snapshot for /health.
+ */
+export function createEbadfGuard(deps: {
+  presence: { isLive(): boolean };
+  fs: { stop(): Promise<void>; watching(): boolean };
+  log?: (msg: string) => void;
+}): { onSpawnError(err: unknown): void; status(): { count: number; watcherStops: number; lastAt?: string } } {
+  const log = deps.log ?? ((m: string) => console.error(m));
+  let count = 0;
+  let watcherStops = 0;
+  let lastAt: string | undefined;
+  let warned = false;
+  return {
+    onSpawnError(err: unknown): void {
+      if ((err as { code?: string } | null)?.code !== "EBADF") return;
+      count++;
+      lastAt = new Date().toISOString();
+      const watcherInLive = deps.presence.isLive() && deps.fs.watching();
+      if (!warned) {
+        warned = true;
+        log(
+          `[front] ERROR: bridge spawn failed with EBADF at ${lastAt}` +
+            (watcherInLive
+              ? " while the FS vault watcher was running in LIVE mode; stopping the watcher (#583)."
+              : "; the FS vault watcher is not running in LIVE mode, so stopping it will not help. A restart of the front may be needed.") +
+            " Later EBADF spawn failures are counted in /health (bridgeSpawnEbadf), not logged here.",
+        );
+      }
+      if (watcherInLive) {
+        watcherStops++;
+        void deps.fs.stop().catch(() => {});
+      }
+    },
+    status: () => ({ count, watcherStops, ...(lastAt ? { lastAt } : {}) }),
+  };
 }
 
 /** VAULT_MCP_TRUST_PROXY: "true"/"false", a hop count, or Express's own words ("loopback", a CIDR list). */
@@ -335,10 +425,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
 
   const fsHandler = createFsHandler({ indexStatus: true });
 
+  // #583: an EBADF bridge spawn while the FS watcher runs in LIVE mode stops the watcher.
+  const ebadf = createEbadfGuard({ presence, fs: fsHandler });
+
   const liveProxy = createLiveProxy({
     bridgePath: BRIDGE,
     maxSessions: MAX_SESSIONS,
     idleMs: IDLE_MS,
+    onSpawnError: (e) => ebadf.onSpawnError(e),
   });
 
   // Phase 2b (VAULT_MCP_SEAMLESS=1, default OFF): route /mcp through the
@@ -368,13 +462,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
     rateLimits: loadRateLimitConfig(),
     logWrite: createLogWriter(loadRequestLogConfig()),
     ...(process.env.VAULT_MCP_TRUST_PROXY !== undefined ? { trustProxy: parseTrustProxy(process.env.VAULT_MCP_TRUST_PROXY) } : {}),
+    healthExtra: () => ({ bridgeSpawnEbadf: ebadf.status() }),
   });
 
   presence.start();
-  wireFailover({ presence, live: liveProxy, fs: fsHandler });
+  wireFailover({
+    presence,
+    live: liveProxy,
+    fs: fsHandler,
+    prewarmDelayMs: parsePrewarmDelay(process.env[FS_PREWARM_DELAY_ENV_VAR]),
+  });
 
   // NOTE: the FS index/watcher is built lazily (on first FS-mode request, or
-  // prewarmed by wireFailover on presence "down") — NOT at startup. A vault
+  // prewarmed by wireFailover once presence has stayed "down" for
+  // VAULT_MCP_FS_PREWARM_DELAY_MS) — NOT at startup. A vault
   // watcher running during LIVE mode corrupts child_process fd setup under
   // launchd and EBADFs the bridge spawn, so FS machinery only runs in FS mode.
 

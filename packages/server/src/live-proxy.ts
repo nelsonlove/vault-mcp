@@ -128,6 +128,11 @@ export function createLiveProxy(opts: {
    * Override in tests to inject a stub and avoid spawning real processes.
    */
   makeBackend?: (session: { profile: string }) => BackendTransportLike;
+  /**
+   * Called when a backend fails to start (the bridge spawn), with the error, before the request is
+   * answered 503. The front's EBADF guard (#583) listens here. A throw from it is ignored.
+   */
+  onSpawnError?: (err: unknown) => void;
 }): LiveProxy {
   const maxSessions = opts.maxSessions ?? 32;
   const idleMs = opts.idleMs ?? 30 * 60 * 1000;
@@ -228,7 +233,19 @@ export function createLiveProxy(opts: {
     // unref so a hanging test/process isn't blocked waiting for this timer
     initTimer.unref();
 
-    await backend.start();
+    try {
+      await backend.start();
+    } catch (e) {
+      // A backend that never started holds no process: release its slot now, or
+      // repeated spawn failures fill maxSessions with dead backends.
+      teardown();
+      try {
+        opts.onSpawnError?.(e);
+      } catch {
+        // the listener's own failure must not change the answer
+      }
+      throw e;
+    }
     await http.start();
     return http;
   }
