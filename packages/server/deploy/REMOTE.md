@@ -43,7 +43,7 @@ kernel's governance guarantees.
 
 `bridgeSpawnEbadf` counts LIVE bridge spawns that failed with `EBADF` since the front started (`lastAt` is the time of the last one). A vault watcher left running in LIVE mode breaks child_process fd setup under launchd, so when such a spawn fails while the FS watcher runs in LIVE mode, the front stops the watcher (`watcherStops`) and logs one loud error the first time; the front keeps running (#583). A count that keeps rising with `watcherStops` at 0 means the cause is something else; a restart of the front may be needed.
 
-The FS watcher only runs in FS mode. On presence "up" the front stops it, and that stop also cancels an index build or watcher start still in flight, so a short down and up (a plugin reload) leaves no watcher behind (#583).
+The FS watcher only runs in FS mode. On presence "up" the front stops it, and that stop also cancels an index build or watcher start still in flight, so a short down and up (a plugin reload) leaves no watcher behind. An FS request that reaches the handler after "up" is served from the index but starts no watcher (#583).
 
 ## 1. Token + env
 
@@ -160,7 +160,7 @@ Two Clerk realities shaped the wiring:
 | `VAULT_MCP_TOKEN` | *(required if no OAuth)* | static Bearer token (Claude Code/API) |
 | `VAULT_MCP_SOCKET` | *(derived)* | absolute path to plugin Unix socket; overrides slug derivation |
 | `VAULT_MCP_PRESENCE_POLL_MS` | `5000` | how often (ms) to probe the socket for Obsidian presence |
-| `VAULT_MCP_FS_PREWARM_DELAY_MS` | `10000` | how long (ms) presence must stay down before the FS index and vault watcher are prewarmed (#583). A shorter down, such as a plugin reload, never starts them; an FS-mode request in the meantime still builds them on demand. `0` prewarms at once (the behaviour before #583); a value that is not a whole number falls back to the default with a warning |
+| `VAULT_MCP_FS_PREWARM_DELAY_MS` | `10000` | how long (ms) presence must stay down before the FS index and vault watcher are prewarmed (#583). A shorter down, such as a plugin reload, never starts them; an FS-mode request in the meantime still builds them on demand. `0` prewarms at once (the behaviour before #583); a value that is not a whole number from 0 to 2147483647 falls back to the default with a warning |
 | `VAULT_MCP_BRIDGE` | `~/.claude/vault-mcp/bridge.mjs` | plugin stdio bridge to spawn per LIVE session |
 | `VAULT_MCP_IDLE_MS` | `1800000` (30 min) | idle-reap window for LIVE sessions |
 | `VAULT_MCP_MAX_SESSIONS` | `32` | concurrent LIVE-backend cap |
