@@ -21,7 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
-import { outlineNote, findHeadingSection as findHeadingSectionIn, findBlock as findBlockIn } from "../note-sections.js";
+import { outlineNote, findHeadingSection, findBlock } from "../note-sections.js";
 import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
@@ -247,20 +247,9 @@ function coerceScalarValue(raw: string): FrontmatterScalar {
 // Headings and blocks are found by the shared, fence-aware parser in
 // `note-sections.ts` (#593), the one the live host checks its cache with: a
 // `#` line inside a code fence, a math block or a comment is not a heading,
-// and a block's run of lines stops at a heading or a fence. The ranges are
-// line indices into `bodyLines` (the note without its front matter).
-
-function findHeadingSection(bodyLines: string[], headingText: string): { start: number; end: number } | undefined {
-  const outline = outlineNote(bodyLines.join("\n"), { frontmatter: false });
-  const section = findHeadingSectionIn(outline, 0, headingText);
-  return section ? { start: section.startLine, end: section.endLine } : undefined;
-}
-
-function findBlock(bodyLines: string[], blockId: string): { start: number; end: number } | undefined {
-  const outline = outlineNote(bodyLines.join("\n"), { frontmatter: false });
-  const block = findBlockIn(outline, (id) => id === blockId);
-  return block ? { start: block.startLine, end: block.endLine } : undefined;
-}
+// and a block's run of lines stops at a heading or a fence. `patchNote`
+// outlines the body (the note without its front matter) once and works in
+// its line indices.
 
 // Match an outbound wikilink token in markdown.
 const WIKILINK_TOKEN_RE = /\[\[([^\]|#^]+?)((?:[|#^][^\]]*)?)\]\]/g;
@@ -753,12 +742,19 @@ class VaultImpl {
     const fmMatch = LEADING_FRONTMATTER_RE.exec(stripped);
     const fmText = fmMatch ? bom + fmMatch[0] : "";
     const body = fmMatch ? stripped.slice(fmMatch[0].length) : text;
-    const bodyLines = body.split("\n");
+    const outline = outlineNote(body, { frontmatter: false });
+    const bodyLines = outline.lines;
 
-    const range =
-      anchor.type === "heading"
-        ? findHeadingSection(bodyLines, anchor.value)
-        : findBlock(bodyLines, anchor.value);
+    let range: { start: number; end: number } | undefined;
+    if (anchor.type === "heading") {
+      const section = findHeadingSection(outline, body.length, anchor.value);
+      range = section && { start: section.startLine, end: section.endLine };
+    } else {
+      // Ids are compared lowercased, as Obsidian keys its block cache.
+      const want = anchor.value.toLowerCase();
+      const block = findBlock(outline, (id) => id.toLowerCase() === want);
+      range = block && { start: block.startLine, end: block.endLine };
+    }
 
     if (!range) {
       return { found: false, anchor, op };

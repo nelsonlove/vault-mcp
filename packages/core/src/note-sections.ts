@@ -40,6 +40,7 @@
 // Obsidian-free and pure, so both servers and the tests share it.
 
 import { LEADING_FRONTMATTER_RE } from "./accept-guard.js";
+import { FENCE_LEAD, fencedSpans } from "./fences.js";
 
 /** One heading found in the text. Offsets index the text the outline was
  *  made from; `end` is the end of the heading's last line (the underline for
@@ -74,7 +75,6 @@ export interface NoteOutline {
   headings: TextHeading[];
 }
 
-const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 const MATH_OPEN = /^ {0,3}(\${2,})[^$]*$/;
 const COMMENT_OPEN = /^ {0,3}%%[^%]*$/;
 const HTML_RAW_OPEN = /^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)/i;
@@ -147,8 +147,19 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     }
   }
 
+  // Fences come from the shared rule (`fences.ts`), the one the link
+  // rewriter uses: a fence may open after indentation, quote markers or a
+  // list marker. `fenceEnd[i]` is set on a fence's lines; true on its last.
+  const fenceEnd: Array<boolean | undefined> = new Array(lines.length);
+  if (bodyLine < lines.length) {
+    let li = bodyLine;
+    for (const [a, b] of fencedSpans(text, lineStarts[bodyLine])) {
+      while (li < lines.length && lineStarts[li] < a) li++;
+      while (li < lines.length && lineStarts[li] < b) { fenceEnd[li] = li + 1 >= lines.length || lineStarts[li + 1] >= b; li++; }
+    }
+  }
+
   type Open =
-    | { kind: "fence"; char: string; len: number }
     | { kind: "math"; len: number }
     | { kind: "comment" }
     | { kind: "html-raw"; tag: string }
@@ -159,17 +170,20 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
   // HTML block) only after a blank line, a heading, a closed hidden block or
   // the start of the body.
   let prev: "start" | "blank" | "boundary" | "text" = "start";
+  // Inside a list: a heading indented under an item belongs to the item, and
+  // Obsidian does not list it among the note's headings.
+  let inList = false;
 
   for (let i = bodyLine; i < lines.length; i++) {
     const s = bare(lines[i]);
+    if (!open && fenceEnd[i] !== undefined) {
+      hidden[i] = true;
+      if (fenceEnd[i]) prev = "boundary";
+      continue;
+    }
     if (open) {
       hidden[i] = true;
       switch (open.kind) {
-        case "fence": {
-          const m = /^ {0,3}(`+|~+)[ \t]*$/.exec(s);
-          if (m && m[1][0] === open.char && m[1].length >= open.len) { open = null; prev = "boundary"; }
-          break;
-        }
         case "math": {
           const t = s.replace(/[ \t]+$/, "");
           let n = 0;
@@ -195,12 +209,11 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
 
     if (s.trim() === "") { prev = "blank"; continue; }
 
-    const fence = FENCE_OPEN.exec(s);
-    if (fence && !(fence[2][0] === "`" && fence[3].includes("`"))) {
-      hidden[i] = true;
-      open = { kind: "fence", char: fence[2][0], len: fence[2].length };
-      continue;
-    }
+    const indent = /^ */.exec(s)![0].length;
+    const listItem = LIST_ITEM.test(s) && !THEMATIC_BREAK.test(s);
+    if (listItem) inList = true;
+    else if (indent === 0) inList = false;
+    const nested = inList && (listItem || indent > 0);
     const math = MATH_OPEN.exec(s);
     if (math) {
       hidden[i] = true;
@@ -233,7 +246,7 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
       continue;
     }
 
-    const atx = parseAtxLine(s);
+    const atx = nested ? null : parseAtxLine(s);
     if (atx) {
       headings.push({
         heading: atx.heading, level: atx.level, line: i, lastLine: i,
@@ -250,7 +263,7 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     // underline. Anything that could be a list, a quote, a table row, a
     // thematic break or a lazy continuation is left alone.
     if (
-      prev !== "text" && i + 1 < lines.length &&
+      prev !== "text" && !nested && i + 1 < lines.length &&
       /^ {0,3}\S/.test(s) && !LIST_ITEM.test(s) && !QUOTE.test(s)
     ) {
       const u = SETEXT_UNDERLINE.exec(bare(lines[i + 1]));
@@ -293,15 +306,11 @@ export interface HeadingSection {
  *  undefined when no heading has that text. */
 export function findHeadingSection(outline: NoteOutline, textLength: number, headingText: string): HeadingSection | undefined {
   const { headings } = outline;
-  const index = headings.findIndex((h) => h.heading === headingText);
-  if (index < 0) return undefined;
-  const h = headings[index];
-  let end = textLength;
-  let endLine = outline.lines.length;
-  for (let j = index + 1; j < headings.length; j++) {
-    if (headings[j].level <= h.level) { end = headings[j].start; endLine = headings[j].line; break; }
-  }
-  return { heading: h, index, start: h.end, end, startLine: h.lastLine + 1, endLine };
+  const at = sectionAt(headings, textLength, headingText);
+  if (!at) return undefined;
+  const h = headings[at.index];
+  const endLine = at.next < 0 ? outline.lines.length : headings[at.next].line;
+  return { heading: h, index: at.index, start: at.start, end: at.end, startLine: h.lastLine + 1, endLine };
 }
 
 /** A `^id` block found in the text. */
@@ -317,6 +326,9 @@ export interface TextBlock {
   start: number;
   /** End of the block's last line, before its line break. */
   end: number;
+  /** True when the id stands alone on its line after a blank line, and so
+   *  names the block above it (Obsidian gives it to the previous block). */
+  standalone: boolean;
 }
 
 function isBlankLine(outline: NoteOutline, i: number): boolean {
@@ -334,14 +346,36 @@ function inRun(outline: NoteOutline, i: number): boolean {
  * line (after a space, or alone on the line), outside fences and the front
  * matter. The block is the run of lines around it, bounded by blank lines,
  * headings and hidden blocks; when the id sits on a list item, the block
- * starts at that item's marker line.
+ * starts at that item's marker line. An id alone on its line after a blank
+ * line names the block above it, as Obsidian reads it: the table, list,
+ * quote or paragraph run above, a fenced block, or a heading.
  */
 export function findBlock(outline: NoteOutline, accept: (id: string) => boolean): TextBlock | undefined {
   const { lines, lineStarts } = outline;
+  const span = (id: string, anchorLine: number, startLine: number, endLine: number, standalone: boolean): TextBlock => ({
+    id, anchorLine, startLine, endLine, standalone,
+    start: lineStarts[startLine],
+    end: lineStarts[endLine - 1] + bare(lines[endLine - 1]).length,
+  });
   for (let i = outline.bodyLine; i < lines.length; i++) {
     if (outline.hidden[i] || outline.headingLine[i]) continue;
     const m = BLOCK_ID_AT_END.exec(bare(lines[i]));
     if (!m || !accept(m[1])) continue;
+    if (bare(lines[i]).trim() === `^${m[1]}` && i - 1 >= outline.bodyLine && isBlankLine(outline, i - 1)) {
+      let last = i - 1;
+      while (last >= outline.bodyLine && isBlankLine(outline, last)) last--;
+      if (last >= outline.bodyLine) {
+        let first = last;
+        if (outline.hidden[last]) {
+          while (first - 1 >= outline.bodyLine && outline.hidden[first - 1]) first--;
+        } else if (outline.headingLine[last]) {
+          first = outline.headings.find((h) => h.lastLine === last)?.line ?? last;
+        } else {
+          while (inRun(outline, first - 1)) first--;
+        }
+        return span(m[1], i, first, last + 1, true);
+      }
+    }
     let startLine = i;
     while (inRun(outline, startLine - 1)) startLine--;
     let endLine = i + 1;
@@ -349,11 +383,7 @@ export function findBlock(outline: NoteOutline, accept: (id: string) => boolean)
     for (let j = i; j >= startLine; j--) {
       if (LIST_ITEM.test(bare(lines[j]))) { startLine = j; endLine = i + 1; break; }
     }
-    return {
-      id: m[1], anchorLine: i, startLine, endLine,
-      start: lineStarts[startLine],
-      end: lineStarts[endLine - 1] + bare(lines[endLine - 1]).length,
-    };
+    return span(m[1], i, startLine, endLine, false);
   }
   return undefined;
 }
@@ -387,8 +417,6 @@ function onlyBlanks(text: string, from: number, to: number): boolean {
   return /^[ \t\r]*$/.test(text.slice(from, to));
 }
 
-/** Does the cached heading still sit, with the same text and level, at its
- *  recorded offsets in `text`? */
 /** The start and end offsets of a cache position, or null when either is
  *  missing or not a whole number (a cache entry this module cannot check). */
 function offsetsOf(position: CachedHeading["position"] | undefined): [number, number] | null {
@@ -397,6 +425,20 @@ function offsetsOf(position: CachedHeading["position"] | undefined): [number, nu
   return Number.isInteger(s) && Number.isInteger(e) ? [s as number, e as number] : null;
 }
 
+/** Is everything from the start of `offset`'s line up to `offset` a
+ *  container lead (indentation, quote markers, one list marker)? */
+function leadOnly(text: string, outline: NoteOutline, line: number, offset: number): boolean {
+  const before = text.slice(outline.lineStarts[line], offset);
+  return before.replace(FENCE_LEAD, "") === "";
+}
+
+/**
+ * Does the cached heading still sit, with the same text and level, at its
+ * recorded offsets in `text`? The check reads only the text at those
+ * offsets, so it accepts a heading this parser would not place itself (one
+ * on a list item, in a callout or quote, or a setext heading over several
+ * lines): a parser gap never rejects a cache that matches the text.
+ */
 function cachedHeadingHolds(text: string, outline: NoteOutline, h: CachedHeading): boolean {
   const o = offsetsOf(h?.position);
   if (!o) return false;
@@ -404,48 +446,44 @@ function cachedHeadingHolds(text: string, outline: NoteOutline, h: CachedHeading
   if (s < 0 || e < s || e > text.length) return false;
   const line = lineIndexAt(outline, s);
   if (line < outline.bodyLine) return false;
-  const lineStart = outline.lineStarts[line];
-  if (!onlyBlanks(text, lineStart, s)) return false;
-  const slice = text.slice(lineStart, e);
-  const parts = slice.split("\n");
-  if (parts.length === 1) {
-    const lineEnd = lineStart + bare(outline.lines[line]).length;
-    if (e > lineEnd || !onlyBlanks(text, e, lineEnd)) return false;
-    const atx = parseAtxLine(bare(outline.lines[line]));
+  if (!leadOnly(text, outline, line, s)) return false;
+  const lastLine = lineIndexAt(outline, e);
+  const lastEnd = outline.lineStarts[lastLine] + bare(outline.lines[lastLine]).length;
+  if (e > lastEnd || !onlyBlanks(text, e, lastEnd)) return false;
+  if (lastLine === line) {
+    const atx = parseAtxLine(text.slice(s, lastEnd));
     return !!atx && atx.level === h.level && atx.heading === h.heading;
   }
-  if (parts.length === 2) {
-    // A setext heading: its text line, then the underline.
-    const under = bare(outline.lines[line + 1] ?? "");
-    const lineEnd = outline.lineStarts[line + 1] + under.length;
-    if (e > lineEnd || !onlyBlanks(text, e, lineEnd)) return false;
-    const u = SETEXT_UNDERLINE.exec(under);
-    if (!u) return false;
-    return (u[1][0] === "=" ? 1 : 2) === h.level && bare(outline.lines[line]).trim() === h.heading;
-  }
-  return false;
+  // A setext heading: its text lines, then the underline on the last line
+  // (after any container lead).
+  const under = bare(outline.lines[lastLine]).replace(FENCE_LEAD, "");
+  const u = SETEXT_UNDERLINE.exec(under);
+  if (!u || (u[1][0] === "=" ? 1 : 2) !== h.level) return false;
+  const body = text.slice(s, outline.lineStarts[lastLine]).replace(/\r?\n$/, "");
+  const stripped = body.split("\n").map((l, k) => (k === 0 ? l : l.replace(FENCE_LEAD, ""))).join("\n");
+  return body.trim() === h.heading || stripped.trim() === h.heading;
 }
 
 /**
  * Does a metadata cache's heading list still describe `text`? True when
  * every cached heading sits at its recorded offsets with its recorded text
  * and level, the list is in text order, and every heading this parser finds
- * at the start of a line (no indent, outside fences) is in the list. The
- * cache may hold headings this parser does not find (it is the stricter
- * Markdown reader); it may not miss one, because a heading written since
- * the cache was made would end a section early.
+ * (any form: ATX at any allowed indent, or setext) starts on a line where
+ * the cache has one. The cache may hold headings this parser does not find
+ * (it is the stricter Markdown reader); it may not miss one, because a
+ * heading written since the cache was made would end a section early.
  */
 export function verifyCachedHeadings(text: string, outline: NoteOutline, cached: readonly CachedHeading[]): boolean {
   let last = -1;
-  const starts = new Set<number>();
+  const lines = new Set<number>();
   for (const h of cached) {
     if (!cachedHeadingHolds(text, outline, h)) return false;
     if (h.position.start.offset <= last) return false;
     last = h.position.start.offset;
-    starts.add(outline.lineStarts[lineIndexAt(outline, h.position.start.offset)]);
+    lines.add(lineIndexAt(outline, h.position.start.offset));
   }
   for (const p of outline.headings) {
-    if (p.indent === 0 && !p.setext && !starts.has(p.start)) return false;
+    if (!lines.has(p.line)) return false;
   }
   return true;
 }
@@ -460,8 +498,8 @@ export function verifyCachedBlock(text: string, outline: NoteOutline, id: string
   const [s, e] = o;
   if (s < 0 || e < s || e > text.length) return false;
   const first = lineIndexAt(outline, s);
-  if (first < outline.bodyLine || outline.hidden[first]) return false;
-  if (!onlyBlanks(text, outline.lineStarts[first], s)) return false;
+  if (first < outline.bodyLine) return false;
+  if (!leadOnly(text, outline, first, s)) return false;
   const lastLine = lineIndexAt(outline, e);
   const lastEnd = outline.lineStarts[lastLine] + bare(outline.lines[lastLine]).length;
   if (e > lastEnd || !onlyBlanks(text, e, lastEnd)) return false;
@@ -518,20 +556,32 @@ export function sectionIn(
   textLength: number,
   headingText: string,
 ): { start: number; end: number } | undefined {
-  const idx = headings.findIndex((h) => h.heading === headingText);
-  if (idx < 0) return undefined;
-  const h = headings[idx];
-  let end = textLength;
-  for (let j = idx + 1; j < headings.length; j++) {
-    if (headings[j].level <= h.level) { end = headings[j].start; break; }
+  const at = sectionAt(headings, textLength, headingText);
+  return at ? { start: at.start, end: at.end } : undefined;
+}
+
+/** The one section-end rule: the first heading named `headingText`, its
+ *  section from just after it to the next heading of the same or a higher
+ *  level (`next`, or -1 and `textLength` when there is none). */
+function sectionAt(
+  headings: readonly ResolvedHeading[],
+  textLength: number,
+  headingText: string,
+): { index: number; next: number; start: number; end: number } | undefined {
+  const index = headings.findIndex((h) => h.heading === headingText);
+  if (index < 0) return undefined;
+  const h = headings[index];
+  for (let j = index + 1; j < headings.length; j++) {
+    if (headings[j].level <= h.level) return { index, next: j, start: h.end, end: headings[j].start };
   }
-  return { start: h.end, end };
+  return { index, next: -1, start: h.end, end: textLength };
 }
 
 /**
  * The offsets of block `id` in `text`, for a write: the cached position when
- * `verifyCachedBlock` holds, else the block this parser finds (its id
- * compared without case, as Obsidian keys its block cache), else undefined.
+ * `verifyCachedBlock` holds, else the block this parser finds (the id and
+ * the anchor both compared lowercased, as Obsidian keys its block cache),
+ * else undefined.
  */
 export function resolveBlock(
   text: string,
@@ -544,6 +594,7 @@ export function resolveBlock(
   }
   // Obsidian takes an id as a block's only at the block's end, so a run
   // that goes on past the id's line is not that block.
-  const found = findBlock(outline, (b) => b.toLowerCase() === id);
-  return found && found.anchorLine === found.endLine - 1 ? { start: found.start, end: found.end, source: "text" } : undefined;
+  const want = id.toLowerCase();
+  const found = findBlock(outline, (b) => b.toLowerCase() === want);
+  return found && (found.standalone || found.anchorLine === found.endLine - 1) ? { start: found.start, end: found.end, source: "text" } : undefined;
 }

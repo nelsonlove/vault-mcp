@@ -243,3 +243,86 @@ describe("the filesystem server's patch over the shared parser", () => {
     assert.equal((await vault.patchNote("blk.md", { type: "block", value: "b1" }, "replace", "x")).found, false);
   });
 });
+
+// ── review round 1 of #596 ─────────────────────────────────────────────────
+
+describe("review round 1: fences, cache checks and blocks", () => {
+  test("a fence that opens on a list item's line hides its lines, and its closer does not open another", () => {
+    const text = "## Setup\n- ```bash\n  # install deps\n  npm i\n  ```\n\n## Usage\nrun it\n\n## License\nMIT\n";
+    assert.deepEqual(names(text), ["2:Setup", "2:Usage", "2:License"]);
+  });
+
+  test("a fence inside a quote hides its lines", () => {
+    assert.deepEqual(names("# A\n> ```\n> # quoted code\n> ```\n## B\n"), ["1:A", "2:B"]);
+  });
+
+  test("a cache that lacks an indented ATX heading written since does not hold", () => {
+    const text = "# T\n\n## A\n\nbody\n";
+    const c = [cached(text, 0, "T", 1), cached(text, 2, "A", 2)];
+    const newer = text + "\n   ## New\n\nnew body\n";
+    assert.equal(verifyCachedHeadings(newer, outlineNote(newer), c), false);
+  });
+
+  test("a cache that lacks a setext heading written since does not hold", () => {
+    const text = "# T\n\n## A\n\nbody\n";
+    const c = [cached(text, 0, "T", 1), cached(text, 2, "A", 2)];
+    const newer = text + "\nNew\n===\n\nnew body\n";
+    assert.equal(verifyCachedHeadings(newer, outlineNote(newer), c), false);
+  });
+
+  test("an indented # line inside a list item is not a heading of the note", () => {
+    assert.deepEqual(names("# T\n\n- item\n  # nested\n\n  ## nested too\n\n## After\n"), ["1:T", "2:After"]);
+  });
+
+  test("a fresh cache holding headings the parser cannot place still holds: list item, callout, multi-line setext", () => {
+    const text = "# T\n\n- # Item head\n\n> [!note]\n> # Callout head\n\nLine one\nline two\n---\n\n## End\n";
+    const at = (s) => text.indexOf(s);
+    const c = [
+      cached(text, 0, "T", 1),
+      { heading: "Item head", level: 1, position: { start: { offset: at("# Item head") }, end: { offset: at("# Item head") + "# Item head".length } } },
+      { heading: "Callout head", level: 1, position: { start: { offset: at("# Callout head") }, end: { offset: at("# Callout head") + "# Callout head".length } } },
+      { heading: "Line one\nline two", level: 2, position: { start: { offset: at("Line one") }, end: { offset: at("line two\n---") + "line two\n---".length } } },
+      cached(text, 11, "End", 2),
+    ];
+    assert.equal(verifyCachedHeadings(text, outlineNote(text), c), true);
+    assert.equal(resolveHeadings(text, c).source, "cache");
+  });
+
+  test("a cached list-item heading whose text changed does not hold", () => {
+    const text = "# T\n\n- # Other head\n";
+    const s = text.indexOf("# Other");
+    const c = [cached(text, 0, "T", 1), { heading: "Item head", level: 1, position: { start: { offset: s }, end: { offset: s + 12 } } }];
+    assert.equal(verifyCachedHeadings(text, outlineNote(text), c), false);
+  });
+
+  for (const [kind, structure] of [
+    ["table", "| a | b |\n| - | - |\n| 1 | 2 |"],
+    ["list", "- one\n- two"],
+    ["quote", "> quoted\n> more"],
+  ]) {
+    test(`an id alone on its line after a blank line belongs to the ${kind} above (text fallback)`, () => {
+      const text = `# H\n\nlead\n\n${structure}\n\n^Blk-1\n\ntail\n`;
+      const r = resolveBlock(text, "blk-1", undefined);
+      assert.ok(r, "found");
+      assert.equal(text.slice(r.start, r.end), structure);
+    });
+  }
+
+  test("a mixed-case anchor matches a mixed-case id, both sides lowercased", () => {
+    const text = "# H\n\nA line ^Note-A\n";
+    const r = resolveBlock(text, "Note-A", undefined);
+    assert.ok(r);
+    assert.equal(text.slice(r.start, r.end), "A line ^Note-A");
+  });
+
+  test("the FS server: a replace on a heading above a list-item fence keeps the sections after it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "note-sections-r1-"));
+    try {
+      const v = createVaultAt(root);
+      await writeFile(path.join(root, "s.md"), "## Setup\n- ```bash\n  # install deps\n  npm i\n  ```\n\n## Usage\nrun it\n\n## License\nMIT\n", "utf8");
+      assert.equal((await v.patchNote("s.md", { type: "heading", value: "install deps" }, "replace", "x")).found, false);
+      await v.patchNote("s.md", { type: "heading", value: "Setup" }, "replace", "new setup\n");
+      assert.equal(await readFile(path.join(root, "s.md"), "utf8"), "## Setup\nnew setup\n\n## Usage\nrun it\n\n## License\nMIT\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
