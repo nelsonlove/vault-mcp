@@ -57,6 +57,8 @@ import {
   editFile,
   moveFile,
   registerFileTools,
+  parseFileMoveExtensions,
+  FILE_MOVE_EXTENSIONS_ENV_VAR,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
 import { loadRedaction } from "./redaction-env.js";
@@ -182,6 +184,16 @@ export function getFsWriteKernel(): FsWriteKernel {
  * `{"mode":"create-only","paths":["**\/[0-9][0-9].01 Inbox/*.md"]}`. Unset or
  * unreadable ⇒ no write rule (mode "all"), as the plugin's default. Read per call.
  */
+/**
+ * The file types obsidian_move_file moves besides `.base` and `.canvas`, from
+ * `VAULT_MCP_FILE_MOVE_EXTENSIONS` (comma- or space-separated extensions without the dot), read
+ * per call. Unset ⇒ core's default list; set but empty ⇒ only `.base` and `.canvas`. The same
+ * meaning as the plugin's `fileMoveExtensions` setting.
+ */
+export function fsFileMoveExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  return parseFileMoveExtensions(env[FILE_MOVE_EXTENSIONS_ENV_VAR]);
+}
+
 export const WRITE_SCOPE_ENV_VAR = "VAULT_MCP_WRITE_SCOPE";
 
 export function fsWriteScope(env: NodeJS.ProcessEnv = process.env) {
@@ -439,7 +451,7 @@ export function makeBackend(
         () => deleteNote(relPath, confirm),
       ),
 
-    // .base and .canvas files (#575): the same gate, path check, write scope, cut-read check,
+    // .base and .canvas files (#575), and for the move the attachment types on the list: the same gate, path check, write scope, cut-read check,
     // queue and journal as the note writes. There is no trash on this server, and its one
     // removal tool (obsidian_delete_note, a permanent delete) stays notes-only.
     writeFile: async (relPath, content, overwrite) =>
@@ -524,6 +536,9 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     // A .base is a query (#580 review 1): not written, edited or moved while the write scope limits
     // paths. This server has no path allowlist; its write scope is the one path rule it has.
     pathScope: () => (fsWriteScope().mode !== "all" ? `the write scope (${WRITE_SCOPE_ENV_VAR})` : null),
+    // The attachment types obsidian_move_file moves besides .base and .canvas, read per call:
+    // unset ⇒ core's default list, empty ⇒ none (the plugin's fileMoveExtensions setting, here an env var).
+    moveExtensions: () => fsFileMoveExtensions(),
   });
 
   return server;
