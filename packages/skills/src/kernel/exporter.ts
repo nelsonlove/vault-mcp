@@ -266,7 +266,7 @@ export function excludedWarning(list: readonly ExcludedNote[], refusedEmbeds: It
   const sum = excludedSummary(list, refusedEmbeds);
   const kinds = (Object.keys(sum.byKind) as ExportableKind[]).filter((k) => sum.byKind[k] > 0).map((k) => `${sum.byKind[k]} ${k}`).join(", ");
   const first = (paths: string[]) => paths.slice(0, 8).join(", ") + (paths.length > 8 ? `, … ${paths.length - 8} more` : "");
-  const notes = sum.total ? `${sum.total} typed note(s) excluded from the compile — not accepted (no \`verified\` entry naming a \`human:\` actor; 01.41 rule 8: nothing unaccepted reaches a compiled agent prompt): ${kinds}: ${first(sum.paths)}` : "";
+  const notes = sum.total ? `${sum.total} typed note(s) excluded from the compile — not accepted (no \`verified\` entry naming a \`human:\` actor: nothing unaccepted reaches a compiled agent prompt): ${kinds}: ${first(sum.paths)}` : "";
   const embeds = sum.transclusions.length ? `${sum.transclusions.length} embedded note(s) refused — not accepted, so a marker stands in place of each embed of it: ${first(sum.transclusions)}` : "";
   return [notes, embeds].filter(Boolean).join("; ");
 }

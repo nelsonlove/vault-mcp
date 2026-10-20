@@ -355,7 +355,8 @@ describe("THE ACCEPTANCE GATE — nothing unaccepted reaches a compiled agent pr
     const line = a.warnings.find((w) => /excluded from the compile/.test(w));
     assert.ok(line, a.warnings.join("\n"));
     assert.match(line, /4 typed note\(s\) excluded/);
-    assert.match(line, /01\.41 rule 8/);
+    assert.match(line, /nothing unaccepted reaches a compiled agent prompt/);
+    assert.doesNotMatch(line, /\b0\d\.\d\d rule \d/, "no spec rule number in the operator-facing text");
     assert.match(line, /2 agent, 1 policy/);
     assert.match(line, /In\/draft\.md/);
   });
