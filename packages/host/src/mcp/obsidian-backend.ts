@@ -793,6 +793,9 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
       check = await moveWithLinks(this.app, file, toRel, {
         updateBacklinks: options.update_backlinks,
         ownLinks: false,
+        // An attachment is linked by its full name (`![[Scan.pdf]]`), so only notes whose text holds
+        // that name are parsed; a .base or .canvas keeps the basename scan it had (#580).
+        ...(file.extension === "base" || file.extension === "canvas" ? {} : { needleName: file.name }),
         visible: (p) => this.visible([p]).length === 1,
         isRecord: recordTest(this.recordIdentification),
       });

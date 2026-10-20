@@ -90,6 +90,13 @@ export interface MoveWithLinksOptions {
    * file, #575: YAML or JSON, which the Markdown link parser must not edit). Default true.
    */
   ownLinks?: boolean;
+  /**
+   * The name the find step looks for in a note's text before it parses the note. Default: the
+   * file's basename (a note is linked as `[[Plan]]`). An attachment is linked by its full name with
+   * the extension (`![[Scan.pdf]]`), so a move of one passes `file.name`: a note that only says
+   * "scan" is then not parsed (#594 review 1). Encoded forms are matched as for the basename.
+   */
+  needleName?: string;
   /** Which notes are records, never rewritten. Every live road passes the operator's settings (#397, #482). Default: only the shipped note marker `record: true`, and NO folder (the plugin ships no folder names, #482). */
   isRecord?: IsRecord;
 }
@@ -179,7 +186,7 @@ export async function moveWithLinks(app: App, file: TFile, to: string, opts: Mov
   const visible = opts.visible ?? (() => true);
   const update = opts.updateBacklinks !== false;
   const oldPath = file.path;
-  const names = needles(file.basename);
+  const names = needles(opts.needleName ?? file.basename);
   const check: LinkCheck = { ok: true, links_rewritten: 0, files_rewritten: [], candidates: 0, stale_sources: 0, still_linking_old: [], not_reaching_new: [], own_links_broken: [], index_only: [], failed: [], records_left: [], records_left_total: 0, find_ms: 0, check_ms: 0, hidden: 0 };
   const isRecord = opts.isRecord ?? recordTest();
   // Records whose links are left as written, with the links that reached the note (or, for the moved note, their targets).
