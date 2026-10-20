@@ -82,8 +82,14 @@ export {
   parseFileMoveExtensions,
   assertMovePath,
   assertMovePair,
+  readFileMoveExtensions,
+  readFileMoveExtensionsText,
+  fileMoveExtensionsWarning,
+  AttachmentOverwriteError,
+  isBinaryAttachmentPath,
+  looksBinary,
 } from "./file-formats.js";
-export type { FileKind, FileEdit, FileEditOp, FileEditResult } from "./file-formats.js";
+export type { FileKind, FileEdit, FileEditOp, FileEditResult, FileMoveExtensionsRead } from "./file-formats.js";
 export { registerFileTools, BaseUnderScopeError, FILE_TOOL_NAMES, WRITE_FILE_TOOL, EDIT_FILE_TOOL, MOVE_FILE_TOOL } from "./register-file-tools.js";
 export type { FileBackend, RegisterFileToolsOpts } from "./register-file-tools.js";
 export { strictInput, isObjectSchema, inputShapeOf, inputObjectOf, extendInput } from "./strict-input.js";
@@ -151,6 +157,7 @@ export {
   writeFile,
   editFile,
   moveFile,
+  binaryInfo,
   createVaultAt,
 } from "./fs-backend/vault.js";
 export type { VaultImpl } from "./fs-backend/vault.js";

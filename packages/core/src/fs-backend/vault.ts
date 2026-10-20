@@ -959,8 +959,9 @@ class VaultImpl {
     toRel: string,
     options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
-    // A .base or .canvas file, or one whose extension is on the operator's list; the extension kept.
-    assertMovePair(fromRel, toRel, options.extensions ?? []);
+    // A .base or .canvas file, or one whose extension is on the operator's list; the extension kept,
+    // and no overwrite of an attachment (fs.rename would destroy the file replaced, for good).
+    assertMovePair(fromRel, toRel, options.extensions ?? [], options.overwrite);
     const absFrom = this.resolveInVault(fromRel);
     const absTo = this.resolveInVault(toRel);
     if (absFrom === absTo) throw new Error("'from' and 'to' resolve to the same path");

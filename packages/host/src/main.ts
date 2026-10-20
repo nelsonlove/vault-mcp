@@ -472,7 +472,8 @@ export default class VaultMcpPlugin extends Plugin {
     this.settings.syncGuard = normalizeSyncGuard(this.settings.syncGuard);
     if (typeof this.settings.createNoteFlow !== "string") this.settings.createNoteFlow = "";
     // Absent (an older data.json) ⇒ the default list; a hand-edited entry is trimmed, lower-cased or dropped.
-    this.settings.fileMoveExtensions = normalizeFileMoveExtensions(this.settings.fileMoveExtensions);
+    // Present but not a list (null, a string) ⇒ empty, so only .base and .canvas move: a malformed value never widens the move.
+    this.settings.fileMoveExtensions = normalizeFileMoveExtensions(this.settings.fileMoveExtensions, (m) => console.warn(`[vault-mcp] ${m}`));
     this.settings.writeScope = normalizeWriteScope(this.settings.writeScope);
     this.settings.host = normalizeHostSettings(this.settings.host);
     // A hand-edited/corrupt data.json must not silently DISABLE a guard: any

@@ -179,21 +179,29 @@ export function getFsWriteKernel(): FsWriteKernel {
 }
 
 /**
+ * The file types obsidian_move_file moves besides `.base` and `.canvas`, from
+ * `VAULT_MCP_FILE_MOVE_EXTENSIONS` (comma- or space-separated extensions without the dot), read
+ * per call. Unset ⇒ core's default list; set but empty, or with no valid entry ⇒ only `.base` and
+ * `.canvas` (a warning names what was left out). The same meaning as the plugin's `fileMoveExtensions` setting.
+ */
+export function fsFileMoveExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env[FILE_MOVE_EXTENSIONS_ENV_VAR];
+  // Set but holding no valid entry ⇒ empty (only .base and .canvas move), never the default. The
+  // warning is logged once per value, not on every call.
+  return parseFileMoveExtensions(raw, (m) => {
+    if (warnedMoveList === raw) return;
+    warnedMoveList = raw;
+    console.warn(`[vault-mcp] ${m}`);
+  });
+}
+let warnedMoveList: string | undefined;
+
+/**
  * The write scope on this transport (core's write-scope.ts): the same value as the
  * plugin's `writeScope` setting, as JSON in one environment variable, e.g.
  * `{"mode":"create-only","paths":["**\/[0-9][0-9].01 Inbox/*.md"]}`. Unset or
  * unreadable ⇒ no write rule (mode "all"), as the plugin's default. Read per call.
  */
-/**
- * The file types obsidian_move_file moves besides `.base` and `.canvas`, from
- * `VAULT_MCP_FILE_MOVE_EXTENSIONS` (comma- or space-separated extensions without the dot), read
- * per call. Unset ⇒ core's default list; set but empty ⇒ only `.base` and `.canvas`. The same
- * meaning as the plugin's `fileMoveExtensions` setting.
- */
-export function fsFileMoveExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
-  return parseFileMoveExtensions(env[FILE_MOVE_EXTENSIONS_ENV_VAR]);
-}
-
 export const WRITE_SCOPE_ENV_VAR = "VAULT_MCP_WRITE_SCOPE";
 
 export function fsWriteScope(env: NodeJS.ProcessEnv = process.env) {

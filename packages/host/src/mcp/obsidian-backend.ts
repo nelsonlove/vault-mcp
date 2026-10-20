@@ -766,8 +766,9 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null; link_check?: LinkCheck }> {
     // A .base or .canvas file, or an attachment whose extension is on the operator's list (core's
-    // assertMovePair; a note is refused, it moves with obsidian_move_note); the extension kept.
-    assertMovePair(fromRel, toRel, options.extensions ?? []);
+    // assertMovePair; a note is refused, it moves with obsidian_move_note); the extension kept, and
+    // an attachment is never replaced (overwrite only for .base and .canvas).
+    assertMovePair(fromRel, toRel, options.extensions ?? [], options.overwrite);
     if (fromRel === toRel) throw new Error("from and to are the same path");
     // Before anything is trashed or any folder is made: a refused name moves nothing.
     await assertMoveName(this.app, fromRel, toRel, options.overwrite);

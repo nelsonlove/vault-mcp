@@ -42,7 +42,7 @@ import {
   resolveTerritories,
 } from "@vault-mcp/core";
 import { hasGuardedTerritory } from "./territory-policy.js";
-import { normalizeWriteScope, normalizeFileMoveExtensions, DEFAULT_FILE_MOVE_EXTENSIONS } from "@vault-mcp/core";
+import { normalizeWriteScope, readFileMoveExtensionsText, DEFAULT_FILE_MOVE_EXTENSIONS } from "@vault-mcp/core";
 import { normalizeHostSettings, type HostSettings } from "./headless.js";
 import { overridesTouching } from "./local-settings.js";
 
@@ -1109,7 +1109,9 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         ta.inputEl.rows = 3;
         ta.inputEl.style.width = "100%";
         ta.inputEl.addEventListener("change", async () => {
-          const next = normalizeFileMoveExtensions(ta.getValue().split(/[\s,]+/).filter(Boolean));
+          const read = readFileMoveExtensionsText(ta.getValue());
+          const next = read.extensions;
+          if (read.dropped.length) new Notice(`Vault MCP: not saved, not a valid extension: ${read.dropped.join(", ")} (1 to 16 letters or digits; md, base and canvas are never on the list)`);
           ta.setValue(next.join(" "));
           if (next.join(" ") === this.plugin.settings.fileMoveExtensions.join(" ")) return;
           this.plugin.settings.fileMoveExtensions = next;
