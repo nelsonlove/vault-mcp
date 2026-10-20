@@ -186,7 +186,7 @@ async function resolveBody(body: string, fromPath: string, ctx: ResolveContext):
       keep(); continue;
     }
     if (ctx.accept && !ctx.accept(src)) {
-      ctx.warnings.push(`${fromPath}: transclusion ${m[0]} refused — ${src.path} is not accepted (no \`verified\` entry naming a \`human:\` actor; 01.41 rule 8), so its text does not reach the compiled prompt`);
+      ctx.warnings.push(`${fromPath}: transclusion ${m[0]} refused — ${src.path} is not accepted (no \`verified\` entry naming a \`human:\` actor), so its text does not reach the compiled prompt`);
       ctx.refused?.add(src.path);
       ctx.sources?.add(src.path);
       out.push(transclusionRefused(src.path));
