@@ -48,6 +48,7 @@ import {
   validateFileContent,
   applyFileEdit,
 } from "@vault-mcp/core";
+import { outlineNote, resolveHeadings, resolveBlock, sectionIn } from "@vault-mcp/core";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
   VaultBackend,
@@ -521,21 +522,22 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     let start: number;
     let end: number;
 
+    // The offsets are checked against the text just read (#593): the cache
+    // describes the text Obsidian last parsed, which after a recent write is
+    // not this one. Where the cache still holds for the text it is used as
+    // before; where it does not, the positions come from the text itself.
+    const outline = outlineNote(text);
     if (anchor.type === "heading") {
-      const headings = cache?.headings ?? [];
-      const idx = headings.findIndex((h) => h.heading === anchor.value);
-      if (idx < 0) return { found: false, anchor, op };
-      const h = headings[idx];
-      start = h.position.end.offset; // just after the heading line
-      end = text.length;
-      for (let j = idx + 1; j < headings.length; j++) {
-        if (headings[j].level <= h.level) { end = headings[j].position.start.offset; break; }
-      }
+      const { headings } = resolveHeadings(text, cache?.headings, outline);
+      const section = sectionIn(headings, text.length, anchor.value);
+      if (!section) return { found: false, anchor, op };
+      start = section.start; // just after the heading line
+      end = section.end;
     } else {
-      const block = cache?.blocks?.[anchor.value];
+      const block = resolveBlock(text, anchor.value, cache?.blocks?.[anchor.value], outline);
       if (!block) return { found: false, anchor, op };
-      start = block.position.start.offset;
-      end = block.position.end.offset;
+      start = block.start;
+      end = block.end;
     }
 
     const previous = text.slice(start, end);

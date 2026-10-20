@@ -8,6 +8,8 @@ import {
   acceptTransitionNeedsBefore,
   executeQuickAddChoice,
   parseGuardFrontmatter,
+  resolveHeadings,
+  sectionIn,
   stripLeadingFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
 } from "@vault-mcp/core";
@@ -169,31 +171,26 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
           return ok({ path: p, found: false, inserted: true, created_note: true });
         }
 
+        // The section is placed on the text just read, checked against the
+        // cache (#593): after a recent write the cache describes the previous
+        // text, and its offsets would cut this one in the wrong place.
         const cache = app.metadataCache.getFileCache(file);
-        const headings = cache?.headings ?? [];
-        const idx = headings.findIndex((h) => h.heading === heading);
+        const text = await app.vault.read(file);
+        const { headings } = resolveHeadings(text, cache?.headings);
+        const section = sectionIn(headings, text.length, heading);
 
-        if (idx < 0) {
+        if (!section) {
           if (!create_if_missing) {
             return ok({ path: p, found: false, inserted: false });
           }
           // Append heading + content to file
-          const before = await app.vault.read(file);
           const appended = `\n## ${heading}\n\n${content}\n`;
-          guardAppendResult(before, before + appended);
+          guardAppendResult(text, text + appended);
           await app.vault.append(file, appended);
           return ok({ path: p, found: false, inserted: true, created_heading: true });
         }
 
-        const text = await app.vault.read(file);
-        const h = headings[idx];
-        let sectionEnd = text.length;
-        for (let j = idx + 1; j < headings.length; j++) {
-          if (headings[j].level <= h.level) {
-            sectionEnd = headings[j].position.start.offset;
-            break;
-          }
-        }
+        const sectionEnd = section.end;
 
         // Append at the end of the section body, preserving trailing newline before next heading
         const head = text.slice(0, sectionEnd).replace(/\n*$/, "\n");

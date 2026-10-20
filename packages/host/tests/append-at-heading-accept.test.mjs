@@ -81,10 +81,11 @@ const isAcceptForbidden = (res) =>
 // ── (a) REFUSED, nothing written ──────────────────────────────────────────────
 
 describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)", () => {
-  test("existing-section insert: a write landing inside the leading fence that introduces an accepted key is refused", async () => {
-    // Two headings, both mis-reported at offsets INSIDE the leading frontmatter,
-    // so the section-insert lands the content between `foo: bar` and the closing
-    // `---` — the resulting leading frontmatter would gain `accepted-by`.
+  test("existing-section insert: a cache that mis-reports offsets INSIDE the leading frontmatter is not used (#593); nothing written", async () => {
+    // Two headings, both mis-reported at offsets inside the leading
+    // frontmatter. Before #593 the section-insert landed the content between
+    // `foo: bar` and the closing `---`, and only this guard stopped it. Now
+    // the offsets are checked against the text, which has no heading H.
     const text = "---\nfoo: bar\n---\n\nbody\n";
     const cache = {
       headings: [
@@ -94,6 +95,19 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     };
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: hacker", create_if_missing: false });
+    assert.equal(res.structuredContent?.found, false, res.content[0].text);
+    assert.equal(calls.modify.length, 0, "nothing written");
+  });
+
+  test("existing-section insert: a write that closes an open leading fence and introduces an accepted key is refused", async () => {
+    // The fence is still OPEN, so `## H` is a heading of the body; appending
+    // at the end of its section closes the fence, and the resulting leading
+    // frontmatter would gain `accepted-by`.
+    const text = "---\nfoo: bar\n## H\n";
+    const at = text.indexOf("## H");
+    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 2, offset: at }, end: { line: 2, offset: at + 4 } } }] };
+    const { handler, calls } = harness({ "N.md": { text, cache } });
+    const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: hacker\n---", create_if_missing: false });
     assert.ok(isAcceptForbidden(res), res.content[0].text);
     assert.equal(calls.modify.length, 0, "nothing written");
   });
@@ -114,10 +128,10 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     assert.equal(calls.append.length, 0, "nothing written");
   });
 
-  test("existing-section insert into a proposed note that adds an accepted-provenance key is refused", async () => {
-    // The note carries a human `acceptance-status: proposed`; a mis-offset insert
-    // lands inside the fence and ADDS `accepted-by` — an acceptance-provenance
-    // key that was not there before, so the transition is an introduce.
+  test("existing-section insert into a proposed note: a mis-offset cache is not used (#593); nothing written", async () => {
+    // The note carries a human `acceptance-status: proposed`; before #593 a
+    // mis-offset insert landed inside the fence and ADDED `accepted-by`, and
+    // only this guard stopped it. Now the offsets are checked against the text.
     const text = "---\nacceptance-status: proposed\n---\n\nbody\n";
     const cache = {
       headings: [
@@ -128,6 +142,16 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     const { handler, calls } = harness({ "N.md": { text, cache } });
     // Offset 4 is the start of `acceptance-status`; offset 32 the closing `---`.
     const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: x", create_if_missing: false });
+    assert.equal(res.structuredContent?.found, false, res.content[0].text);
+    assert.equal(calls.modify.length, 0, "nothing written");
+  });
+
+  test("existing-section insert that closes an open fence carrying a proposed status and adds an accepted-provenance key is refused", async () => {
+    const text = "---\nacceptance-status: proposed\n## H\n";
+    const at = text.indexOf("## H");
+    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 2, offset: at }, end: { line: 2, offset: at + 4 } } }] };
+    const { handler, calls } = harness({ "N.md": { text, cache } });
+    const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: x\n---", create_if_missing: false });
     assert.ok(isAcceptForbidden(res), res.content[0].text);
     assert.equal(calls.modify.length, 0, "nothing written");
   });
