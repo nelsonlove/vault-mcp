@@ -16,6 +16,8 @@ It is a single Express process (`src/front.ts`) that:
   20 tools: the 17 note tools and the three `.base`/`.canvas` file tools) when the socket is gone — no outage, graceful degradation.
 - Returns to LIVE mode automatically when the plugin reconnects.
 
+**FS watcher lifecycle (#583):** the FS index and its vault watcher run only in FS mode, because a watcher running in LIVE mode breaks child_process fd setup under launchd and every bridge spawn then fails with `EBADF`. `wireFailover` prewarms them only after presence has stayed down for `VAULT_MCP_FS_PREWARM_DELAY_MS` (default 10 s), and on "up" calls `fs.stop()`, which cancels a `ready()` still in flight (a generation counter in `createFsHandler`) and resolves, like every `stop()` made while it waits, only when no watcher is open. The front also passes `watchAllowed: () => !presence.isLive()`, so a late FS request that calls `ready()` in LIVE mode builds the index but starts no watcher. As a safety net, `createEbadfGuard` stops the watcher when a bridge spawn fails with `EBADF` while it runs in LIVE mode, logs that once, and counts it in `/health` (`bridgeSpawnEbadf`). Tests: `src/__tests__/fs-watcher-flap.test.ts`.
+
 **FS-mode write caveat:** writes while Obsidian is closed are direct disk edits.
 Obsidian Sync reconciles them on relaunch; they are canonical after that point.
 Since issue #92 they are **serialized and journaled**: every FS-mode mutation
