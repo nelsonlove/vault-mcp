@@ -449,6 +449,23 @@ Separate from what agents may read: the path allowlist limits reads and writes t
 
 The filesystem server (the FS fallback of the HTTP front) reads the same value as JSON from the environment variable `VAULT_MCP_WRITE_SCOPE`. Unset: no write rule. A value that does not parse, or that is not exactly the setting's shape, refuses all writes, so a typo does not open what it was meant to close.
 
+## Moving files
+
+### File types obsidian_move_file moves
+
+| Field | Value |
+|---|---|
+| Key | `fileMoveExtensions` |
+| Default | `png jpg jpeg gif webp svg bmp avif` (images), `mp3 wav m4a ogg flac webm 3gp` (audio), `mp4 mov mkv ogv` (video), `pdf`, and `docx xlsx pptx odt zip` |
+| Effect | The extensions (lower case, without the dot) of the files `obsidian_move_file` moves and renames between folders, besides `.base` and `.canvas`, which always move. The extension is kept, in the same case. On this plugin, links and embeds in notes that reach the file (`![[Scan.pdf]]`, `[[Scan.pdf\|scan]]`, `![](Scan.pdf)`) are rewritten to the new path and damage-checked, as for a note move. A note (`md`) is never moved by this tool, whatever the list says: `obsidian_move_note` moves notes. The guards of a note move apply too: `idempotency_key`, the Sync guard (a move is a structure write that waits for "Fully synced"), the path allowlist at both ends, the write scope (Create new notes only refuses the move), the name checks, the hidden-folder refusal, the connection profile (only `full` offers the tool) and the journal. Writing and editing files (`obsidian_write_file`, `obsidian_edit_file`) stays `.base` and `.canvas` only. Empty: only `.base` and `.canvas` move. In the tab: extensions separated by spaces, commas or new lines; an entry is trimmed, its dot dropped, lower-cased, and dropped when it is not 1 to 16 letters or digits, or is `md`, `base` or `canvas` |
+| Takes effect | Live, per call (the tool's description lists the types as they were when the connection was made) |
+| Risk | A type added to the list can be moved by any agent with the full profile, for example a script or a config file outside the hidden folders. The default holds no executable, script or config type (`json`, `css`, `js`). Files in hidden folders, such as the app's config folder, never move here |
+| Recovery | Remove the type from the list |
+
+The filesystem server reads the same list from the environment variable `VAULT_MCP_FILE_MOVE_EXTENSIONS` (extensions separated by commas or spaces). Unset: the default list. Set but empty: only `.base` and `.canvas`. That server does not rewrite links or embeds to a moved file (its link index covers notes only); its reply's `links_note` says so.
+
+Deleting such a file: `obsidian_trash` on this plugin takes any file and moves it to the system trash (it needs `if_rev` and `idempotency_key`; `obsidian_read_note` gives a file's `rev`). The filesystem server has no trash tool, and its one removal tool, `obsidian_delete_note`, is a permanent delete that stays notes-only.
+
 ## Creating notes
 
 ### Construction module for obsidian_create_note
