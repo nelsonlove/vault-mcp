@@ -90,7 +90,7 @@ export interface FsHandler {
    */
   stop(): Promise<void>;
 
-  /** Whether a vault watcher is open or starting now (the front's EBADF check, tests). */
+  /** Whether a vault watcher is open, or a ready() that may open one is still running (the front's EBADF check, tests). */
   watching(): boolean;
 }
 
@@ -134,6 +134,13 @@ export interface FsHandlerOpts {
    * `null` ⇒ off. Settings that are refused throw when the server is built (fail closed).
    */
   redaction?: Redaction | null;
+  /**
+   * Whether the vault watcher may start now (#583). The front passes "presence is down": in LIVE
+   * mode no watcher may run, so a ready() run while the plugin is reachable (an FS request routed
+   * just before "up") builds the index but starts no watcher, and the next ready() tries again.
+   * Checked before the watcher starts and again once it has started. Absent ⇒ always allowed.
+   */
+  watchAllowed?: () => boolean;
 }
 
 // ── FS-mode write gate + write kernel (issue #92) ───────────────────────────
@@ -538,58 +545,71 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
 export function createFsHandler(opts?: FsHandlerOpts): FsHandler {
   let readyPromise: Promise<void> | null = null;
   let watcher: VaultWatcherHandle | null = null;
-  // Watchers being started now (startVaultWatcher not yet resolved), so
-  // watching() sees them and stop() can wait for them.
-  let starting = 0;
+  // ready() runs not yet settled. A run counts from its first line until any
+  // watcher it started and must drop is closed, so watching() is true for the
+  // whole time a watcher may be open or about to open.
+  let inFlight = 0;
+  // The stop() still closing or waiting; every later stop() waits for it too.
+  let pendingStop: Promise<void> | null = null;
   // Bumped by stop() (#583). A ready() run that was started under an older
   // generation is cancelled: it starts no watcher, and closes one it started.
   // Without it, a stop() that ran while buildIndex() or the watcher's start was
   // still in flight found `watcher` null, closed nothing, and the watcher that
   // started after it ran on into LIVE mode.
   let generation = 0;
+  const watchAllowed = opts?.watchAllowed ?? (() => true);
 
   // Build the vault index + start the watcher. Idempotent; re-armed by stop().
   function ready(): Promise<void> {
     if (readyPromise) return readyPromise;
     const gen = generation;
+    inFlight++;
 
-    readyPromise = (async () => {
-      await buildIndex();
-      const s = indexStatus();
-      console.error(
-        `index: ${s.status} (${s.count} notes)${s.error ? ` — error: ${s.error}` : ""}`,
-      );
-      if (gen !== generation) {
-        console.error("watcher: not started (FS handler stopped while the index was building)");
-        return;
-      }
-      if (s.status !== "ready") {
-        console.error("watcher: skipped (index not ready)");
-        return;
-      }
-      // Never more than one watcher: one is open already only if a run of the
-      // same generation started it, and then this run has nothing to do.
-      if (watcher) return;
-      let w: VaultWatcherHandle;
-      starting++;
+    // Read inside the run only after its first await, by which time it is assigned.
+    let run: Promise<void> | null = null;
+    run = (async () => {
       try {
-        w = await startVaultWatcher({ vaultRoot: vaultRoot() });
-      } catch (e) {
+        await buildIndex();
+        const s = indexStatus();
         console.error(
-          `watcher: failed to start — ${e instanceof Error ? e.message : String(e)}`,
+          `index: ${s.status} (${s.count} notes)${s.error ? ` — error: ${s.error}` : ""}`,
         );
-        return;
+        if (gen !== generation) {
+          console.error("watcher: not started (FS handler stopped while the index was building)");
+          return;
+        }
+        if (s.status !== "ready") {
+          console.error("watcher: skipped (index not ready)");
+          return;
+        }
+        if (!watchAllowed()) {
+          console.error("watcher: not started (LIVE mode)");
+          // Re-arm, so a later ready() in FS mode starts the watcher.
+          if (readyPromise === run) readyPromise = null;
+          return;
+        }
+        let w: VaultWatcherHandle;
+        try {
+          w = await startVaultWatcher({ vaultRoot: vaultRoot() });
+        } catch (e) {
+          console.error(
+            `watcher: failed to start — ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return;
+        }
+        if (gen !== generation || !watchAllowed()) {
+          // stop() ran, or LIVE mode came back, while the watcher was starting: close it now.
+          await closeWatcher(w);
+          console.error("watcher: closed at once (stopped or LIVE mode while the watcher was starting)");
+          if (gen === generation && readyPromise === run) readyPromise = null;
+          return;
+        }
+        watcher = w;
       } finally {
-        starting--;
+        inFlight--;
       }
-      if (gen !== generation || watcher) {
-        // stop() ran while the watcher was starting (or another run won): close it now.
-        await closeWatcher(w);
-        console.error("watcher: closed at once (FS handler stopped while the watcher was starting)");
-        return;
-      }
-      watcher = w;
     })();
+    readyPromise = run;
 
     return readyPromise;
   }
@@ -604,24 +624,34 @@ export function createFsHandler(opts?: FsHandlerOpts): FsHandler {
     }
   }
 
-  async function stop(): Promise<void> {
+  function stop(): Promise<void> {
     // Re-arm ready() so a later return to FS mode rebuilds the index + restarts
     // the watcher. The watcher must NOT run during LIVE mode: a live vault
     // watcher corrupts child_process fd setup under launchd and EBADFs the
     // bridge spawn (see front.ts wireFailover).
     generation++;
-    const inFlight = readyPromise;
+    const run = readyPromise;
     readyPromise = null;
     const w = watcher;
     watcher = null;
-    if (w) await closeWatcher(w);
-    // A ready() still in flight sees the new generation and closes any watcher
-    // it starts; wait for it, so that when stop() resolves no watcher is open.
-    if (inFlight) await inFlight.catch(() => {});
+    const prev = pendingStop;
+    const p = (async () => {
+      if (w) await closeWatcher(w);
+      // A ready() still in flight sees the new generation and closes any
+      // watcher it starts; wait for it, and for a stop() already under way, so
+      // that when any stop() resolves no watcher is open.
+      if (run) await run.catch(() => {});
+      if (prev) await prev;
+    })();
+    pendingStop = p;
+    void p.finally(() => {
+      if (pendingStop === p) pendingStop = null;
+    });
+    return p;
   }
 
   function watching(): boolean {
-    return watcher !== null || starting > 0;
+    return watcher !== null || inFlight > 0;
   }
 
   return {

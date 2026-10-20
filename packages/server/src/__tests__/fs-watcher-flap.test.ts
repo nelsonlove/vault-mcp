@@ -7,8 +7,8 @@
  * and the watcher that started after it ran on in LIVE mode, holding a file handle per vault note.
  *
  * These tests drive a real createFsHandler over a temp vault of a few hundred notes and count the
- * process's open handles under the vault with lsof (when lsof is on PATH), plus the handler's own
- * watching() flag. Each test ends with the count back at the file's baseline.
+ * process's open handles under the vault with lsof (on macOS, when lsof answers), plus the
+ * handler's own watching() flag (everywhere). Each test ends with the count back at the file's baseline.
  *
  * VAULT_PATH must be set before @vault-mcp/core loads (vault.ts captures it at import), so the
  * modules are imported dynamically in before().
@@ -57,7 +57,10 @@ before(async () => {
   // per-path fs.watch handles across watchers in one process, so a watcher leaked by one test
   // would hide a second leak from a baseline taken later; every test must return to this one.
   base = openUnderVault();
-  lsofWorks = base !== null;
+  // The handle count is an instrument for macOS only: there chokidar's fs.watch holds one handle
+  // per watched file. On Linux it uses inotify, which lsof shows as one anon_inode. The watching()
+  // checks run everywhere.
+  lsofWorks = process.platform === "darwin" && base !== null;
 });
 
 after(async () => {
@@ -162,6 +165,65 @@ describe("FS watcher across presence flaps (#583)", () => {
     await sleep(200);
     assert.equal(watchingOf(h) ?? false, false, "no watcher after the flap");
     if (lsofWorks && base !== null) assert.equal(await settledCount(base), base, "handles back to baseline after the flap");
+    await h.stop();
+  });
+
+  test("watching() is true for the whole of an in-flight ready(), so the EBADF guard can see it", async () => {
+    const h = createFsHandler({ indexStatus: true });
+    const building = h.ready();
+    assert.equal(watchingOf(h), true, "true while buildIndex() runs");
+    await building;
+    assert.equal(watchingOf(h), true, "true with the watcher open");
+    await h.stop();
+    assert.equal(watchingOf(h), false);
+    if (lsofWorks && base !== null) assert.equal(await settledCount(base), base, "handles back to baseline");
+  });
+
+  test("two stop() calls at once: the second resolves only when no watcher is open and no ready() runs", async () => {
+    const h = createFsHandler({ indexStatus: true });
+    let settled = false;
+    const building = h.ready().then(() => {
+      settled = true;
+    });
+    const first = h.stop();
+    const second = h.stop();
+    await second;
+    assert.equal(settled, true, "the in-flight ready() settled before the second stop() resolved");
+    assert.equal(watchingOf(h), false, "no watcher when the second stop() resolves");
+    await first;
+    await building;
+    if (lsofWorks && base !== null) assert.equal(await settledCount(base), base, "handles back to baseline");
+  });
+
+  test("a late FS request after up (LIVE mode) builds the index but starts no watcher; a later down starts one", async () => {
+    let liveNow = false;
+    const h = createFsHandler({ indexStatus: true, watchAllowed: () => !liveNow });
+    const fs = spyFs(h);
+    const presence = makePresence();
+    presence.on("up", () => {
+      liveNow = true;
+    });
+    presence.on("down", () => {
+      liveNow = false;
+    });
+    wireFailover({ presence, live, fs, prewarmDelayMs: 60_000 });
+    presence.fire("down");
+    presence.fire("up");
+    await fs.settle();
+    // The request was routed to FS mode just before "up": its handle() calls ready() now.
+    await h.ready();
+    await sleep(200);
+    assert.equal(watchingOf(h), false, "no watcher in LIVE mode");
+    if (lsofWorks && base !== null) assert.equal(await settledCount(base), base, "handles back to baseline");
+
+    // Back in FS mode, the next ready() starts the watcher (the refused run re-armed it).
+    presence.fire("down");
+    await h.ready();
+    assert.equal(watchingOf(h), true, "FS mode gets its watcher");
+    presence.fire("up");
+    await fs.settle();
+    assert.equal(watchingOf(h), false);
+    if (lsofWorks && base !== null) assert.equal(await settledCount(base), base, "handles back to baseline");
     await h.stop();
   });
 
