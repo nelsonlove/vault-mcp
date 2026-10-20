@@ -1,0 +1,549 @@
+// note-sections.ts — where a heading's section or a `^id` block sits in a
+// note's text, found on the text itself (#593).
+//
+// `obsidian_patch_note` and `obsidian_append_at_heading` write into a note at
+// a heading or a block. The live host used to take those positions from
+// Obsidian's metadata cache while it took the text from disk; after a write
+// the cache describes the previous text until Obsidian parses the file
+// again, so a second patch soon after the first cut the new text at the old
+// offsets. The filesystem server read the text but took any `#` line,
+// including one inside a code fence, for a heading.
+//
+// This module is the one parser both servers use. It reads the exact text a
+// call just read, and:
+//
+//   - skips the leading front matter (the same recognizer the accept guard
+//     uses, `LEADING_FRONTMATTER_RE`);
+//   - hides what Obsidian does not parse as Markdown blocks: code fences
+//     (``` or ~~~, three or more, an info string allowed, closed by the same
+//     character at least as long, or open to the end), `$$` math blocks,
+//     `%%` comment blocks and HTML blocks (`<!-- … -->`, `<script>`-like
+//     elements, and CommonMark's tag blocks, which run to the next blank
+//     line);
+//   - finds ATX headings (`#` to `######`, up to three spaces of indent, a
+//     space or the line end after the hashes, a closing run of hashes
+//     dropped), and setext headings (a one-line paragraph over a `===` or
+//     `---` underline) where the line plainly starts a block. Obsidian reads
+//     setext headings too, so they end sections as ATX ones do; a setext
+//     heading in the middle of a paragraph is not looked for;
+//   - finds `^id` block ids at the end of a line.
+//
+// A heading's text is what Obsidian's cache calls `heading`: the inline
+// content, trimmed, without the closing hashes.
+//
+// `verifyCachedHeadings` and `verifyCachedBlock` let the live host keep using
+// the cache when it still describes the text: then the section and the bytes
+// written are exactly what they were before this module. When the cache and
+// the text disagree, the host takes the positions this parser finds instead,
+// and never writes at an offset it has not checked.
+//
+// Obsidian-free and pure, so both servers and the tests share it.
+
+import { LEADING_FRONTMATTER_RE } from "./accept-guard.js";
+
+/** One heading found in the text. Offsets index the text the outline was
+ *  made from; `end` is the end of the heading's last line (the underline for
+ *  a setext heading), before its line break. */
+export interface TextHeading {
+  heading: string;
+  level: number;
+  /** First line of the heading (0-based). */
+  line: number;
+  /** Last line of the heading: `line`, or the underline of a setext one. */
+  lastLine: number;
+  start: number;
+  end: number;
+  /** Indent of the first `#`, in spaces; 0 for a heading at the line start. */
+  indent: number;
+  setext: boolean;
+}
+
+/** The parsed shape of one note's text. */
+export interface NoteOutline {
+  /** The text split on `\n`; a line keeps any `\r` it ends with. */
+  lines: string[];
+  /** Offset of the first character of each line. */
+  lineStarts: number[];
+  /** First line after the front matter (0 when there is none). */
+  bodyLine: number;
+  /** True for a line inside (or opening or closing) a fence, a math block, a
+   *  comment block or an HTML block, and for a front-matter line. */
+  hidden: boolean[];
+  /** True for a line that is part of a heading. */
+  headingLine: boolean[];
+  headings: TextHeading[];
+}
+
+const FENCE_OPEN = /^( {0,3})(`{3,}|~{3,})(.*)$/;
+const MATH_OPEN = /^ {0,3}(\${2,})[^$]*$/;
+const COMMENT_OPEN = /^ {0,3}%%[^%]*$/;
+const HTML_RAW_OPEN = /^ {0,3}<(script|pre|style|textarea)(?:\s|>|$)/i;
+const HTML_COMMENT_OPEN = /^ {0,3}<!--/;
+// CommonMark's HTML block kinds 6 (a block-level tag, which may interrupt a
+// paragraph) and 7 (a line that is one whole tag, which may not); both run
+// to the next blank line.
+const HTML_BLOCK_TAGS = new Set("address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param search section summary table tbody td tfoot th thead title tr track ul".split(" "));
+const HTML_TAG6_OPEN = /^ {0,3}<\/?([A-Za-z][A-Za-z0-9-]*)(?:[ \t]|\/?>|$)/;
+const HTML_TAG7_LINE = /^ {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][\w.:-]*(?:[ \t]*=[ \t]*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*[ \t]*\/?>|<\/[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$/;
+const ATX = /^( {0,3})(#{1,6})(?=[ \t]|$)(.*)$/;
+// Obsidian's setext underline is the marker alone: no indent, nothing after.
+const SETEXT_UNDERLINE = /^(=+|-+)$/;
+const LIST_ITEM = /^ *(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)/;
+const QUOTE = /^ {0,3}>/;
+const THEMATIC_BREAK = /^ {0,3}(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$/;
+const BLOCK_ID_AT_END = /(?:^|\s)\^([A-Za-z0-9-]+)[ \t]*$/;
+
+function bare(line: string): string {
+  return line.endsWith("\r") ? line.slice(0, -1) : line;
+}
+
+/** The heading text of an ATX line's content (after the hashes): the
+ *  closing run of hashes dropped, then trimmed. */
+function atxText(content: string): string {
+  const stripped = content.replace(/(?:^|[ \t])#+[ \t]*$/, "");
+  return stripped.trim();
+}
+
+/** Parse one line as an ATX heading, or null. */
+export function parseAtxLine(line: string): { level: number; heading: string; indent: number } | null {
+  const m = ATX.exec(bare(line));
+  if (!m) return null;
+  return { level: m[2].length, heading: atxText(m[3]), indent: m[1].length };
+}
+
+function frontmatterEnd(text: string): number {
+  const bom = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const m = LEADING_FRONTMATTER_RE.exec(bom ? text.slice(1) : text);
+  return m ? bom + m[0].length : -1;
+}
+
+/**
+ * Outline `text`: its lines, the lines hidden from Markdown, and its headings.
+ * `frontmatter: false` treats the whole text as body (a caller that has cut
+ * the front matter off already).
+ */
+export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}): NoteOutline {
+  const lines = text.split("\n");
+  const lineStarts: number[] = new Array(lines.length);
+  let off = 0;
+  for (let i = 0; i < lines.length; i++) {
+    lineStarts[i] = off;
+    off += lines[i].length + 1;
+  }
+  const hidden: boolean[] = new Array(lines.length).fill(false);
+  const headingLine: boolean[] = new Array(lines.length).fill(false);
+  const headings: TextHeading[] = [];
+
+  let bodyLine = 0;
+  if (opts.frontmatter !== false) {
+    const fmEnd = frontmatterEnd(text);
+    if (fmEnd >= 0) {
+      // The closing fence's line is front matter too, whatever follows the
+      // dashes on it.
+      let i = 0;
+      while (i + 1 < lines.length && lineStarts[i + 1] <= fmEnd) i++;
+      bodyLine = i + 1;
+      for (let j = 0; j < bodyLine && j < lines.length; j++) hidden[j] = true;
+    }
+  }
+
+  type Open =
+    | { kind: "fence"; char: string; len: number }
+    | { kind: "math"; len: number }
+    | { kind: "comment" }
+    | { kind: "html-raw"; tag: string }
+    | { kind: "html-comment" }
+    | { kind: "html-block" };
+  let open: Open | null = null;
+  // What the line before was: a block may start (a setext heading or an
+  // HTML block) only after a blank line, a heading, a closed hidden block or
+  // the start of the body.
+  let prev: "start" | "blank" | "boundary" | "text" = "start";
+
+  for (let i = bodyLine; i < lines.length; i++) {
+    const s = bare(lines[i]);
+    if (open) {
+      hidden[i] = true;
+      switch (open.kind) {
+        case "fence": {
+          const m = /^ {0,3}(`+|~+)[ \t]*$/.exec(s);
+          if (m && m[1][0] === open.char && m[1].length >= open.len) { open = null; prev = "boundary"; }
+          break;
+        }
+        case "math": {
+          const t = s.replace(/[ \t]+$/, "");
+          let n = 0;
+          while (n < t.length && t[t.length - 1 - n] === "$") n++;
+          if (n >= open.len && t.indexOf("$") === t.length - n) { open = null; prev = "boundary"; }
+          break;
+        }
+        case "comment":
+          if (s.includes("%%")) { open = null; prev = "boundary"; }
+          break;
+        case "html-raw":
+          if (s.toLowerCase().includes(`</${open.tag}>`)) { open = null; prev = "boundary"; }
+          break;
+        case "html-comment":
+          if (s.includes("-->")) { open = null; prev = "boundary"; }
+          break;
+        case "html-block":
+          if (s.trim() === "") { hidden[i] = false; open = null; prev = "blank"; }
+          break;
+      }
+      continue;
+    }
+
+    if (s.trim() === "") { prev = "blank"; continue; }
+
+    const fence = FENCE_OPEN.exec(s);
+    if (fence && !(fence[2][0] === "`" && fence[3].includes("`"))) {
+      hidden[i] = true;
+      open = { kind: "fence", char: fence[2][0], len: fence[2].length };
+      continue;
+    }
+    const math = MATH_OPEN.exec(s);
+    if (math) {
+      hidden[i] = true;
+      open = { kind: "math", len: math[1].length };
+      continue;
+    }
+    if (COMMENT_OPEN.test(s)) {
+      hidden[i] = true;
+      open = { kind: "comment" };
+      continue;
+    }
+    const raw = HTML_RAW_OPEN.exec(s);
+    if (raw) {
+      hidden[i] = true;
+      const tag = raw[1].toLowerCase();
+      if (!s.toLowerCase().includes(`</${tag}>`)) open = { kind: "html-raw", tag };
+      else prev = "boundary";
+      continue;
+    }
+    if (HTML_COMMENT_OPEN.test(s)) {
+      hidden[i] = true;
+      if (!s.slice(s.indexOf("<!--") + 4).includes("-->")) open = { kind: "html-comment" };
+      else prev = "boundary";
+      continue;
+    }
+    const tag6 = HTML_TAG6_OPEN.exec(s);
+    if ((tag6 && HTML_BLOCK_TAGS.has(tag6[1].toLowerCase())) || (prev !== "text" && HTML_TAG7_LINE.test(s))) {
+      hidden[i] = true;
+      open = { kind: "html-block" };
+      continue;
+    }
+
+    const atx = parseAtxLine(s);
+    if (atx) {
+      headings.push({
+        heading: atx.heading, level: atx.level, line: i, lastLine: i,
+        start: lineStarts[i], end: lineStarts[i] + s.length, indent: atx.indent, setext: false,
+      });
+      headingLine[i] = true;
+      prev = "boundary";
+      continue;
+    }
+
+    if (THEMATIC_BREAK.test(s)) { prev = "boundary"; continue; }
+
+    // A setext heading: one line that plainly starts a paragraph, over an
+    // underline. Anything that could be a list, a quote, a table row, a
+    // thematic break or a lazy continuation is left alone.
+    if (
+      prev !== "text" && i + 1 < lines.length &&
+      /^ {0,3}\S/.test(s) && !LIST_ITEM.test(s) && !QUOTE.test(s)
+    ) {
+      const u = SETEXT_UNDERLINE.exec(bare(lines[i + 1]));
+      if (u) {
+        const under = bare(lines[i + 1]);
+        headings.push({
+          heading: s.trim(), level: u[1][0] === "=" ? 1 : 2, line: i, lastLine: i + 1,
+          start: lineStarts[i], end: lineStarts[i + 1] + under.length, indent: 0, setext: true,
+        });
+        headingLine[i] = headingLine[i + 1] = true;
+        i++;
+        prev = "boundary";
+        continue;
+      }
+    }
+
+    prev = "text";
+  }
+
+  return { lines, lineStarts, bodyLine, hidden, headingLine, headings };
+}
+
+/** A heading's section: from just after the heading to the next heading of
+ *  the same or a higher level (outside fences), or the end of the text. */
+export interface HeadingSection {
+  heading: TextHeading;
+  /** Index of the heading in `outline.headings`. */
+  index: number;
+  /** Offset just after the heading's last line (before its line break). */
+  start: number;
+  /** Offset of the next same-or-higher heading's first line, or the text's length. */
+  end: number;
+  /** First line after the heading. */
+  startLine: number;
+  /** First line of the next same-or-higher heading, or the line count. */
+  endLine: number;
+}
+
+/** The first heading whose text is exactly `headingText`, and its section;
+ *  undefined when no heading has that text. */
+export function findHeadingSection(outline: NoteOutline, textLength: number, headingText: string): HeadingSection | undefined {
+  const { headings } = outline;
+  const index = headings.findIndex((h) => h.heading === headingText);
+  if (index < 0) return undefined;
+  const h = headings[index];
+  let end = textLength;
+  let endLine = outline.lines.length;
+  for (let j = index + 1; j < headings.length; j++) {
+    if (headings[j].level <= h.level) { end = headings[j].start; endLine = headings[j].line; break; }
+  }
+  return { heading: h, index, start: h.end, end, startLine: h.lastLine + 1, endLine };
+}
+
+/** A `^id` block found in the text. */
+export interface TextBlock {
+  id: string;
+  /** The line carrying the `^id`. */
+  anchorLine: number;
+  /** First line of the block. */
+  startLine: number;
+  /** One past the last line of the block. */
+  endLine: number;
+  /** Offset of the block's first line. */
+  start: number;
+  /** End of the block's last line, before its line break. */
+  end: number;
+}
+
+function isBlankLine(outline: NoteOutline, i: number): boolean {
+  return bare(outline.lines[i]).trim() === "";
+}
+
+/** Can line `i` belong to a block's run of lines? Not blank, not hidden,
+ *  not a heading, and inside the body. */
+function inRun(outline: NoteOutline, i: number): boolean {
+  return i >= outline.bodyLine && i < outline.lines.length && !outline.hidden[i] && !outline.headingLine[i] && !isBlankLine(outline, i);
+}
+
+/**
+ * The first block whose `^id` the predicate accepts. The id must end its
+ * line (after a space, or alone on the line), outside fences and the front
+ * matter. The block is the run of lines around it, bounded by blank lines,
+ * headings and hidden blocks; when the id sits on a list item, the block
+ * starts at that item's marker line.
+ */
+export function findBlock(outline: NoteOutline, accept: (id: string) => boolean): TextBlock | undefined {
+  const { lines, lineStarts } = outline;
+  for (let i = outline.bodyLine; i < lines.length; i++) {
+    if (outline.hidden[i] || outline.headingLine[i]) continue;
+    const m = BLOCK_ID_AT_END.exec(bare(lines[i]));
+    if (!m || !accept(m[1])) continue;
+    let startLine = i;
+    while (inRun(outline, startLine - 1)) startLine--;
+    let endLine = i + 1;
+    while (inRun(outline, endLine)) endLine++;
+    for (let j = i; j >= startLine; j--) {
+      if (LIST_ITEM.test(bare(lines[j]))) { startLine = j; endLine = i + 1; break; }
+    }
+    return {
+      id: m[1], anchorLine: i, startLine, endLine,
+      start: lineStarts[startLine],
+      end: lineStarts[endLine - 1] + bare(lines[endLine - 1]).length,
+    };
+  }
+  return undefined;
+}
+
+// ── Checking a metadata cache against the text ─────────────────────────────
+
+/** The parts of an Obsidian `HeadingCache` this module reads. */
+export interface CachedHeading {
+  heading: string;
+  level: number;
+  position: { start: { offset: number }; end: { offset: number } };
+}
+
+/** The parts of an Obsidian `BlockCache` this module reads. */
+export interface CachedBlock {
+  position: { start: { offset: number }; end: { offset: number } };
+}
+
+function lineIndexAt(outline: NoteOutline, offset: number): number {
+  const { lineStarts } = outline;
+  let lo = 0, hi = lineStarts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (lineStarts[mid] <= offset) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** Only spaces and tabs between `from` and `to` in `text`. */
+function onlyBlanks(text: string, from: number, to: number): boolean {
+  return /^[ \t\r]*$/.test(text.slice(from, to));
+}
+
+/** Does the cached heading still sit, with the same text and level, at its
+ *  recorded offsets in `text`? */
+/** The start and end offsets of a cache position, or null when either is
+ *  missing or not a whole number (a cache entry this module cannot check). */
+function offsetsOf(position: CachedHeading["position"] | undefined): [number, number] | null {
+  const s = position?.start?.offset;
+  const e = position?.end?.offset;
+  return Number.isInteger(s) && Number.isInteger(e) ? [s as number, e as number] : null;
+}
+
+function cachedHeadingHolds(text: string, outline: NoteOutline, h: CachedHeading): boolean {
+  const o = offsetsOf(h?.position);
+  if (!o) return false;
+  const [s, e] = o;
+  if (s < 0 || e < s || e > text.length) return false;
+  const line = lineIndexAt(outline, s);
+  if (line < outline.bodyLine) return false;
+  const lineStart = outline.lineStarts[line];
+  if (!onlyBlanks(text, lineStart, s)) return false;
+  const slice = text.slice(lineStart, e);
+  const parts = slice.split("\n");
+  if (parts.length === 1) {
+    const lineEnd = lineStart + bare(outline.lines[line]).length;
+    if (e > lineEnd || !onlyBlanks(text, e, lineEnd)) return false;
+    const atx = parseAtxLine(bare(outline.lines[line]));
+    return !!atx && atx.level === h.level && atx.heading === h.heading;
+  }
+  if (parts.length === 2) {
+    // A setext heading: its text line, then the underline.
+    const under = bare(outline.lines[line + 1] ?? "");
+    const lineEnd = outline.lineStarts[line + 1] + under.length;
+    if (e > lineEnd || !onlyBlanks(text, e, lineEnd)) return false;
+    const u = SETEXT_UNDERLINE.exec(under);
+    if (!u) return false;
+    return (u[1][0] === "=" ? 1 : 2) === h.level && bare(outline.lines[line]).trim() === h.heading;
+  }
+  return false;
+}
+
+/**
+ * Does a metadata cache's heading list still describe `text`? True when
+ * every cached heading sits at its recorded offsets with its recorded text
+ * and level, the list is in text order, and every heading this parser finds
+ * at the start of a line (no indent, outside fences) is in the list. The
+ * cache may hold headings this parser does not find (it is the stricter
+ * Markdown reader); it may not miss one, because a heading written since
+ * the cache was made would end a section early.
+ */
+export function verifyCachedHeadings(text: string, outline: NoteOutline, cached: readonly CachedHeading[]): boolean {
+  let last = -1;
+  const starts = new Set<number>();
+  for (const h of cached) {
+    if (!cachedHeadingHolds(text, outline, h)) return false;
+    if (h.position.start.offset <= last) return false;
+    last = h.position.start.offset;
+    starts.add(outline.lineStarts[lineIndexAt(outline, h.position.start.offset)]);
+  }
+  for (const p of outline.headings) {
+    if (p.indent === 0 && !p.setext && !starts.has(p.start)) return false;
+  }
+  return true;
+}
+
+/**
+ * Does a cached block still sit at its recorded offsets in `text`, carrying
+ * `^id` (any case) at its end or on a line of its own just after it?
+ */
+export function verifyCachedBlock(text: string, outline: NoteOutline, id: string, block: CachedBlock): boolean {
+  const o = offsetsOf(block?.position);
+  if (!o) return false;
+  const [s, e] = o;
+  if (s < 0 || e < s || e > text.length) return false;
+  const first = lineIndexAt(outline, s);
+  if (first < outline.bodyLine || outline.hidden[first]) return false;
+  if (!onlyBlanks(text, outline.lineStarts[first], s)) return false;
+  const lastLine = lineIndexAt(outline, e);
+  const lastEnd = outline.lineStarts[lastLine] + bare(outline.lines[lastLine]).length;
+  if (e > lastEnd || !onlyBlanks(text, e, lastEnd)) return false;
+  const want = id.toLowerCase();
+  const own = BLOCK_ID_AT_END.exec(text.slice(outline.lineStarts[lastLine], e));
+  if (own && own[1].toLowerCase() === want) return true;
+  // The id alone on a line after the block (a table or a list takes it so).
+  for (let i = lastLine + 1; i < outline.lines.length; i++) {
+    const t = bare(outline.lines[i]).trim();
+    if (t === "") continue;
+    return !outline.hidden[i] && t.toLowerCase() === `^${want}`;
+  }
+  return false;
+}
+
+/** A heading list for writing: the cache's when it still holds for the
+ *  text, else the parser's. Offsets index `text`. */
+export interface ResolvedHeading {
+  heading: string;
+  level: number;
+  /** Offset of the heading's first line. */
+  start: number;
+  /** End of the heading's last line. */
+  end: number;
+}
+
+/**
+ * The headings to place a write by, checked against `text`: the cached list
+ * when `verifyCachedHeadings` holds (so a fresh cache gives the same section
+ * as before), else the headings parsed from `text`. `source` says which.
+ */
+export function resolveHeadings(
+  text: string,
+  cached: readonly CachedHeading[] | undefined,
+  outline: NoteOutline = outlineNote(text),
+): { headings: ResolvedHeading[]; source: "cache" | "text" } {
+  if (Array.isArray(cached) && verifyCachedHeadings(text, outline, cached)) {
+    return {
+      headings: cached.map((h) => ({ heading: h.heading, level: h.level, start: h.position.start.offset, end: h.position.end.offset })),
+      source: "cache",
+    };
+  }
+  return {
+    headings: outline.headings.map((h) => ({ heading: h.heading, level: h.level, start: h.start, end: h.end })),
+    source: "text",
+  };
+}
+
+/** The section under the first heading named `headingText`, over a resolved
+ *  heading list: `start` just after the heading, `end` at the next heading of
+ *  the same or a higher level, or `textLength`. */
+export function sectionIn(
+  headings: readonly ResolvedHeading[],
+  textLength: number,
+  headingText: string,
+): { start: number; end: number } | undefined {
+  const idx = headings.findIndex((h) => h.heading === headingText);
+  if (idx < 0) return undefined;
+  const h = headings[idx];
+  let end = textLength;
+  for (let j = idx + 1; j < headings.length; j++) {
+    if (headings[j].level <= h.level) { end = headings[j].start; break; }
+  }
+  return { start: h.end, end };
+}
+
+/**
+ * The offsets of block `id` in `text`, for a write: the cached position when
+ * `verifyCachedBlock` holds, else the block this parser finds (its id
+ * compared without case, as Obsidian keys its block cache), else undefined.
+ */
+export function resolveBlock(
+  text: string,
+  id: string,
+  cached: CachedBlock | undefined,
+  outline: NoteOutline = outlineNote(text),
+): { start: number; end: number; source: "cache" | "text" } | undefined {
+  if (cached && verifyCachedBlock(text, outline, id, cached)) {
+    return { start: cached.position.start.offset, end: cached.position.end.offset, source: "cache" };
+  }
+  // Obsidian takes an id as a block's only at the block's end, so a run
+  // that goes on past the id's line is not that block.
+  const found = findBlock(outline, (b) => b.toLowerCase() === id);
+  return found && found.anchorLine === found.endLine - 1 ? { start: found.start, end: found.end, source: "text" } : undefined;
+}

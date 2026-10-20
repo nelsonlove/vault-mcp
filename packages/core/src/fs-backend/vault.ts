@@ -21,6 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
+import { outlineNote, findHeadingSection as findHeadingSectionIn, findBlock as findBlockIn } from "../note-sections.js";
 import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
@@ -243,48 +244,22 @@ function coerceScalarValue(raw: string): FrontmatterScalar {
 
 // ── Anchor-based patching ────────────────────────────────────────────────────
 
-const HEADING_LINE_RE = /^(#{1,6})\s+(.+?)\s*$/;
+// Headings and blocks are found by the shared, fence-aware parser in
+// `note-sections.ts` (#593), the one the live host checks its cache with: a
+// `#` line inside a code fence, a math block or a comment is not a heading,
+// and a block's run of lines stops at a heading or a fence. The ranges are
+// line indices into `bodyLines` (the note without its front matter).
 
-function findHeadingSection(lines: string[], headingText: string): { start: number; end: number } | undefined {
-  let headingIdx = -1;
-  let level = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(HEADING_LINE_RE);
-    if (m && m[2] === headingText) {
-      headingIdx = i;
-      level = m[1].length;
-      break;
-    }
-  }
-  if (headingIdx === -1) return undefined;
-  let end = lines.length;
-  for (let i = headingIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(HEADING_LINE_RE);
-    if (m && m[1].length <= level) {
-      end = i;
-      break;
-    }
-  }
-  return { start: headingIdx + 1, end };
+function findHeadingSection(bodyLines: string[], headingText: string): { start: number; end: number } | undefined {
+  const outline = outlineNote(bodyLines.join("\n"), { frontmatter: false });
+  const section = findHeadingSectionIn(outline, 0, headingText);
+  return section ? { start: section.startLine, end: section.endLine } : undefined;
 }
 
-function findBlock(lines: string[], blockId: string): { start: number; end: number } | undefined {
-  const token = "^" + blockId;
-  let anchorLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const idx = lines[i].indexOf(token);
-    if (idx === -1) continue;
-    const next = lines[i].charAt(idx + token.length);
-    if (next !== "" && !/\s/.test(next)) continue;
-    anchorLine = i;
-    break;
-  }
-  if (anchorLine === -1) return undefined;
-  let start = anchorLine;
-  while (start > 0 && lines[start - 1].trim() !== "") start--;
-  let end = anchorLine;
-  while (end < lines.length - 1 && lines[end + 1].trim() !== "") end++;
-  return { start, end: end + 1 };
+function findBlock(bodyLines: string[], blockId: string): { start: number; end: number } | undefined {
+  const outline = outlineNote(bodyLines.join("\n"), { frontmatter: false });
+  const block = findBlockIn(outline, (id) => id === blockId);
+  return block ? { start: block.startLine, end: block.endLine } : undefined;
 }
 
 // Match an outbound wikilink token in markdown.

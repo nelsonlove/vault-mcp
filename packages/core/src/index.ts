@@ -118,6 +118,28 @@ export type {
 
 // ── Filesystem backend ──────────────────────────────────────────────────────
 
+// Where a heading's section or a `^id` block sits, found on the text (#593).
+export {
+  outlineNote,
+  parseAtxLine,
+  findHeadingSection,
+  findBlock,
+  verifyCachedHeadings,
+  verifyCachedBlock,
+  resolveHeadings,
+  resolveBlock,
+  sectionIn,
+} from "./note-sections.js";
+export type {
+  NoteOutline,
+  TextHeading,
+  TextBlock,
+  HeadingSection,
+  CachedHeading,
+  CachedBlock,
+  ResolvedHeading,
+} from "./note-sections.js";
+
 export { FilesystemBackend } from "./fs-backend/filesystem-backend.js";
 
 // Vault filesystem functions (module-level, bound to process.env.VAULT_PATH)
