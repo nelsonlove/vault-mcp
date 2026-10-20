@@ -469,6 +469,7 @@ describe("THE ACCEPTANCE GATE ON EMBEDS — an accepted note cannot carry an una
       const line = r.warnings.find((w) => /embedded note\(s\) refused/.test(w));
       assert.match(line ?? "", /3 embedded note\(s\) refused/);
       assert.ok(r.warnings.some((w) => /transclusion !\[\[secret\]\] refused — In\/secret\.md is not accepted/.test(w)));
+      for (const w of r.warnings) assert.doesNotMatch(w, /\b0\d\.\d\d rule \d/, `no spec rule number in a warning: ${w}`);
     } finally {
       fs.rmSync(outputDir, { recursive: true, force: true });
     }

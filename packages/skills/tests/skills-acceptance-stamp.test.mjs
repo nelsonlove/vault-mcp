@@ -57,7 +57,7 @@ describe("01.61 rule 11 — every compiled file records each source's acceptance
   test("a skill names its own note, each embed it inlined with the embed's verification, and each refused embed as NOT accepted", async () => {
     const { files } = await compile(notes, embeds);
     const h = header(files["skills/sk/SKILL.md"]);
-    assert.match(h, /acceptance:\n/);
+    assert.match(h, /\n {5}acceptance:\n {7}\S/);
     assert.match(h, /In\/sk\.md — verified by human:nelson at 2026-09-22T12:00:00-04:00\n/, "its own note; the LAST human entry, not the later machine one");
     assert.match(h, /In\/fine\.md \(transcluded\) — verified by human:nelson at 2026-09-24T14:00:00-04:00/);
     assert.match(h, /In\/secret\.md \(transcluded\) — NOT accepted; its text was not inlined/);
