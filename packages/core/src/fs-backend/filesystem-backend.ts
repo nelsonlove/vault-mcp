@@ -201,7 +201,7 @@ export class FilesystemBackend implements VaultBackend, FileBackend {
     return this.vault.editFile(relPath, edit);
   }
 
-  async moveFile(fromRel: string, toRel: string, options: { update_backlinks: boolean; overwrite: boolean }) {
+  async moveFile(fromRel: string, toRel: string, options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] }) {
     return this.vault.moveFile(fromRel, toRel, options);
   }
 }

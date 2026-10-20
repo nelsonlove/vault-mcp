@@ -21,7 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
-import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
+import { assertFilePath, assertMovePair, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
  * All filesystem access for the vault goes through this module so that
@@ -957,12 +957,10 @@ class VaultImpl {
   async moveFile(
     fromRel: string,
     toRel: string,
-    options: { update_backlinks: boolean; overwrite: boolean },
+    options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
-    const kind = assertFilePath(fromRel);
-    if (assertFilePath(toRel) !== kind) {
-      throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type.`);
-    }
+    // A .base or .canvas file, or one whose extension is on the operator's list; the extension kept.
+    assertMovePair(fromRel, toRel, options.extensions ?? []);
     const absFrom = this.resolveInVault(fromRel);
     const absTo = this.resolveInVault(toRel);
     if (absFrom === absTo) throw new Error("'from' and 'to' resolve to the same path");
@@ -971,11 +969,14 @@ class VaultImpl {
       linked: true,
       folderExists: (p) => existsSync(path.join(this.root, p)),
     });
+    let fromIsFile = false;
     try {
-      await fs.access(absFrom);
+      fromIsFile = (await fs.stat(absFrom)).isFile();
     } catch {
       throw new Error(`not found: ${fromRel}`);
     }
+    // A folder whose name ends like a file is not a file: this tool moves one file.
+    if (!fromIsFile) throw new Error(`not a file: ${fromRel}`);
     if (existsSync(absTo) && !options.overwrite) {
       throw new Error(`Destination '${toRel}' already exists. Pass overwrite: true to replace.`);
     }
@@ -987,7 +988,7 @@ class VaultImpl {
       backlinks_updated: 0,
       backlinks_files_touched: 0,
       links_note:
-        "The file-system server does not rewrite links to a .base or .canvas file: its link index covers notes only. " +
+        "The file-system server does not rewrite links or embeds to a file that is not a note: its link index covers notes only. " +
         "A note that linked the old path still names it; move the file on the live Obsidian server to have them rewritten, or fix them with obsidian_patch_note.",
     };
   }
@@ -1225,7 +1226,7 @@ export async function editFile(relPath: string, edit: FileEdit): Promise<FileEdi
 export async function moveFile(
   fromRel: string,
   toRel: string,
-  options: { update_backlinks: boolean; overwrite: boolean },
+  options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
 ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
   return _impl.moveFile(fromRel, toRel, options);
 }

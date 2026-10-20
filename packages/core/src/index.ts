@@ -64,7 +64,8 @@ export {
 } from "./tool-registry.js";
 export type { Capability, ToolDef, ToolAnnotations } from "./tool-registry.js";
 export { registerFsTools } from "./register-fs-tools.js";
-// .base and .canvas files (#575): validation, the keyed edit, and the three tools both servers register.
+// .base and .canvas files (#575): validation, the keyed edit, and the three tools both servers register;
+// and which other files obsidian_move_file moves (the operator's extension list).
 export {
   FILE_EXTENSIONS,
   FILE_EDIT_OPS,
@@ -75,6 +76,12 @@ export {
   assertFilePath,
   validateFileContent,
   applyFileEdit,
+  DEFAULT_FILE_MOVE_EXTENSIONS,
+  FILE_MOVE_EXTENSIONS_ENV_VAR,
+  normalizeFileMoveExtensions,
+  parseFileMoveExtensions,
+  assertMovePath,
+  assertMovePair,
 } from "./file-formats.js";
 export type { FileKind, FileEdit, FileEditOp, FileEditResult } from "./file-formats.js";
 export { registerFileTools, BaseUnderScopeError, FILE_TOOL_NAMES, WRITE_FILE_TOOL, EDIT_FILE_TOOL, MOVE_FILE_TOOL } from "./register-file-tools.js";
