@@ -21,7 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
-import { assertFilePath, assertMovePair, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
+import { assertFilePath, assertMovePair, isBinaryAttachmentPath, looksBinary, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
  * All filesystem access for the vault goes through this module so that
@@ -519,6 +519,27 @@ class VaultImpl {
   /** The whole note, never cut (#443); the cut read is this, cut. */
   async readNoteWhole(relPath: string): Promise<string> {
     return fs.readFile(this.resolveInVault(relPath), "utf8");
+  }
+
+  /** `{ size }` for a binary file (by type, or a NUL byte in its first 8,000 bytes), else null; see VaultBackend. */
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    const abs = this.resolveInVault(relPath);
+    let st;
+    try {
+      st = await fs.stat(abs);
+    } catch {
+      return null; // the read that follows names the error
+    }
+    if (!st.isFile()) return null;
+    if (isBinaryAttachmentPath(relPath, extensions)) return { size: st.size };
+    const fh = await fs.open(abs, "r");
+    try {
+      const buf = new Uint8Array(Math.min(st.size, 8000));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      return looksBinary(buf.subarray(0, bytesRead)) ? { size: st.size } : null;
+    } finally {
+      await fh.close();
+    }
   }
 
   async writeNote(
@@ -1222,6 +1243,10 @@ export async function writeFile(relPath: string, content: string, overwrite: boo
 
 export async function editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }> {
   return _impl.editFile(relPath, edit);
+}
+
+export async function binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+  return _impl.binaryInfo(relPath, extensions);
 }
 
 export async function moveFile(

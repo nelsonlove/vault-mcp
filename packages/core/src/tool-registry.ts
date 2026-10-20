@@ -125,6 +125,7 @@ export const FS_TOOLS: ToolDef[] = [
     title: "Read a note",
     description:
       "Read the full markdown content of a note by its vault-relative path. " +
+      "A binary file (an attachment type such as a PDF, an image or a zip file, or any file with NUL bytes) is not read out: the reply is `{path, rev, size, binary: true}` with no content, so you can still pass its `rev` as `if_rev` (for example to obsidian_trash). " +
       "Where the host tracks revisions, the response also carries the note's current `rev` — pass it back as `if_rev` on a following write to make that write conditional (it fails instead of clobbering a change you didn't see). " +
       "`truncated` says whether the note came back whole. A note longer than the read limit comes back cut at the limit, with `truncated: true` and a trailing `[truncated: note is N chars, showing first M]` line (M is the number shown): never write that content back (every write refuses it with Error [truncated_read]); its `rev` is good for an anchored edit (obsidian_patch_note, obsidian_append_note, obsidian_manage_frontmatter), which is how a long note is edited. " +
       "To rewrite a long note whole, read it with `full: true`: the whole note comes back (`whole: true`, at your cost in context), and on the plugin, for " + WINDOW_TEXT + " on this connection, a whole-note overwrite of that note conditioned on the `rev` this read returns is allowed while the note is unchanged. The FS server serves the whole note too but has no such road until #446: edit by anchor there. Read-only.",

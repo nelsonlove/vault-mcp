@@ -80,6 +80,10 @@ export class FilesystemBackend implements VaultBackend, FileBackend {
     return this.vault.readNoteWhole(relPath);
   }
 
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    return this.vault.binaryInfo(relPath, extensions);
+  }
+
   // ── Read: search ───────────────────────────────────────────────────────────
 
   async searchNotes(query: string, limit: number, mode: SearchMode): Promise<SearchHit[]> {

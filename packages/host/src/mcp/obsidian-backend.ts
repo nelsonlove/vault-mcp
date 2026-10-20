@@ -46,6 +46,8 @@ import {
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
   assertFilePath,
   assertMovePair,
+  isBinaryAttachmentPath,
+  looksBinary,
   validateFileContent,
   applyFileEdit,
 } from "@vault-mcp/core";
@@ -808,6 +810,23 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
       backlinks_files_touched: check.files_rewritten.length,
       link_check: check,
     };
+  }
+
+  /**
+   * `{ size }` for a binary file, else null (VaultBackend.binaryInfo): an attachment type is decided
+   * by its extension without a read; another file that is not a note by a NUL byte in its first
+   * bytes. obsidian_read_note then returns its rev and size and no content.
+   */
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    const f = this.app.vault.getAbstractFileByPath(relPath);
+    if (!(f instanceof TFile) || f.extension === "md") return null;
+    if (isBinaryAttachmentPath(relPath, extensions)) return { size: f.stat.size };
+    if (f.extension === "base" || f.extension === "canvas") return null;
+    const vault = this.app.vault as unknown as { readBinary?: (file: TFile) => Promise<ArrayBuffer> };
+    const binary = vault.readBinary
+      ? looksBinary(new Uint8Array(await vault.readBinary(f)))
+      : (await this.app.vault.read(f)).slice(0, 8000).includes("\u0000");
+    return binary ? { size: f.stat.size } : null;
   }
 }
 

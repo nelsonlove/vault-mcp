@@ -182,6 +182,15 @@ export interface VaultBackend {
    */
   readNoteWhole?(relPath: string): Promise<string>;
 
+  /**
+   * `{ size }` when the file at `relPath` is binary, else null: binary by its type (core's
+   * `isBinaryAttachmentPath` over the default attachment list and `extensions`, decided without
+   * reading the file), or by a NUL byte in its first bytes. `obsidian_read_note` asks it for a
+   * path that is not a note, and for a binary file returns its rev and size and no content.
+   * Optional; a backend without it reads every file as text.
+   */
+  binaryInfo?(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null>;
+
   // ── Read: search ───────────────────────────────────────────────────────────
 
   /**

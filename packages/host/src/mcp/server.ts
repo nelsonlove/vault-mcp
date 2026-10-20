@@ -575,6 +575,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   }, recordIdentification);
   registerFsTools(server, backend, {
     decodeHtml: false,
+    // obsidian_read_note returns no content for a binary file: the attachment types (core's default
+    // list and the operator's fileMoveExtensions), or a file with NUL bytes. Read per call.
+    binaryExtensions: () => normalizeFileMoveExtensions(ctx.getSettings().fileMoveExtensions),
     // obsidian_write_note's `frontmatter` (#500) is serialized as obsidian_write_notes serializes an item's.
     stringifyYaml,
     rev: (p) => probe.rev(p),

@@ -56,6 +56,7 @@ import {
   writeFile,
   editFile,
   moveFile,
+  binaryInfo,
   registerFileTools,
   parseFileMoveExtensions,
   FILE_MOVE_EXTENSIONS_ENV_VAR,
@@ -367,6 +368,8 @@ export function makeBackend(
 
     readNoteWhole: (relPath) => readNoteWhole(relPath),
 
+    binaryInfo: (relPath, extensions) => binaryInfo(relPath, extensions),
+
     searchNotes: (query, limit, mode) => searchNotes(query, limit, mode),
 
     findByTag: (tag, limit) => findByTag(tag, limit),
@@ -521,6 +524,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     ...(profile ? { profile, exists: existsInVault } : {}),
     ...(scanner ? { scanner } : {}),
     decodeHtml: true,
+    // obsidian_read_note returns no content for a binary file (an attachment type, or NUL bytes).
+    binaryExtensions: () => fsFileMoveExtensions(),
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
     includeIndexStatus: (opts?.indexStatus ?? true) ? indexStatus : undefined,
