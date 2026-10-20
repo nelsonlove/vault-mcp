@@ -555,9 +555,30 @@ export function sectionIn(
   headings: readonly ResolvedHeading[],
   textLength: number,
   headingText: string,
-): { start: number; end: number } | undefined {
+): { start: number; end: number; level: number } | undefined {
   const at = sectionAt(headings, textLength, headingText);
-  return at ? { start: at.start, end: at.end } : undefined;
+  return at ? { start: at.start, end: at.end, level: headings[at.index].level } : undefined;
+}
+
+/** A `replace` on a level-1 heading without `whole_section: true` (#601).
+ *  Rendered as `Error [h1_replace]`. */
+export class H1ReplaceError extends Error {
+  readonly code = "h1_replace";
+  constructor(path: string, heading: string) {
+    super(
+      `${path}: a replace on the level-1 heading '${heading}' would replace the whole note. ` +
+        "A heading's section runs to the next heading of equal or higher level, so the H1's section holds every section below it. Nothing was written. " +
+        "To add text under the H1, use prepend or append; to replace the whole section on purpose, pass whole_section: true.",
+    );
+    this.name = "H1ReplaceError";
+  }
+}
+
+/** The patch tools' H1 rule (#601), for both servers: a `replace` on a
+ *  level-1 heading is refused unless the caller passed `whole_section`.
+ *  Prepend and append stay allowed. */
+export function assertNotH1Replace(path: string, heading: string, level: number, op: string, wholeSection: boolean | undefined): void {
+  if (op === "replace" && level === 1 && wholeSection !== true) throw new H1ReplaceError(path, heading);
 }
 
 /** The one section-end rule: the first heading named `headingText`, its

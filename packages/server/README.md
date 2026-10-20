@@ -31,7 +31,7 @@ Xvfb.
 | `obsidian_get_outlinks` | List `[[wikilinks]]` in the body of a note, each with resolved path when unambiguous | no |
 | `obsidian_search_by_frontmatter` | Find notes whose frontmatter has `property == value` (case-insensitive property, exact value; array fields match any element) | no |
 | `obsidian_manage_frontmatter` | Get / set / delete a single frontmatter field. Surgical line edits preserve other keys' formatting. Refuses block-scalar / inline-object shapes | yes (set/delete are destructive) |
-| `obsidian_patch_note` | Anchor-based edit: insert/replace content relative to a heading section or `^block-id` paragraph. `previous` returned for undo/audit | yes (destructive) |
+| `obsidian_patch_note` | Anchor-based edit: insert/replace content relative to a heading section or `^block-id` paragraph. `previous` returned for undo/audit. never replace on an H1 anchor; a heading's section runs to the next heading of equal or higher level, so the H1's section is the whole note | yes (destructive) |
 | `obsidian_delete_note` | Permanently delete a note. Requires `confirm: true` literal in the call schema | yes (destructive — propagates via Sync) |
 | `obsidian_move_note` | Move / rename a note. By default rewrites `[[wikilinks]]` that resolved to `from` so they now point at `to`, preserving each ref's visual shape | yes (destructive — multi-file mutation) |
 | `obsidian_write_note` | Create / overwrite a note | yes (destructive) |

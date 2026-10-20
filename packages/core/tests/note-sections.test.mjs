@@ -326,3 +326,48 @@ describe("review round 1: fences, cache checks and blocks", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });
+
+// ── #601: a replace on an H1 is the whole note ─────────────────────────────
+
+describe("the H1 replace rule on the filesystem server (#601)", () => {
+  const NOTE = "# Title\n\nintro\n\n## Part\n\npart body\n\n## Response\n\nanswer\n";
+  let root;
+  let v;
+  before(async () => { root = await mkdtemp(path.join(tmpdir(), "h1-replace-")); v = createVaultAt(root); });
+  after(async () => { await rm(root, { recursive: true, force: true }); });
+  const put = (f) => writeFile(path.join(root, f), NOTE, "utf8");
+  const get = (f) => readFile(path.join(root, f), "utf8");
+
+  test("a replace on an H1 is refused with h1_replace, and the note is unchanged", async () => {
+    await put("a.md");
+    await assert.rejects(() => v.patchNote("a.md", { type: "heading", value: "Title" }, "replace", "new intro\n"), (e) => e.code === "h1_replace" && /whole note/.test(e.message));
+    assert.equal(await get("a.md"), NOTE);
+  });
+
+  test("with whole_section the replace goes through", async () => {
+    await put("b.md");
+    const r = await v.patchNote("b.md", { type: "heading", value: "Title" }, "replace", "\nall new\n", { wholeSection: true });
+    assert.equal(r.found, true);
+    assert.equal(await get("b.md"), "# Title\n\nall new\n");
+  });
+
+  test("prepend and append on an H1 are allowed", async () => {
+    await put("c.md");
+    await v.patchNote("c.md", { type: "heading", value: "Title" }, "prepend", "> [!note] a callout");
+    await v.patchNote("c.md", { type: "heading", value: "Title" }, "append", "tail");
+    assert.equal(await get("c.md"), "# Title\n> [!note] a callout\n\nintro\n\n## Part\n\npart body\n\n## Response\n\nanswer\n\ntail");
+  });
+
+  test("a replace on an H2 is not affected", async () => {
+    await put("d.md");
+    await v.patchNote("d.md", { type: "heading", value: "Part" }, "replace", "\nnew part\n");
+    assert.equal(await get("d.md"), "# Title\n\nintro\n\n## Part\n\nnew part\n\n## Response\n\nanswer\n");
+  });
+
+  test("the tool declares whole_section and says why", async () => {
+    const { FS_TOOLS } = await import("../src/tool-registry.ts");
+    const def = FS_TOOLS.find((t) => t.name === "obsidian_patch_note");
+    assert.ok(def.inputSchema.whole_section, "whole_section in the schema");
+    assert.match(def.description, /level-1 heading is refused/);
+  });
+});

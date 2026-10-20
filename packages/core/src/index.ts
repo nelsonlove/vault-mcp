@@ -131,6 +131,8 @@ export {
   resolveHeadings,
   resolveBlock,
   sectionIn,
+  H1ReplaceError,
+  assertNotH1Replace,
 } from "./note-sections.js";
 export type {
   NoteOutline,

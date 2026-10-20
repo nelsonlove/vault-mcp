@@ -388,12 +388,14 @@ export function makeBackend(
       );
     },
 
-    patchNote: async (relPath, anchor, op, content) =>
+    // Only the whole-section flag (#601) passes through: the FS server has no
+    // whole-read road (#446), so the range rule never stands aside here.
+    patchNote: async (relPath, anchor, op, content, opts) =>
       mutate(
         "obsidian_patch_note",
         { path: relPath },
         { path: relPath, anchor, op, content },
-        () => patchNote(relPath, anchor, op, content),
+        () => patchNote(relPath, anchor, op, content, { wholeSection: opts?.wholeSection === true }),
       ),
 
     writeNote: async (relPath, content, overwrite) =>

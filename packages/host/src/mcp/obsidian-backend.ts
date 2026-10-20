@@ -48,7 +48,7 @@ import {
   validateFileContent,
   applyFileEdit,
 } from "@vault-mcp/core";
-import { outlineNote, resolveHeadings, resolveBlock, sectionIn } from "@vault-mcp/core";
+import { outlineNote, resolveHeadings, resolveBlock, sectionIn, assertNotH1Replace } from "@vault-mcp/core";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
   VaultBackend,
@@ -509,7 +509,7 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     anchor: PatchAnchor,
     op: PatchOp,
     content: string,
-    opts: { rangeRuleStandsAside?: boolean } = {},
+    opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     if (!relPath.endsWith(".md")) throw new Error("path must end in .md");
     // A cut read handed back as the fragment is refused first (#441).
@@ -521,6 +521,7 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
 
     let start: number;
     let end: number;
+    let headingLevel = 0;
 
     // The offsets are checked against the text just read (#593): the cache
     // describes the text Obsidian last parsed, which after a recent write is
@@ -533,6 +534,7 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
       if (!section) return { found: false, anchor, op };
       start = section.start; // just after the heading line
       end = section.end;
+      headingLevel = section.level;
     } else {
       // Obsidian keys its block cache by the lowercased id.
       const block = resolveBlock(text, anchor.value, cache?.blocks?.[anchor.value.toLowerCase()], outline);
@@ -549,6 +551,8 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     if (op === "replace" && !opts.rangeRuleStandsAside) {
       assertPatchRangeRead(relPath, text.length, end, CHARACTER_LIMIT);
     }
+    // A replace on the H1 replaces the whole note (#601).
+    if (anchor.type === "heading") assertNotH1Replace(relPath, anchor.value, headingLevel, op, opts.wholeSection);
     let next: string;
     if (op === "replace") {
       const body = anchor.type === "heading" ? `\n\n${content}\n` : content;

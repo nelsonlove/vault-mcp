@@ -21,7 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
-import { outlineNote, findHeadingSection, findBlock } from "../note-sections.js";
+import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace } from "../note-sections.js";
 import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
@@ -723,7 +723,7 @@ class VaultImpl {
     content: string,
     /** `rangeRuleStandsAside`: the transport proved a whole read of this note
      *  at its current rev (#443), so a replace past the limit is allowed. */
-    opts: { rangeRuleStandsAside?: boolean } = {},
+    opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     // A cut read handed back as the fragment is refused first (#441).
     assertNotTruncatedRead(relPath, content);
@@ -746,9 +746,11 @@ class VaultImpl {
     const bodyLines = outline.lines;
 
     let range: { start: number; end: number } | undefined;
+    let headingLevel = 0;
     if (anchor.type === "heading") {
       const section = findHeadingSection(outline, body.length, anchor.value);
       range = section && { start: section.startLine, end: section.endLine };
+      headingLevel = section?.heading.level ?? 0;
     } else {
       // Ids are compared lowercased, as Obsidian keys its block cache.
       const want = anchor.value.toLowerCase();
@@ -775,6 +777,8 @@ class VaultImpl {
       for (let i = 0; i < last; i++) rangeEnd += bodyLines[i].length + 1;
       assertPatchRangeRead(relPath, text.length, last > 0 ? rangeEnd - 1 : rangeEnd, CHARACTER_LIMIT);
     }
+    // A replace on the H1 replaces the whole note (#601).
+    if (anchor.type === "heading") assertNotH1Replace(relPath, anchor.value, headingLevel, op, opts.wholeSection);
 
     let newBodyLines: string[];
     if (op === "replace") {
@@ -1156,7 +1160,7 @@ export async function patchNote(
   anchor: PatchAnchor,
   op: PatchOp,
   content: string,
-  opts: { rangeRuleStandsAside?: boolean } = {},
+  opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
 ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
   return _impl.patchNote(relPath, anchor, op, content, opts);
 }

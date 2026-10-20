@@ -485,12 +485,14 @@ function makeHandler(
         anchor,
         op,
         content,
+        whole_section,
       }: {
         path: string;
         anchor_type: "heading" | "block";
         anchor: string;
         op: "append" | "prepend" | "replace";
         content: string;
+        whole_section?: boolean;
       }, extra?: { provenWhole?: boolean }) => {
         try {
           const decodedPath = dec(p);
@@ -506,7 +508,7 @@ function makeHandler(
             { type: anchor_type, value: anchor },
             op,
             content,
-            { rangeRuleStandsAside: extra?.provenWhole === true },
+            { rangeRuleStandsAside: extra?.provenWhole === true, wholeSection: whole_section === true },
           );
           return ok({ path: decodedPath, ...result });
         } catch (e) {

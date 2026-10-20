@@ -320,6 +320,38 @@ describe("review round 1 of #596", () => {
   });
 });
 
+describe("the H1 replace rule on the live host (#601)", () => {
+  const H1NOTE = "# Title\n\nintro\n\n## Part\n\npart body\n\n## Response\n\nanswer\n";
+
+  test("a replace on an H1 is refused with h1_replace, and the note is unchanged", async () => {
+    const { app, store } = fakeApp({ "T.md": H1NOTE });
+    await assert.rejects(() => new ObsidianBackend(app).patchNote("T.md", { type: "heading", value: "Title" }, "replace", "new intro"), (e) => e.code === "h1_replace" && /whole note/.test(e.message));
+    assert.equal(store.get("T.md"), H1NOTE);
+  });
+
+  test("with whole_section the replace goes through", async () => {
+    const { app, store } = fakeApp({ "T.md": H1NOTE });
+    const r = await new ObsidianBackend(app).patchNote("T.md", { type: "heading", value: "Title" }, "replace", "all new", { wholeSection: true });
+    assert.equal(r.found, true);
+    assert.equal(store.get("T.md"), "# Title\n\nall new\n");
+  });
+
+  test("prepend and append on an H1 are allowed", async () => {
+    const { app, store, reparse } = fakeApp({ "T.md": H1NOTE });
+    const b = new ObsidianBackend(app);
+    await b.patchNote("T.md", { type: "heading", value: "Title" }, "prepend", "> [!note] a callout");
+    reparse("T.md");
+    await b.patchNote("T.md", { type: "heading", value: "Title" }, "append", "tail");
+    assert.equal(store.get("T.md"), "# Title\n\n> [!note] a callout\n\nintro\n\n## Part\n\npart body\n\n## Response\n\nanswer\ntail\n");
+  });
+
+  test("a replace on an H2 is not affected", async () => {
+    const { app, store } = fakeApp({ "T.md": H1NOTE });
+    await new ObsidianBackend(app).patchNote("T.md", { type: "heading", value: "Part" }, "replace", "new part");
+    assert.equal(store.get("T.md"), "# Title\n\nintro\n\n## Part\n\nnew part\n## Response\n\nanswer\n");
+  });
+});
+
 describe("obsidian_append_at_heading with a stale cache", () => {
   function appendTool(app) {
     const handlers = new Map();
