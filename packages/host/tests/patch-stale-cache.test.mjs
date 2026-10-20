@@ -54,7 +54,17 @@ function parseCache(text) {
       headings.push({ heading: m[2].trim(), level: m[1].length, position: { start: { line: i, offset: starts[i] }, end: { line: i, offset: starts[i] + l.length } } });
       continue;
     }
-    const b = /\s\^([a-z0-9-]+)$/i.exec(l);
+    const b = /(?:^|\s)\^([a-z0-9-]+)$/i.exec(l);
+    // An id alone on its line after a blank line goes to the block above
+    // (Obsidian moves a lone blockid onto the previous section).
+    if (b && l.trim() === `^${b[1]}` && i > 0 && lines[i - 1].trim() === "") {
+      let e = i - 1;
+      while (e > 0 && lines[e].trim() === "") e--;
+      let s = e;
+      while (s > 0 && lines[s - 1].trim() !== "" && !/^#/.test(lines[s - 1])) s--;
+      blocks[b[1].toLowerCase()] = { id: b[1], position: { start: { line: s, offset: starts[s] }, end: { line: e, offset: starts[e] + lines[e].length } } };
+      continue;
+    }
     // Obsidian takes a block id only at the end of its paragraph.
     if (b && (i + 1 >= lines.length || lines[i + 1].trim() === "")) {
       let s = i;
@@ -257,6 +267,56 @@ describe("patchNote with a stale cache", () => {
     const r = await new ObsidianBackend(app).patchNote("N.md", { type: "heading", value: "Part" }, "replace", "new body");
     assert.equal(r.found, true);
     assert.equal(store.get("N.md"), "# New\n\n## Part\n\nnew body\n");
+  });
+});
+
+describe("review round 1 of #596", () => {
+  async function staleVsFresh(text, anchor, op, content) {
+    const stale = fakeApp({ "R.md": text });
+    const fresh = fakeApp({ "R.md": text });
+    const lead = "A longer first line that moves every offset after it.";
+    await new ObsidianBackend(stale.app).patchNote("R.md", { type: "heading", value: "H" }, "prepend", lead);
+    await new ObsidianBackend(fresh.app).patchNote("R.md", { type: "heading", value: "H" }, "prepend", lead);
+    fresh.reparse("R.md");
+    const a = await new ObsidianBackend(stale.app).patchNote("R.md", anchor, op, content);
+    const b = await new ObsidianBackend(fresh.app).patchNote("R.md", anchor, op, content);
+    return { a, b, staleText: stale.store.get("R.md"), freshText: fresh.store.get("R.md") };
+  }
+
+  for (const [kind, structure] of [
+    ["table", "| a | b |\n| - | - |\n| 1 | 2 |"],
+    ["list", "- one\n- two"],
+    ["quote", "> quoted\n> more"],
+  ]) {
+    test(`an id alone after a ${kind}: the stale path gives the fresh path's bytes`, async () => {
+      const text = `# H\n\nlead\n\n${structure}\n\n^blk\n\ntail\n`;
+      const { a, b, staleText, freshText } = await staleVsFresh(text, { type: "block", value: "blk" }, "replace", "replaced");
+      assert.equal(b.found, true, "fresh found");
+      assert.equal(a.found, true, "stale found");
+      assert.equal(a.previous, structure);
+      sameText(staleText, freshText);
+    });
+  }
+
+  test("a mixed-case anchor finds a mixed-case id, fresh and stale alike", async () => {
+    const text = "# H\n\nA line ^Note-A\n\ntail\n";
+    const { a, b, staleText, freshText } = await staleVsFresh(text, { type: "block", value: "Note-A" }, "replace", "B line ^Note-A");
+    assert.equal(b.found, true, "fresh found");
+    assert.equal(a.found, true, "stale found");
+    sameText(staleText, freshText);
+  });
+
+  test("a fresh cache holding a list-item heading is used: append_at_heading finds it and adds no duplicate", async () => {
+    const text = "# T\n\n- # Item head\n\n## Next\n";
+    const { app, store, caches } = fakeApp({ "I.md": text });
+    const at = text.indexOf("# Item head");
+    const cache = caches.get("I.md");
+    cache.headings.splice(1, 0, { heading: "Item head", level: 1, position: { start: { offset: at }, end: { offset: at + "# Item head".length } } });
+    const handlers = new Map();
+    registerComplementaryTools({ registerTool(n, _m, h) { handlers.set(n, h); } }, app, { getSettings: () => ({ allowlist: [] }) });
+    const res = await handlers.get("obsidian_append_at_heading")({ path: "I.md", heading: "Item head", content: "under it", create_if_missing: true }, {});
+    assert.equal(res.structuredContent.found, true, JSON.stringify(res.structuredContent));
+    assert.equal(store.get("I.md").split("Item head").length, 2, "no duplicate heading");
   });
 });
 

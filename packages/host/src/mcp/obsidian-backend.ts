@@ -534,7 +534,8 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
       start = section.start; // just after the heading line
       end = section.end;
     } else {
-      const block = resolveBlock(text, anchor.value, cache?.blocks?.[anchor.value], outline);
+      // Obsidian keys its block cache by the lowercased id.
+      const block = resolveBlock(text, anchor.value, cache?.blocks?.[anchor.value.toLowerCase()], outline);
       if (!block) return { found: false, anchor, op };
       start = block.start;
       end = block.end;
