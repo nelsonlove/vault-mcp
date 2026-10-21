@@ -40,7 +40,7 @@
 // Obsidian-free and pure, so both servers and the tests share it.
 
 import { LEADING_FRONTMATTER_RE } from "./accept-guard.js";
-import { FENCE_LEAD, fencedSpans } from "./fences.js";
+import { FENCE_LEAD, FenceTracker, INTERRUPTS } from "./fences.js";
 
 /** One heading found in the text. Offsets index the text the outline was
  *  made from; `end` is the end of the heading's last line (the underline for
@@ -72,6 +72,9 @@ export interface NoteOutline {
   hidden: boolean[];
   /** True for a line that is part of a heading. */
   headingLine: boolean[];
+  /** For a line on which a `%%` comment closes, the column after the
+   *  closing `%%` (Obsidian reads the rest as a new block); else -1. */
+  commentClose: number[];
   headings: TextHeading[];
 }
 
@@ -147,17 +150,11 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     }
   }
 
-  // Fences come from the shared rule (`fences.ts`), the one the link
-  // rewriter uses: a fence may open after indentation, quote markers or a
-  // list marker. `fenceEnd[i]` is set on a fence's lines; true on its last.
-  const fenceEnd: Array<boolean | undefined> = new Array(lines.length);
-  if (bodyLine < lines.length) {
-    let li = bodyLine;
-    for (const [a, b] of fencedSpans(text, lineStarts[bodyLine])) {
-      while (li < lines.length && lineStarts[li] < a) li++;
-      while (li < lines.length && lineStarts[li] < b) { fenceEnd[li] = li + 1 >= lines.length || lineStarts[li + 1] >= b; li++; }
-    }
-  }
+  // Fences follow the shared rule (`fences.ts`, the one the link rewriter
+  // uses), stepped here line by line so that, as in Obsidian, a fence opens
+  // only where a block can start: never inside a `%%` comment or `$$` math,
+  // and a `%%` inside a fence is code.
+  const fence = new FenceTracker();
 
   type Open =
     | { kind: "math"; len: number }
@@ -170,16 +167,50 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
   // HTML block) only after a blank line, a heading, a closed hidden block or
   // the start of the body.
   let prev: "start" | "blank" | "boundary" | "text" = "start";
-  // Inside a list: a heading indented under an item belongs to the item, and
-  // Obsidian does not list it among the note's headings.
-  let inList = false;
+  // The list items the line may be inside, as their content columns (the
+  // marker's indent and width plus the spaces after it), outermost first. A
+  // heading inside an item belongs to the item, and Obsidian does not list
+  // it among the note's headings.
+  const items: number[] = [];
+
+  // A line on which a `%%` comment closes: where the text after the closing
+  // `%%` starts. Obsidian parses that rest as a new block (it may be a heading).
+  const commentClose: number[] = new Array(lines.length).fill(-1);
+  // The rest of line `i` after column `c`, read as the start of a block: an
+  // ATX heading, or a setext heading over the next line. Returns the lines
+  // consumed after `i`.
+  const restOfLine = (i: number, c: number): number => {
+    const rest = bare(lines[i]).slice(c);
+    if (rest.trim() === "") { prev = "boundary"; return 0; }
+    const atx = parseAtxLine(rest);
+    if (atx) {
+      headings.push({ heading: atx.heading, level: atx.level, line: i, lastLine: i, start: lineStarts[i] + c, end: lineStarts[i] + bare(lines[i]).length, indent: atx.indent, setext: false });
+      headingLine[i] = true;
+      prev = "boundary";
+      return 0;
+    }
+    const u = i + 1 < lines.length ? SETEXT_UNDERLINE.exec(bare(lines[i + 1])) : null;
+    if (u) {
+      headings.push({ heading: rest.trim(), level: u[1][0] === "=" ? 1 : 2, line: i, lastLine: i + 1, start: lineStarts[i] + c, end: lineStarts[i + 1] + bare(lines[i + 1]).length, indent: 0, setext: true });
+      headingLine[i] = headingLine[i + 1] = true;
+      prev = "boundary";
+      return 1;
+    }
+    prev = "text";
+    return 0;
+  };
 
   for (let i = bodyLine; i < lines.length; i++) {
     const s = bare(lines[i]);
-    if (!open && fenceEnd[i] !== undefined) {
-      hidden[i] = true;
-      if (fenceEnd[i]) prev = "boundary";
-      continue;
+    if (!open && fence.isOpen) {
+      const st = fence.step(lines[i], lines[i + 1], { column: items.length ? items[items.length - 1] : 0 });
+      if (st.kind !== "none") {
+        hidden[i] = true;
+        if (st.kind === "close") prev = "boundary";
+        continue;
+      }
+      // The fence's container ended before this line: read it as usual.
+      prev = "boundary";
     }
     if (open) {
       hidden[i] = true;
@@ -191,9 +222,15 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
           if (n >= open.len && t.indexOf("$") === t.length - n) { open = null; prev = "boundary"; }
           break;
         }
-        case "comment":
-          if (s.includes("%%")) { open = null; prev = "boundary"; }
+        case "comment": {
+          const at = s.indexOf("%%");
+          if (at >= 0) {
+            open = null;
+            commentClose[i] = at + 2;
+            i += restOfLine(i, at + 2);
+          }
           break;
+        }
         case "html-raw":
           if (s.toLowerCase().includes(`</${open.tag}>`)) { open = null; prev = "boundary"; }
           break;
@@ -209,12 +246,28 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
 
     if (s.trim() === "") { prev = "blank"; continue; }
 
-    const indent = /^ */.exec(s)![0].length;
-    const listItem = LIST_ITEM.test(s) && !THEMATIC_BREAK.test(s);
-    if (listItem) inList = true;
-    else if (indent === 0) inList = false;
-    const nested = inList && (listItem || indent > 0);
-    const math = MATH_OPEN.exec(s);
+    // Indentation in columns: a tab moves to the next multiple of four.
+    const indent = /^[ \t]*/.exec(s)![0].split("").reduce((col, ch) => (ch === "\t" ? col + 4 - (col % 4) : col + 1), 0);
+    const top = () => (items.length ? items[items.length - 1] : 0);
+    const listItem = LIST_ITEM.test(s) && !THEMATIC_BREAK.test(s) && indent <= top() + 3;
+    // A lazy line: plain text right after text, which stays in the item
+    // whatever its indent. A heading, a break, a fence, a comment or an item
+    // is never lazy.
+    const lazy = prev === "text" && !listItem && !INTERRUPTS.test(s.replace(/^[ \t]*/, ""));
+    if (!lazy) while (items.length && indent < top()) items.pop();
+    const lazyInList = lazy && items.length > 0 && indent < top();
+    // The content column the line is in, before any item it opens.
+    const column = top();
+    if (listItem) {
+      const m = /^( *)([-+*]|\d{1,9}[.)])([ \t]*)/.exec(s)!;
+      const gap = m[3].length;
+      items.push(m[1].length + m[2].length + (gap === 0 || gap > 4 ? 1 : gap));
+    }
+    const nested = items.length > 0;
+    // Indented code (four spaces past the content column, at the start of a
+    // block): nothing opens inside it.
+    if (!listItem && indent >= column + 4 && prev !== "text") { prev = "boundary"; continue; }
+    const math = lazyInList ? null : MATH_OPEN.exec(s);
     if (math) {
       hidden[i] = true;
       open = { kind: "math", len: math[1].length };
@@ -225,27 +278,10 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
       open = { kind: "comment" };
       continue;
     }
-    const raw = HTML_RAW_OPEN.exec(s);
-    if (raw) {
+    if (fence.step(lines[i], lines[i + 1], { column }).kind === "open") {
       hidden[i] = true;
-      const tag = raw[1].toLowerCase();
-      if (!s.toLowerCase().includes(`</${tag}>`)) open = { kind: "html-raw", tag };
-      else prev = "boundary";
       continue;
     }
-    if (HTML_COMMENT_OPEN.test(s)) {
-      hidden[i] = true;
-      if (!s.slice(s.indexOf("<!--") + 4).includes("-->")) open = { kind: "html-comment" };
-      else prev = "boundary";
-      continue;
-    }
-    const tag6 = HTML_TAG6_OPEN.exec(s);
-    if ((tag6 && HTML_BLOCK_TAGS.has(tag6[1].toLowerCase())) || (prev !== "text" && HTML_TAG7_LINE.test(s))) {
-      hidden[i] = true;
-      open = { kind: "html-block" };
-      continue;
-    }
-
     const atx = nested ? null : parseAtxLine(s);
     if (atx) {
       headings.push({
@@ -261,9 +297,17 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
 
     // A setext heading: one line that plainly starts a paragraph, over an
     // underline. Anything that could be a list, a quote, a table row, a
-    // thematic break or a lazy continuation is left alone.
+    // thematic break or a lazy continuation is left alone. Obsidian tries a
+    // setext heading before an HTML block, and a line that opens an HTML
+    // block may interrupt a paragraph, so such a line over an underline is a
+    // heading even right after text.
+    // A lazy line of a list item's paragraph opens no HTML block either.
+    const htmlInterrupts = !lazyInList && (HTML_RAW_OPEN.test(s) || HTML_COMMENT_OPEN.test(s) || ((t) => !!t && HTML_BLOCK_TAGS.has(t[1].toLowerCase()))(HTML_TAG6_OPEN.exec(s)));
+    // A setext heading may also interrupt a quote: the line after a quote
+    // line, not itself quoted.
+    const afterQuote = i > bodyLine && QUOTE.test(bare(lines[i - 1])) && !QUOTE.test(s);
     if (
-      prev !== "text" && !nested && i + 1 < lines.length &&
+      (prev !== "text" || htmlInterrupts || afterQuote) && !nested && i + 1 < lines.length &&
       /^ {0,3}\S/.test(s) && !LIST_ITEM.test(s) && !QUOTE.test(s)
     ) {
       const u = SETEXT_UNDERLINE.exec(bare(lines[i + 1]));
@@ -280,10 +324,31 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
       }
     }
 
+    const raw = lazyInList ? null : HTML_RAW_OPEN.exec(s);
+    if (raw) {
+      hidden[i] = true;
+      const tag = raw[1].toLowerCase();
+      if (!s.toLowerCase().includes(`</${tag}>`)) open = { kind: "html-raw", tag };
+      else prev = "boundary";
+      continue;
+    }
+    if (!lazyInList && HTML_COMMENT_OPEN.test(s)) {
+      hidden[i] = true;
+      if (!s.slice(s.indexOf("<!--") + 4).includes("-->")) open = { kind: "html-comment" };
+      else prev = "boundary";
+      continue;
+    }
+    const tag6 = lazyInList ? null : HTML_TAG6_OPEN.exec(s);
+    if ((tag6 && HTML_BLOCK_TAGS.has(tag6[1].toLowerCase())) || (prev !== "text" && HTML_TAG7_LINE.test(s))) {
+      hidden[i] = true;
+      open = { kind: "html-block" };
+      continue;
+    }
+
     prev = "text";
   }
 
-  return { lines, lineStarts, bodyLine, hidden, headingLine, headings };
+  return { lines, lineStarts, bodyLine, hidden, headingLine, commentClose, headings };
 }
 
 /** A heading's section: from just after the heading to the next heading of
@@ -429,7 +494,10 @@ function offsetsOf(position: CachedHeading["position"] | undefined): [number, nu
  *  container lead (indentation, quote markers, one list marker)? */
 function leadOnly(text: string, outline: NoteOutline, line: number, offset: number): boolean {
   const before = text.slice(outline.lineStarts[line], offset);
-  return before.replace(FENCE_LEAD, "") === "";
+  if (before.replace(FENCE_LEAD, "") === "") return true;
+  // A block that starts after a `%%` comment closes on the same line.
+  const c = outline.commentClose[line];
+  return c >= 0 && before.length >= c && before.slice(c).trim() === "";
 }
 
 /**
