@@ -35,6 +35,7 @@ const TABLE = [
   { op: "frontmatter set", class: "token", calls: [["obsidian_manage_frontmatter", { op: "set" }]] },
   { op: "frontmatter delete", class: "token", calls: [["obsidian_manage_frontmatter", { op: "delete" }]] },
   { op: "patch (replace)", class: "token", calls: [["obsidian_patch_note", { op: "replace" }], ["obsidian_edit_file", {}]], note: "obsidian_edit_file replaces or removes one keyed item of a .base or .canvas file (#575): content read, so a token" },
+  { op: "patch (replace)", class: "token", calls: [["obsidian_replace_text", {}]], code: "both", why: "obsidian_replace_text replaces content you read (a token, as the row rules) and also requires idempotency_key, so a retry after a lost reply replays the first result instead of meeting a rev conflict: stricter than the row, as its brief asked; the 01.33 table has no row of its own for it yet" },
   { op: "append, append at heading, cross-session post", class: "key", calls: [["obsidian_append_note", {}], ["obsidian_append_at_heading", {}]], note: "cross-session post is a satellite tool" },
   { op: "patch append, patch prepend", class: "key", calls: [["obsidian_patch_note", { op: "append" }], ["obsidian_patch_note", { op: "prepend" }]] },
   { op: "frontmatter list append", class: "key", calls: [], note: "the host's manage_frontmatter has no list-append operation (get, set, delete)" },
