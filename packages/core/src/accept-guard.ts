@@ -23,6 +23,12 @@
 // never persist acceptance — acceptance is a human gesture only, granted
 // directly in Obsidian, never through an API.
 //
+// ONE configurable exception (the allowed-agent append, below
+// `acceptTransitionNeedsBefore`): an operator-listed agent may APPEND exactly
+// one `verified` entry of a ruled shape that names itself, with the verify's
+// status move in the same write. Empty by default, set only from the host's
+// settings, and on every road that runs `acceptTransitionReason`.
+//
 // The one thing the guard must NOT break: a legitimate edit that carries an
 // existing (human-granted) accepted value forward UNCHANGED. So the rule is a
 // TRANSITION over (before, after) — preserve is allowed, introduce/change is
@@ -176,7 +182,8 @@ export function humanVerificationOf(fm: Record<string, unknown> | null | undefin
  *  gates on (rule 8: nothing unaccepted reaches a compiled agent prompt). It
  *  is kept HERE, beside the accept guard, so the compiler's definition of the
  *  accepted state cannot drift from the perimeter's vocabulary; the guard
- *  itself refuses agent writes to `verified` and does not call this. Blank,
+ *  itself refuses agent writes to `verified` (but for the allowed-agent
+ *  append, whose `agent:` entry this does NOT count) and does not call this. Blank,
  *  absent, or machine-only ⇒ false. */
 export function hasHumanVerification(fm: Record<string, unknown> | null | undefined): boolean {
   if (!fm) return false;
@@ -601,6 +608,362 @@ export function acceptTransitionNeedsBefore(after: Record<string, unknown> | nul
   return true;
 }
 
+// ── The allowed-agent append: the one exception to the `verified` floor ────
+//
+// Ruled by the operator's verify (pick A) of the vault note "Verify the
+// decider's definition, and the guard lines it would need", 2026-10-20: one
+// agent role may close a queue note with a `verified` entry that names
+// itself, as a dated experiment. This is that exception, and nothing wider.
+//
+// WHAT IS ADMITTED — all of these, or the write is refused exactly as before:
+//   • the operator has listed the agent (`setAcceptAllowedAgents`, from the
+//     host's settings tab or its machine-local settings file only — no tool,
+//     no command and no note can reach the setter) AND named the human the
+//     entry speaks for. Both empty by default: the shipped default admits
+//     nothing, and an embed that never wires settings (the fs server, every
+//     satellite with its own bundled copy of this module) admits nothing;
+//   • the key is exactly `verified` (no separator or case variant), carried
+//     once on each side;
+//   • the note already exists with frontmatter and a string `status`;
+//   • the result's `verified` list is the before's list (a bare mapping reads
+//     as a one-item list, an absent key as none), every existing entry
+//     unchanged, plus EXACTLY ONE new entry at the end — so no existing entry
+//     is overwritten, edited or removed, and no write adds two;
+//   • the new entry is a mapping holding only the ruled keys, with
+//     `by: agent:<listed name>`, `on-behalf-of: <the configured human>`, an
+//     `at` stamp and an `experiment` key, plus any of the binding keys the
+//     ruling's survey proposal 1 adopted (`rev`, `sha`, `paths`,
+//     `option-digest`, `created`, `expires`, `consumed: false`);
+//   • the same write moves `status` exactly as a verify does: the class's
+//     declared machine, run on the note's current status
+//     (`verifyStatusMove`, the Verify verb's own step-7 rule). A `captured` or
+//     `archived` note is refused, as the verb refuses it.
+//
+// This is a guard against slips, not an authentication boundary: the host
+// does not know which session is calling, so the entry's own `by` is what is
+// checked — the same honest claim every guard header in this suite makes.
+// The `by` stays the agent (01.41 rule 1e: an agent never hides its hand), so
+// `hasHumanVerification` does NOT count the entry: a compiled prompt still
+// needs a human's own entry (01.41 rule 8).
+
+/** The keys every admitted entry carries. */
+export const ALLOWED_AGENT_ENTRY_REQUIRED_KEYS: ReadonlyArray<string> = Object.freeze(["by", "on-behalf-of", "at", "experiment"]);
+/** The binding keys the ruling adopted (its survey proposal 1); each optional. */
+export const ALLOWED_AGENT_ENTRY_BINDING_KEYS: ReadonlyArray<string> = Object.freeze([
+  "rev",
+  "sha",
+  "paths",
+  "option-digest",
+  "created",
+  "expires",
+  "consumed",
+]);
+
+const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const EXPERIMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** A stamp with seconds and an offset (or `Z`), as the Verify verb writes it. */
+const STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
+const DIGEST_RE = /^[0-9a-f]{12}$/;
+
+export interface AcceptAllowedAgents {
+  /** The `by` values admitted, each `agent:<name>`. */
+  agents: ReadonlyArray<string>;
+  /** The `on-behalf-of` value every admitted entry must carry (`human:<name>`), or null: admit nothing. */
+  onBehalfOf: string | null;
+}
+
+const NO_ALLOWED_AGENTS: AcceptAllowedAgents = Object.freeze({ agents: Object.freeze([]) as ReadonlyArray<string>, onBehalfOf: null });
+
+/**
+ * Coerce the UNTRUSTED allowed-agent list (settings tab, data.json, the
+ * machine-local file) into `agent:<name>` strings. Never throws. A line may be
+ * written `agent:<name>` or a bare `<name>`; anything else (a `human:` actor,
+ * a blank, a name with spaces or slashes, a non-string) is dropped, loudly.
+ * A non-array is the empty list: fail toward admitting nothing.
+ */
+export function normalizeAcceptAllowedAgents(input: unknown, warn: (msg: string) => void = (msg) => console.warn(msg)): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== "string") {
+      warn(`vault-mcp: allowed-agent entry ignored — not a string: ${JSON.stringify(raw)}`);
+      continue;
+    }
+    const line = raw.trim();
+    if (line === "") continue;
+    const name = line.startsWith("agent:") ? line.slice("agent:".length) : line;
+    if (!AGENT_NAME_RE.test(name)) {
+      warn(`vault-mcp: allowed-agent entry '${line}' ignored — write it as agent:<name>, the name letters, digits, '.', '_' or '-'`);
+      continue;
+    }
+    const by = `agent:${name}`;
+    if (!out.includes(by)) out.push(by);
+  }
+  return out;
+}
+
+/** Coerce the configured human (`human:<name>`), or null when it is unset or malformed (loudly): with no human named, nothing is admitted. */
+export function normalizeAcceptOnBehalfOf(input: unknown, warn: (msg: string) => void = (msg) => console.warn(msg)): string | null {
+  if (typeof input !== "string" || input.trim() === "") return null;
+  const v = input.trim();
+  if (!/^human:[^\s:]+$/.test(v)) {
+    warn(`vault-mcp: the on-behalf-of setting '${v}' is ignored — write it as human:<name>; no agent entry is admitted until it is set`);
+    return null;
+  }
+  return v;
+}
+
+let allowedAgents: AcceptAllowedAgents = NO_ALLOWED_AGENTS;
+
+/**
+ * Set the allowed-agent exception from the HOST's settings. The only
+ * production caller is the host plugin's own settings load and save (main.ts),
+ * the same discipline as `setDeclaredProtectedProperties`: it is no tool, no
+ * command, and not reachable through any note write. Both values are
+ * normalized here, so a direct mis-set cannot admit a malformed name.
+ */
+export function setAcceptAllowedAgents(input: { agents?: unknown; onBehalfOf?: unknown } | null | undefined, warn?: (msg: string) => void): void {
+  const agents = normalizeAcceptAllowedAgents(input?.agents, warn);
+  const onBehalfOf = normalizeAcceptOnBehalfOf(input?.onBehalfOf, warn);
+  allowedAgents = Object.freeze({ agents: Object.freeze(agents), onBehalfOf });
+}
+
+/** The exception as it stands now (a frozen copy). */
+export function acceptAllowedAgents(): AcceptAllowedAgents {
+  return allowedAgents;
+}
+
+// ── the status machine a verify runs (01.17 rules 4a, 21 and 22) ────────────
+
+/** A class's declared `status-transitions` table: a state to the list of states it may move to. */
+export type StatusTransitions = Record<string, unknown>;
+
+/**
+ * What the host knows about a note's declared machine: the table its class
+ * chain declares (`table`), none declared anywhere up the chain (`none`), or
+ * no way to tell on this road (`unavailable`, with why).
+ */
+export type StatusTableLookupResult =
+  | { state: "table"; table: StatusTransitions }
+  | { state: "none" }
+  | { state: "unavailable"; why: string };
+
+export type StatusTableLookup = (noteFrontmatter: Record<string, unknown>) => StatusTableLookupResult;
+
+/**
+ * The class chain's table, the Verify verb's `transitionsFor` as pure code:
+ * walk `extends` from the note's class, most specific first; the NEAREST class
+ * that declares `status-transitions` wins, whether it declares a table or a
+ * pointer (a string naming the class that declares it, rule 22), and a
+ * pointer is followed to its end. A pointer that resolves to nothing is
+ * `none`, never a fall-through to the next class. `classFrontmatter` returns a
+ * class note's frontmatter by class name, or null when there is no such class.
+ */
+export function resolveStatusTransitions(
+  className: string | null | undefined,
+  classFrontmatter: (name: string) => Record<string, unknown> | null | undefined,
+): StatusTableLookupResult {
+  const strip = (s: string) => s.replace(/^\[\[|\]\]$/g, "").trim();
+  let step = typeof className === "string" && className.trim() ? strip(className) : null;
+  const seen = new Set<string>();
+  while (step && !seen.has(step)) {
+    seen.add(step);
+    const cfm = classFrontmatter(step);
+    if (!cfm) break;
+    const declared = cfm["status-transitions"];
+    if (declared !== undefined && declared !== null) {
+      let t: unknown = declared;
+      const followed = new Set<string>();
+      while (typeof t === "string" && t.trim() && !followed.has(t)) {
+        followed.add(t);
+        t = classFrontmatter(strip(t))?.["status-transitions"] ?? null;
+      }
+      return t && typeof t === "object" && !Array.isArray(t) ? { state: "table", table: t as StatusTransitions } : { state: "none" };
+    }
+    step = typeof cfm.extends === "string" && cfm.extends.trim() ? strip(cfm.extends) : null;
+  }
+  return { state: "none" };
+}
+
+let statusTableLookup: StatusTableLookup | null = null;
+
+/**
+ * Wire how this process reads a note's declared machine. The host sets it at
+ * load from the vault's own class notes; an embed that never sets it has no
+ * machine, so an agent entry that needs one is refused there (fail closed).
+ * Like the setter above: no tool reaches it.
+ */
+export function setAcceptStatusTableLookup(lookup: StatusTableLookup | null): void {
+  statusTableLookup = lookup;
+}
+
+function superstateOf(value: string): string {
+  return value.split("/")[0];
+}
+
+/**
+ * The status a verify moves a note to, from its current status and its
+ * class's declared machine — the Verify verb's step 7, the same rule in the
+ * same order: a `captured` or `archived` note is refused; a `draft…` note
+ * moves to the first state its table lists for the current one whose
+ * superstate is `stable` (a bare `draft` with no table entry moves to
+ * `stable`); a refined draft with no table, or a value the table does not
+ * hold, is refused; any other status stays where it is.
+ */
+export function verifyStatusMove(current: unknown, lookup: StatusTableLookupResult): { next: string } | { refused: string } {
+  if (typeof current !== "string" || current.trim() === "") return { refused: "the note has no status for a verify to move" };
+  const sup = superstateOf(current);
+  if (sup === "captured") return { refused: `the note is '${current}': file it before it is verified` };
+  if (sup === "archived") return { refused: `the note is '${current}': an archived note has nothing active to verify` };
+  if (sup !== "draft") return { next: current };
+  if (lookup.state === "unavailable") return { refused: `the class's status machine cannot be read on this road (${lookup.why}), so the verify's status move cannot be checked` };
+  const table = lookup.state === "table" ? lookup.table : null;
+  if (table && Object.prototype.hasOwnProperty.call(table, current) && table[current] !== undefined && table[current] !== null) {
+    const allowed = ([] as unknown[]).concat(table[current]).map(String);
+    const next = allowed.find((s) => superstateOf(s) === "stable");
+    return next ? { next } : { refused: `the class allows ${current} → ${allowed.join(", ") || "nothing"}, none of them stable` };
+  }
+  if (current === "draft") return { next: "stable" };
+  if (!table) return { refused: `${current} is refined but its class declares no status-transitions, so there is no declared stable target` };
+  return { refused: `${current} is not a state in the machine its class declares (${Object.keys(table).join(", ")})` };
+}
+
+/** Strict structural equality for the carry-forward of EXISTING entries: `fmEqual`, except that two Dates are equal only at the same instant. */
+function entryEqual(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  if (ak.length !== Object.keys(bo).length) return false;
+  return ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && entryEqual(ao[k], bo[k]));
+}
+
+function isPlainMapping(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
+}
+
+function isStamp(v: unknown): boolean {
+  if (v instanceof Date) return !Number.isNaN(v.getTime());
+  return typeof v === "string" && STAMP_RE.test(v);
+}
+
+type AllowedAgentVerdict = { kind: "admitted" } | { kind: "refuse" } | { kind: "explain"; why: string };
+
+/**
+ * The allowed-agent decision for a `verified` write the floor would refuse.
+ * `refuse` keeps today's refusal text byte-identical: it is returned for every
+ * write that is not even an attempt by a listed agent (the empty default, a
+ * `human:` or an unlisted `by`, a list that did not grow by one). `explain` is
+ * a listed agent's attempt that failed a later check, so the refusal can say
+ * which.
+ */
+function allowedAgentAppend(
+  key: string,
+  before: Record<string, unknown> | null | undefined,
+  after: Record<string, unknown>,
+): AllowedAgentVerdict {
+  const cfg = allowedAgents;
+  if (cfg.agents.length === 0 || cfg.onBehalfOf === null) return { kind: "refuse" };
+  if (key !== "verified") return { kind: "refuse" };
+  // The new entry first: only a listed agent's attempt earns an explanation.
+  const nextList = after[key];
+  if (!Array.isArray(nextList) || nextList.length === 0) return { kind: "refuse" };
+  const entry = nextList[nextList.length - 1];
+  if (!isPlainMapping(entry) || typeof entry.by !== "string" || !cfg.agents.includes(entry.by)) return { kind: "refuse" };
+
+  // One `verified` key on each side: a case variant beside it is a second record.
+  if (Object.keys(after).filter((k) => k.trim().toLowerCase() === "verified").length !== 1) {
+    return { kind: "explain", why: "the result carries more than one 'verified' key" };
+  }
+  if (!before || typeof before !== "object") return { kind: "explain", why: "the note must already exist with frontmatter" };
+  const beforeKeys = Object.keys(before).filter((k) => k.trim().toLowerCase() === "verified");
+  if (beforeKeys.length > 1) return { kind: "explain", why: "the note carries more than one 'verified' key" };
+  if (beforeKeys.length === 1 && beforeKeys[0] !== key) {
+    return { kind: "explain", why: `the note's key is '${beforeKeys[0]}', and the write must keep that exact spelling` };
+  }
+
+  // The existing record, as a list: absent ⇒ none; a bare mapping ⇒ one entry.
+  let prevList: unknown[];
+  if (beforeKeys.length === 0) prevList = [];
+  else {
+    const pv = before[beforeKeys[0]];
+    if (Array.isArray(pv) && pv.length > 0) prevList = pv;
+    else if (isPlainMapping(pv) && Object.keys(pv).length > 0) prevList = [pv];
+    else return { kind: "explain", why: "the note's existing 'verified' is blank or not a list of entries; only a list (or one entry) can be appended to" };
+  }
+  if (nextList.length !== prevList.length + 1) {
+    return { kind: "explain", why: `the write must append exactly one entry (the list goes from ${prevList.length} to ${nextList.length})` };
+  }
+  for (let i = 0; i < prevList.length; i++) {
+    if (!entryEqual(prevList[i], nextList[i])) return { kind: "explain", why: `existing entry ${i + 1} would change; existing entries are never edited, moved or removed` };
+  }
+
+  // The shape of the one new entry.
+  const allowedKeys = new Set([...ALLOWED_AGENT_ENTRY_REQUIRED_KEYS, ...ALLOWED_AGENT_ENTRY_BINDING_KEYS]);
+  const extra = Object.keys(entry).filter((k) => !allowedKeys.has(k));
+  if (extra.length > 0) return { kind: "explain", why: `the entry carries ${extra.map((k) => `'${k}'`).join(", ")}, outside the allowed keys (${[...allowedKeys].join(", ")})` };
+  const missing = ALLOWED_AGENT_ENTRY_REQUIRED_KEYS.filter((k) => !Object.prototype.hasOwnProperty.call(entry, k));
+  if (missing.length > 0) return { kind: "explain", why: `the entry lacks ${missing.map((k) => `'${k}'`).join(", ")}` };
+  if (entry["on-behalf-of"] !== cfg.onBehalfOf) return { kind: "explain", why: `'on-behalf-of' must be the configured '${cfg.onBehalfOf}'` };
+  if (!isStamp(entry.at)) return { kind: "explain", why: "'at' must be a stamp with seconds and an offset, such as 2026-01-02T03:04:05-05:00" };
+  if (typeof entry.experiment !== "string" || !EXPERIMENT_RE.test(entry.experiment)) {
+    return { kind: "explain", why: "'experiment' must be a key of letters, digits, '.', '_' or '-'" };
+  }
+  if ("rev" in entry) {
+    const r = entry.rev;
+    const okRev = (typeof r === "number" && Number.isSafeInteger(r) && r >= 0) || (typeof r === "string" && /^\d+$/.test(r));
+    if (!okRev) return { kind: "explain", why: "'rev' must be the note's rev, a whole number" };
+  }
+  if ("sha" in entry && !(typeof entry.sha === "string" && SHA_RE.test(entry.sha))) {
+    return { kind: "explain", why: "'sha' must be a full 40-character lowercase hex commit sha" };
+  }
+  if ("paths" in entry) {
+    const p = entry.paths;
+    if (!Array.isArray(p) || p.length === 0 || !p.every((x) => typeof x === "string" && x.trim() !== "")) {
+      return { kind: "explain", why: "'paths' must be a non-empty list of paths" };
+    }
+  }
+  if ("option-digest" in entry && !(typeof entry["option-digest"] === "string" && DIGEST_RE.test(entry["option-digest"]))) {
+    return { kind: "explain", why: "'option-digest' must be 12 lowercase hex digits, quoted" };
+  }
+  if ("created" in entry && !isStamp(entry.created)) return { kind: "explain", why: "'created' must be a stamp with seconds and an offset" };
+  if ("expires" in entry && !isStamp(entry.expires)) return { kind: "explain", why: "'expires' must be a stamp with seconds and an offset" };
+  if ("consumed" in entry && entry.consumed !== false) {
+    return { kind: "explain", why: "'consumed' may only be false: a decision is consumed by a History line, never by an edit of its entry" };
+  }
+
+  // The status move a verify makes, in the same write.
+  const current = lookupCI(before, "status").value;
+  const lookup: StatusTableLookupResult = statusTableLookup
+    ? safeLookup(statusTableLookup, before)
+    : { state: "unavailable", why: "no status machine is wired in this process" };
+  const move = verifyStatusMove(current, lookup);
+  if ("refused" in move) return { kind: "explain", why: move.refused };
+  const resulting = lookupCI(after, "status");
+  if (!resulting.present || resulting.value !== move.next) {
+    return {
+      kind: "explain",
+      why:
+        move.next === current
+          ? `the write must leave status at '${String(current)}', as a verify does`
+          : `the write must move status from '${String(current)}' to '${move.next}' in the same write, as a verify does`,
+    };
+  }
+  return { kind: "admitted" };
+}
+
+function safeLookup(lookup: StatusTableLookup, fm: Record<string, unknown>): StatusTableLookupResult {
+  try {
+    return lookup(fm);
+  } catch (e) {
+    return { state: "unavailable", why: `reading the class failed: ${(e as Error)?.message ?? String(e)}` };
+  }
+}
+
 /**
  * The reason a write is accept-forbidden given the note's RESULTING frontmatter
  * and its BEFORE-on-disk frontmatter, or null when the write is clean.
@@ -639,7 +1002,14 @@ export function acceptTransitionReason(
         }
         const prev = lookupCI(before, key);
         if (!(prev.present && fmEqual(prev.value, after[key]))) {
-          return `write would ${prev.present ? "change" : "introduce"} the verification field '${key}'`;
+          const refusal = `write would ${prev.present ? "change" : "introduce"} the verification field '${key}'`;
+          // The one exception (the allowed-agent append, below): an operator-
+          // listed agent's single appended entry of the ruled shape. Empty
+          // allowlist (the default) ⇒ `refuse`, so the text above is returned
+          // byte-identically and nothing about today's refusal changes.
+          const admit = allowedAgentAppend(key, before, after);
+          if (admit.kind === "admitted") continue;
+          return admit.kind === "refuse" ? refusal : `${refusal}; not admitted as an allowed agent's entry: ${admit.why}`;
         }
       } else if (kl === "acceptance-status" || kl === "acceptance_status") {
         if (isAcceptedValue(after[key])) {
