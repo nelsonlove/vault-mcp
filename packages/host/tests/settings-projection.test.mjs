@@ -44,6 +44,8 @@ const WITHHELD = {
   setupAcknowledged: "First-run UI state. Nothing on the wire depends on whether a human dismissed a notice.",
   enabled: "Decides whether the socket exists at all; a live connection has already answered it.",
   protectedProperties: "Consumed by the frontmatter guard inside the plugin, which the server calls rather than reimplements.",
+  acceptAllowedAgents: "Consumed by the frontmatter guard inside the plugin (core's setAcceptAllowedAgents, pushed on load and save), like protectedProperties; a connection never reads it.",
+  acceptOnBehalfOf: "The second half of the allowed-agent append, pushed into the same core guard with acceptAllowedAgents; a connection never reads it.",
   vocabularies: "Reaches the server by its own accessor, ctx.getVocabularies() — forwarded, just not through this literal.",
   enforceRecordImmutability: "Read live per call through its own thunk: obsidianProbe's second argument for the kernel's guard, and ctx.enforceRecordImmutability for the per-connection probe in server.ts. Deliberately not snapshotted per connection.",
   devToolRunner: "Gates an in-Obsidian command surface. No MCP connection can reach it.",
