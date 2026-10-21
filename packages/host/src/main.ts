@@ -27,7 +27,8 @@ import { seedFromJournal, type SeedRecord } from "./kernel/idempotency.js";
 import { createSessionLog } from "./kernel/sessions/session-log.js";
 import { obsidianProbe, obsidianServerIdentity, obsidianUidSource } from "./kernel/obsidian-probe.js";
 import { DEFAULT_SCHEMES, type SchemeInstanceConfig } from "./kernel/scheme/registry.js";
-import { DEFAULT_PROTECTED_PROPERTIES, setDeclaredProtectedProperties } from "@vault-mcp/core";
+import { DEFAULT_PROTECTED_PROPERTIES, setDeclaredProtectedProperties, setAcceptAllowedAgents, setAcceptStatusTableLookup } from "@vault-mcp/core";
+import { makeStatusTableLookup } from "./accept-status-machine.js";
 // Host-side since S2 (condition 9): the mount decision is generic, and the
 // HOST uses it for the scheme panes.
 import { mountAction } from "./mount-state.js";
@@ -114,6 +115,22 @@ interface VaultMcpSettings {
    * adds review on top of that floor; it does not supply it.
    */
   protectedProperties: Array<{ key: string; grade: string }>;
+  /**
+   * The allowed-agent append (@vault-mcp/core accept-guard.ts): the agents
+   * whose ONE appended `verified` entry of the ruled shape the accept guard
+   * admits, one `agent:<name>` per row. EMPTY when the plugin ships, so the
+   * guard refuses every agent write to `verified` exactly as before. Set only
+   * by the operator, in the settings tab or the machine-local settings file;
+   * no MCP tool writes plugin config. Synced into the core guard on load and
+   * on every save, like `protectedProperties`.
+   */
+  acceptAllowedAgents: string[];
+  /**
+   * The human an admitted agent entry speaks for, as `human:<name>`: every
+   * admitted entry's `on-behalf-of` must be exactly this. Empty when the
+   * plugin ships; while empty, no agent entry is admitted at all.
+   */
+  acceptOnBehalfOf: string;
   /**
    * Controlled-vocabulary sources: `{ id, provider, root, config }` rows,
    * mirroring the scheme settings shape.
@@ -310,6 +327,8 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   redactProfiles: [],
   redactConfig: "",
   protectedProperties: DEFAULT_PROTECTED_PROPERTIES.map((p) => ({ ...p })),
+  acceptAllowedAgents: [],
+  acceptOnBehalfOf: "",
   // Cloned so settings edits can never mutate the module-level default rows
   // (item 6: schemes now clones symmetrically with vocabularies — a shallow
   // `.map((s) => ({...s}))` would miss a nested `config` object were one ever
@@ -508,6 +527,15 @@ export default class VaultMcpPlugin extends Plugin {
     // data.json can extend the perimeter but never shrink or restate the
     // hardcoded accepted-family floor).
     setDeclaredProtectedProperties(this.settings.protectedProperties);
+    // The allowed-agent append: coerce to the stored shape (a list of strings,
+    // one string) without changing a well-formed value, so a machine-local
+    // override passes the mismatch check below; the full validation (a bad
+    // name dropped loudly, a malformed human read as unset) is core's.
+    this.settings.acceptAllowedAgents = Array.isArray(this.settings.acceptAllowedAgents)
+      ? this.settings.acceptAllowedAgents.filter((v): v is string => typeof v === "string")
+      : [];
+    if (typeof this.settings.acceptOnBehalfOf !== "string") this.settings.acceptOnBehalfOf = "";
+    this.syncAcceptAllowedAgents();
     // #579 — an overridden value a normalizer above changed is a value the
     // setting does not take (an unknown mode, a relative path, …). It must not
     // be replaced by a default in silence: an override often makes a machine
@@ -552,6 +580,12 @@ export default class VaultMcpPlugin extends Plugin {
     this.adoptedSettings = null;
     // Keep the core guard registry live with settings-tab edits (#224).
     setDeclaredProtectedProperties(this.settings.protectedProperties);
+    this.syncAcceptAllowedAgents();
+  }
+
+  /** Push the allowed-agent append's two settings into the core guard. Called from loadSettings and saveSettings only. */
+  private syncAcceptAllowedAgents(): void {
+    setAcceptAllowedAgents({ agents: this.settings.acceptAllowedAgents, onBehalfOf: this.settings.acceptOnBehalfOf });
   }
 
   private discoveryCount(): number {
@@ -757,6 +791,8 @@ export default class VaultMcpPlugin extends Plugin {
       // As on the first refusal path: no settings, so the host API (guardedTerritories)
       // throws and a satellite or the governance provider reads no ready host.
       this.settings = undefined as unknown as VaultMcpSettings;
+      // loadSettings pushed the allowed agents before the override was refused: take them back.
+      setAcceptAllowedAgents(null);
       this.refuseToServe(
         `NOT SERVING: the machine-local settings override cannot be used — ${e.message}. ` +
           "Nothing falls back to the synced settings. Fix or remove the file, then reload the plugin.",
@@ -768,6 +804,9 @@ export default class VaultMcpPlugin extends Plugin {
     // "the guard config silently reset to OPEN" is the failure this whole
     // block exists to prevent.
     if (this.adoptedSettings) await this.saveSettings();
+    // The allowed-agent append's status machine: the class tables, read through the vault's
+    // construction module (createNoteFlow), live per call (accept-status-machine.ts).
+    setAcceptStatusTableLookup(makeStatusTableLookup(this.app, () => this.settings?.createNoteFlow ?? ""));
 
     // Before anything is bound or written: a headless host names its own state dir and socket (headless.ts).
     configurePaths({ stateDir: this.settings.host.stateDir, socketPath: this.settings.host.socketPath });
@@ -1152,6 +1191,9 @@ export default class VaultMcpPlugin extends Plugin {
 
   async onunload() {
     await this.listener?.close();
+    // The allowed-agent append ends with the host that set it.
+    setAcceptAllowedAgents(null);
+    setAcceptStatusTableLookup(null);
     // No slug: onload stopped before naming the vault (#579, an override it could not take), so there is nothing to remove.
     if (this.slug) removeDiscovery(this.slug);
   }

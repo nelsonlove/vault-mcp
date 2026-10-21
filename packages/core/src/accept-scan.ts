@@ -22,6 +22,7 @@
 import {
   acceptForbiddenReason,
   canonicalPropertyKey,
+  duplicateFrontmatterKeyReason,
   declaredProtectedProperties,
   leadingFrontmatterBlock,
   stripLeadingBom,
@@ -49,6 +50,10 @@ export function scanForAcceptFence(honored: string, parseYaml?: (yaml: string) =
   if (leading !== null) {
     const reason = acceptReasonForBlock(leading, parseYaml);
     if (reason) return reason;
+    // #605: a repeated key at the root or inside a `verified` record, judged by
+    // the guard's own reader whatever the injected parser does with it.
+    const dup = duplicateFrontmatterKeyReason(honored);
+    if (dup) return dup;
   }
   const folded = stripLeadingBom(honored).replace(/\r\n?/g, "\n");
   // The closer is prefix-matched, exactly as the shared recognizer now does

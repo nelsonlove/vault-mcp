@@ -166,6 +166,7 @@ export const STRING_LISTS: ReadonlySet<string> = new Set([
   "guardedTerritories",
   "writeScope.paths",
   "recordFolders.folders",
+  "acceptAllowedAgents",
   "cliPolicy.deny",
   "cliPolicy.allowOpaque",
   "cliPolicy.neverOpaque",

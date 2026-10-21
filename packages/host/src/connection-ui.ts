@@ -38,6 +38,8 @@ import {
   DEFAULT_PROTECTED_PROPERTIES,
   formatProtectedPropertyLines,
   normalizeProtectedProperties,
+  normalizeAcceptAllowedAgents,
+  normalizeAcceptOnBehalfOf,
   parseProtectedPropertyLines,
   resolveTerritories,
 } from "@vault-mcp/core";
@@ -839,6 +841,52 @@ export class VaultMcpSettingTab extends PluginSettingTab {
               `vault-mcp: ${raw.length - effective.length} protected-property line(s) ignored ` +
                 `(floor keys and unknown grades cannot be declared) — see the console for details.`
             );
+          }
+        });
+      });
+
+    // ── The allowed-agent append (accept-guard.ts) ────────────────────────
+    // The one configurable exception to the `verified` floor. Empty ships
+    // closed; saving routes through plugin.saveSettings, which re-syncs the
+    // core guard, so an edit lands on the next guarded write. Never reachable
+    // through an MCP tool: no tool writes plugin config.
+    this.lock(new Setting(containerEl), "acceptAllowedAgents")
+      .setName("Agents allowed to append a verified entry")
+      .setDesc(
+        "One per line, as agent:<name> (for example agent:example-decider). A listed agent may APPEND exactly one " +
+          "`verified` entry that names itself (by, on-behalf-of, at, experiment, and optionally rev, sha, paths, " +
+          "option-digest, created, expires, consumed: false), with the status move a verify makes in the same write. " +
+          "It may never change, remove or add to another entry. Empty (the default): every agent write to `verified` " +
+          "is refused. This widens a guard: list an agent only on your own ruling, and empty the list when it ends.",
+      )
+      .addTextArea((ta) => {
+        ta.setValue(this.plugin.settings.acceptAllowedAgents.join("\n"));
+        ta.inputEl.rows = 2;
+        ta.inputEl.style.width = "100%";
+        ta.onChange(async (value) => {
+          const raw = value.split("\n").map((s) => s.trim()).filter(Boolean);
+          this.plugin.settings.acceptAllowedAgents = raw;
+          await this.plugin.saveSettings();
+          const effective = normalizeAcceptAllowedAgents(raw, () => {});
+          if (effective.length < raw.length) {
+            new Notice(`vault-mcp: ${raw.length - effective.length} allowed-agent line(s) ignored (write each as agent:<name>).`);
+          }
+        });
+      });
+
+    this.lock(new Setting(containerEl), "acceptOnBehalfOf")
+      .setName("Human an allowed agent's entry speaks for")
+      .setDesc(
+        "As human:<name> (for example human:owner). Every admitted agent entry must carry exactly this as `on-behalf-of`. " +
+          "Empty (the default): no agent entry is admitted, whatever the list above holds.",
+      )
+      .addText((t) => {
+        t.setValue(this.plugin.settings.acceptOnBehalfOf);
+        t.onChange(async (value) => {
+          this.plugin.settings.acceptOnBehalfOf = value.trim();
+          await this.plugin.saveSettings();
+          if (value.trim() !== "" && normalizeAcceptOnBehalfOf(value, () => {}) === null) {
+            new Notice("vault-mcp: write the human as human:<name>; until then no agent entry is admitted.");
           }
         });
       });

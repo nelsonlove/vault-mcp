@@ -298,6 +298,20 @@ This feature does not encrypt notes, attachments, Git history, or the vault.
 
 The acceptance family is a non-configurable floor. Configuration may extend it, never remove or weaken it.
 
+### Agents allowed to append a verified entry
+
+| Field | Value |
+|---|---|
+| Keys | `acceptAllowedAgents` (a list, one `agent:<name>` per row, for example `agent:example-decider`) and `acceptOnBehalfOf` (one `human:<name>`, for example `human:owner`) |
+| Default | Both empty: every agent write to `verified` is refused |
+| Effect | The one configurable exception to the `verified` floor. A listed agent may APPEND exactly one `verified` entry to an existing note: `by: agent:<listed name>`, `on-behalf-of` equal to `acceptOnBehalfOf`, `at` (a stamp with seconds and an offset), `experiment` (a key of letters, digits, `.`, `_` or `-`), and optionally `rev` (a whole number), `sha` (40 lowercase hex), `paths` (a non-empty list), `option-digest` (12 lowercase hex, quoted), `created`, `expires` (stamps) and `consumed: false`. Every existing entry must be carried forward unchanged, and the same write must move `status` as a verify does: the class's `status-transitions` table, read through the construction module (`createNoteFlow`), run on the note's current status (a `draft…` note moves to the first `stable` target its class lists; a bare `draft` with no table moves to `stable`; any other status stays; `captured` and `archived` are refused). Anything else, including a `human:` actor, an unlisted agent, two entries in one write, a change to an existing entry or a key outside that list, is refused exactly as before. The entry names the agent, so it never counts as a human's verification |
+| Takes effect | Immediately on guarded writes |
+| Dependency | The shared write guard; `createNoteFlow` for any note whose verify moves a refined `draft…` status (without it, such an entry is refused) |
+| Risk | It widens a guard: an agent's entry closes a note as a verify does. The check reads the entry's own `by`, so it is a guard against slips, not an authentication boundary |
+| Recovery | Empty the list; the next write is refused as before. Entries already written stay, as every record does |
+
+Only the operator sets these, in this tab or the machine-local override: no MCP tool writes plugin settings. The filesystem server and every satellite plugin never read them, so on those roads the list is always empty.
+
 ### Record immutability
 
 | Field | Value |

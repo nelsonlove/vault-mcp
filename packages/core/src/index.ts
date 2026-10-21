@@ -11,6 +11,8 @@ export { ok, fail } from "./responses.js";
 // one implementation.
 export {
   AcceptForbiddenError,
+  DuplicateFrontmatterKeyError,
+  duplicateFrontmatterKeyReason,
   acceptTransitionReason,
   acceptForbiddenReason,
   frontmatterOf,
@@ -38,8 +40,25 @@ export {
   unverifiableBeforeReason,
   parseProtectedPropertyLines,
   formatProtectedPropertyLines,
+  // The allowed-agent append: the one configurable exception to the `verified` floor.
+  ALLOWED_AGENT_ENTRY_REQUIRED_KEYS,
+  ALLOWED_AGENT_ENTRY_BINDING_KEYS,
+  normalizeAcceptAllowedAgents,
+  normalizeAcceptOnBehalfOf,
+  setAcceptAllowedAgents,
+  acceptAllowedAgents,
+  resolveStatusTransitions,
+  setAcceptStatusTableLookup,
+  verifyStatusMove,
 } from "./accept-guard.js";
-export type { ProtectedProperty, ProtectedPropertyGrade } from "./accept-guard.js";
+export type {
+  ProtectedProperty,
+  ProtectedPropertyGrade,
+  AcceptAllowedAgents,
+  StatusTransitions,
+  StatusTableLookup,
+  StatusTableLookupResult,
+} from "./accept-guard.js";
 export {
   TRUNCATION_TRAILER_RE,
   truncationTrailer,

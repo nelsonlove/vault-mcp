@@ -56,6 +56,8 @@ export interface FlowModules {
   className: (cls: string) => string;
   /** The top-level fields the class declares up its `extends` chain (#537): where a value no blank used may go. */
   fields?: (app: App, cls: string) => string[];
+  /** A class note's frontmatter by class name, or undefined when there is no such class: the accept guard reads `status-transitions` and `extends` from it (accept-status-machine.ts). */
+  classFrontmatter?: (app: App, cls: string) => Record<string, unknown> | undefined;
   /** For a slot function class (`Meta/Slot/<Function>`): the slot's name, the class note's `slot-title`, else the
    *  function's own name. Undefined for any other class. */
   slotName?: (app: App, cls: string) => string | undefined;
@@ -100,6 +102,11 @@ export function loadFlowModules(app: App, flowRel: string): FlowModules {
     hasClass: (a: App, cls: string) => !!render.definitions(a).find(render.className(cls)),
     className: (cls: string) => String(render.className(cls)),
     fields: (a: App, cls: string) => declaredFields(a, render, cls),
+    classFrontmatter: (a: App, cls: string) => {
+      const file = render.definitions(a).find(String(render.className(cls)));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return file ? ((a.metadataCache.getFileCache(file) as any)?.frontmatter as Record<string, unknown> | undefined) : undefined;
+    },
     slotName: (a: App, cls: string) => {
       const name = String(render.className(cls));
       const file = render.definitions(a).find(name);
