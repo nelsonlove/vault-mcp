@@ -157,7 +157,7 @@ describe("checking a cache against the text", () => {
     assert.equal(verifyCachedHeadings(text, outlineNote(text), fresh), true);
     const r = resolveHeadings(text, fresh);
     assert.equal(r.source, "cache");
-    assert.deepEqual(sectionIn(r.headings, text.length, "A"), { start: fresh[1].position.end.offset, end: fresh[2].position.start.offset });
+    assert.deepEqual(sectionIn(r.headings, text.length, "A"), { start: fresh[1].position.end.offset, end: fresh[2].position.start.offset, level: 2 });
   });
 
   test("the cache of an older text does not hold: its offsets miss the heading lines", () => {
