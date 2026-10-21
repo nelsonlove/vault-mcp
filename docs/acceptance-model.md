@@ -73,8 +73,7 @@ stamped the retired accepted family into a `proposed` note.
 **Since #599 (Nelson's ruling of 2026-10-20) Accept stamps nothing.** The keys
 `acceptance-status: accepted`, `accepted-by` and `accepted-on` are retired; what confirms a
 note is a `verified` entry, which only Nelson writes, so the governor does not write it and
-the stamp could not be moved onto it. One Accept click now does the same thing for every
-note:
+the stamp could not be moved onto it. One Accept click does this, whatever the note's status:
 
 | Note's `acceptance-status` | What one Accept click does |
 | --- | --- |
@@ -82,10 +81,9 @@ note:
 | absent / any other value | Advance the baseline — the note is **byte-untouched** |
 
 `acceptNote` (`packages/governor/src/kernel/accept.ts`) therefore reads the note, runs the
-gate for a `proposed` note, advances the baseline and appends the log record. There is no
-write into the note, so there is no fold verification and no stamp-then-baseline ordering to
-get wrong, and an accept cannot re-enter the pending queue (the baseline holds the exact
-current bytes). The accept also clears the genuine-human-input record for the path (#228's
+gate for a `proposed` note, advances the baseline and appends the log record. The accept
+writes nothing into the note, so the fold verification and the stamp-then-baseline ordering of
+the old design are gone, and the baseline holds the exact current bytes. The accept also clears the genuine-human-input record for the path (#228's
 race discipline), so a stale human-input record does not launder a later unrelated write
 into a silent baseline advance. Log records written by earlier builds may carry
 `stamped: true`; the field is still read, never written.
