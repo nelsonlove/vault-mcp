@@ -237,6 +237,19 @@ describe("composeNote (obsidian_write_notes)", () => {
   });
 });
 
+describe("write_notes: a date-only `at` (a parsed Date) is refused (round-1 review of #603)", () => {
+  test("composeNote with `at` as a Date is refused even when listed", () => {
+    allow();
+    setAcceptStatusTableLookup(() => ({ state: "table", table: TABLE }));
+    const deps = { stringifyYaml: () => "", formatTs: () => "t", now: 0, mintUid: () => "u" };
+    const existing = { title: "Q", type: "Task/Example", status: "draft/proposed" };
+    assert.throws(
+      () => composeNote({ ...deps, frontmatter: { ...existing, status: "stable/open", verified: [{ ...entry, at: new Date("2026-10-20") }] }, body: "# Q", stamp: false, existing }),
+      (e) => e.code === "accept_forbidden" && /'at' must be a stamp/.test(e.message),
+    );
+  });
+});
+
 describe("guardAppendResult (obsidian_append_at_heading)", () => {
   test("default refuses; listed admits the same result", () => {
     setAcceptStatusTableLookup(() => ({ state: "table", table: TABLE }));

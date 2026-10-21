@@ -231,6 +231,47 @@ describe("every other change to `verified` stays refused", () => {
   });
 });
 
+describe("round-1 review of #603: four more refusals", () => {
+  test("two case variants of `status` in the result: refused (the first one read used to skip the move check)", () => {
+    allow();
+    tableLookup();
+    const afterFm = { title: "Q", type: "Task/Example", Status: "stable/open", status: "draft/proposed", verified: [entry()] };
+    assert.match(acceptTransitionReason(draft(), afterFm) ?? "(admitted)", /more than one 'status' key/);
+    const beforeTwo = { ...draft(), Status: "stable/open" };
+    assert.match(acceptTransitionReason(beforeTwo, { ...beforeTwo, status: "stable/open", verified: [entry()] }) ?? "(admitted)", /more than one 'status' key/);
+  });
+
+  test("a backslash in a double-quoted value of a verified record is refused by the reader (it decoded `\\a` as `a`)", () => {
+    allow();
+    tableLookup();
+    const before = parseGuardFrontmatter("---\ntitle: Q\ntype: Task/Example\nstatus: draft/proposed\n---\n");
+    const text =
+      '---\ntitle: Q\ntype: Task/Example\nstatus: stable/open\nverified:\n  - by: "\\agent:example-decider"\n    on-behalf-of: human:owner\n    at: 2026-01-02T03:04:05-05:00\n    experiment: example-experiment\n---\n';
+    assert.throws(() => acceptTransitionReason(before, parseGuardFrontmatter(text)), /carries a backslash/);
+    assert.throws(() => parseGuardFrontmatter("---\nverified: \"\\x\"\n---\n"), /carries a backslash/);
+    // A plain value keeps its backslash, and the entry check refuses it too.
+    assert.match(acceptTransitionReason(draft(), draft({ status: "stable/open", verified: [entry({ experiment: "a\\b" })] })) ?? "", /backslash/);
+    // A backslash outside the record is not this rule's business.
+    assert.deepEqual(parseGuardFrontmatter("---\nverified:\n  - by: human:owner\npath: C:\\x\n---\n"), { verified: [{ by: "human:owner" }], path: "C:\\x" });
+  });
+
+  test("an existing entry rewritten with its keys in another order counts as changed", () => {
+    allow();
+    tableLookup();
+    const before = draft({ status: "stable/open", verified: [humanEntry] });
+    const reordered = { at: humanEntry.at, by: humanEntry.by };
+    assert.match(acceptTransitionReason(before, { ...before, verified: [reordered, entry()] }) ?? "(admitted)", /existing entry 1 would change/);
+  });
+
+  test("a parsed Date is not a stamp: `at`, `created` and `expires` must be text with seconds and an offset", () => {
+    allow();
+    tableLookup();
+    for (const k of ["at", "created", "expires"]) {
+      assert.match(acceptTransitionReason(draft(), draft({ status: "stable/open", verified: [entry({ [k]: new Date("2026-10-20") })] })) ?? "(admitted)", new RegExp(`'${k}' must be a stamp`));
+    }
+  });
+});
+
 describe("the status machine is the Verify verb's step 7", () => {
   const T = (table: Record<string, unknown>): StatusTableLookupResult => ({ state: "table", table });
   test("draft moves to the first listed stable target", () => {

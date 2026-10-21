@@ -840,17 +840,19 @@ function entryEqual(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) !== Array.isArray(b)) return false;
   const ao = a as Record<string, unknown>;
   const bo = b as Record<string, unknown>;
+  // In KEY ORDER too: an existing record is carried forward as written, never rewritten.
   const ak = Object.keys(ao);
-  if (ak.length !== Object.keys(bo).length) return false;
-  return ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && entryEqual(ao[k], bo[k]));
+  const bk = Object.keys(bo);
+  if (ak.length !== bk.length || ak.some((k, i) => bk[i] !== k)) return false;
+  return ak.every((k) => entryEqual(ao[k], bo[k]));
 }
 
 function isPlainMapping(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Date);
 }
 
+/** A stamp as text, with seconds and an offset. A parsed Date is refused: it no longer shows whether the text had either. */
 function isStamp(v: unknown): boolean {
-  if (v instanceof Date) return !Number.isNaN(v.getTime());
   return typeof v === "string" && STAMP_RE.test(v);
 }
 
@@ -911,6 +913,11 @@ function allowedAgentAppend(
   if (extra.length > 0) return { kind: "explain", why: `the entry carries ${extra.map((k) => `'${k}'`).join(", ")}, outside the allowed keys (${[...allowedKeys].join(", ")})` };
   const missing = ALLOWED_AGENT_ENTRY_REQUIRED_KEYS.filter((k) => !Object.prototype.hasOwnProperty.call(entry, k));
   if (missing.length > 0) return { kind: "explain", why: `the entry lacks ${missing.map((k) => `'${k}'`).join(", ")}` };
+  // A backslash is an escape in a quoted YAML scalar, which this guard's reader
+  // does not decode as YAML does: `"\agent:x"` reads as `agent:x` here and as a
+  // control character to a reader. No value of the entry may carry one.
+  const strings = Object.values(entry).flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v): v is string => typeof v === "string");
+  if (strings.some((v) => v.includes("\\"))) return { kind: "explain", why: "a value of the entry carries a backslash" };
   if (entry["on-behalf-of"] !== cfg.onBehalfOf) return { kind: "explain", why: `'on-behalf-of' must be the configured '${cfg.onBehalfOf}'` };
   if (!isStamp(entry.at)) return { kind: "explain", why: "'at' must be a stamp with seconds and an offset, such as 2026-01-02T03:04:05-05:00" };
   if (typeof entry.experiment !== "string" || !EXPERIMENT_RE.test(entry.experiment)) {
@@ -939,7 +946,10 @@ function allowedAgentAppend(
     return { kind: "explain", why: "'consumed' may only be false: a decision is consumed by a History line, never by an edit of its entry" };
   }
 
-  // The status move a verify makes, in the same write.
+  // The status move a verify makes, in the same write. One `status` key on
+  // each side: with two case variants, lookupCI would read only the first.
+  const statusKeys = (fm: Record<string, unknown>) => Object.keys(fm).filter((k) => k.trim().toLowerCase() === "status").length;
+  if (statusKeys(before) > 1 || statusKeys(after) > 1) return { kind: "explain", why: "the note carries more than one 'status' key" };
   const current = lookupCI(before, "status").value;
   const lookup: StatusTableLookupResult = statusTableLookup
     ? safeLookup(statusTableLookup, before)
@@ -1197,6 +1207,12 @@ export class DuplicateFrontmatterKeyError extends AcceptForbiddenError {
     this.name = "DuplicateFrontmatterKeyError";
     this.duplicateKey = key;
   }
+}
+
+function recordBackslash(key: string): never {
+  throw new AcceptForbiddenError(
+    `the verification field '${key}' carries a backslash, which this guard's reader cannot decode as YAML does, so the record cannot be checked against what a reader will see`,
+  );
 }
 
 function duplicateKey(key: string): never {
@@ -1480,6 +1496,20 @@ class BlockReader {
   /** The top-level key whose value is being read (#605: a repeated key under a `verified` key is refused). */
   top: string | null = null;
 
+  /**
+   * A backslash on a line of a `verified` record is refused. In a double-quoted
+   * scalar it is a YAML escape this reader does not decode as YAML does
+   * (`"\\agent:x"` reads as `agent:x` here, and as a control character to a real
+   * reader), so the record could read as one actor here and another on disk. A
+   * line belongs to the record when it is indented or a `- ` item under the
+   * `verified` key; the next top-level key ends it.
+   */
+  refuseBackslashInRecord(line: string): void {
+    if (this.top === null || !isVerifiedKey(this.top)) return;
+    if (!/^[ \t-]/.test(line)) return;
+    if (line.includes("\\")) recordBackslash(this.top);
+  }
+
   /** Whether a repeated key is refused where the reader is now: the root, or anywhere under a `verified` key. */
   strictAt(indent: number): boolean {
     return indent === 0 || (this.top !== null && isVerifiedKey(this.top));
@@ -1496,6 +1526,7 @@ class BlockReader {
         continue;
       }
       if (line.trim() === "...") unclassifiable(); // document-end marker
+      this.refuseBackslashInRecord(line);
       return this.i;
     }
     return -1;
@@ -1520,7 +1551,10 @@ class BlockReader {
       // before the real one was compared as unchanged. A repeated key at the root,
       // or anywhere inside a `verified` record, is refused instead.
       if (Object.prototype.hasOwnProperty.call(out, kv.key) && this.strictAt(indent)) duplicateKey(kv.key);
-      if (indent === 0) this.top = kv.key;
+      if (indent === 0) {
+        this.top = kv.key;
+        if (isVerifiedKey(kv.key) && kv.rest.includes("\\")) recordBackslash(kv.key);
+      }
       out[kv.key] = this.parseValueAfterKey(kv.rest, indent);
     }
   }
@@ -1645,6 +1679,7 @@ class BlockReader {
     while (this.i < this.lines.length) {
       const line = this.lines[this.i];
       if (CONTROL_CHAR_RE.test(line)) unclassifiable();
+      if (indentOf(line) > ownerIndent) this.refuseBackslashInRecord(line);
       if (line.trim() === "") {
         // A blank line inside a block scalar is content; peek ahead to see if
         // the scalar actually continues before keeping it.
