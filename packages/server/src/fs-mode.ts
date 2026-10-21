@@ -31,6 +31,7 @@ import {
   setFrontmatterField,
   deleteFrontmatterField,
   patchNote,
+  replaceText,
   deleteNote,
   moveNote,
   listFolders,
@@ -57,12 +58,13 @@ import {
   editFile,
   moveFile,
   registerFileTools,
+  registerReplaceTextTool,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
 import { loadRedaction } from "./redaction-env.js";
 import { profileOf } from "./profiles.js";
 import { existsSync } from "node:fs";
-import type { VaultBackend, VaultWatcherHandle, FileBackend } from "@vault-mcp/core";
+import type { VaultBackend, VaultWatcherHandle, FileBackend, TextReplaceBackend } from "@vault-mcp/core";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { FsWriteKernel, defaultJournalDir } from "./fs-write-kernel.js";
@@ -270,7 +272,7 @@ export class FsWritesDisabledError extends Error {
  */
 export function makeBackend(
   opts: { allowWrites?: boolean; kernel?: FsWriteKernel } = {},
-): VaultBackend & FileBackend {
+): VaultBackend & FileBackend & TextReplaceBackend {
   const allowWrites = opts.allowWrites ?? isFsWritesEnabled();
   const requireWrites = (): void => {
     if (!allowWrites) throw new FsWritesDisabledError();
@@ -407,6 +409,17 @@ export function makeBackend(
         () => patchNote(relPath, anchor, op, content),
       ),
 
+    // obsidian_replace_text: one op on the queue, read and write inside it, so nothing queued
+    // ahead can change the note between the plan and the write. Journaled as its own op; `old`
+    // and `new` are digested like a body. The long-note rule has no proof to stand it aside here.
+    replaceText: async (relPath, old, replacement, o) =>
+      mutate(
+        "obsidian_replace_text",
+        { path: relPath },
+        { path: relPath, old, new: replacement, all: o.all },
+        () => replaceText(relPath, old, replacement, { all: o.all }),
+      ),
+
     writeNote: async (relPath, content, overwrite) =>
       mutate(
         "obsidian_write_note",
@@ -535,6 +548,13 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     // A .base is a query (#580 review 1): not written, edited or moved while the write scope limits
     // paths. This server has no path allowlist; its write scope is the one path rule it has.
     pathScope: () => (fsWriteScope().mode !== "all" ? `the write scope (${WRITE_SCOPE_ENV_VAR})` : null),
+  });
+  // obsidian_replace_text: exact text in one note, under the same profile, decoding and
+  // kernel-argument rules; its replies pass through the secret scanner too when it is on.
+  registerReplaceTextTool(fileReg, backend, {
+    ...(profile ? { profile, exists: existsInVault } : {}),
+    decodeHtml: true,
+    kernelArgs: true,
   });
 
   return server;
