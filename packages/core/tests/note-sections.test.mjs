@@ -371,3 +371,72 @@ describe("the H1 replace rule on the filesystem server (#601)", () => {
     assert.match(def.description, /level-1 heading is refused/);
   });
 });
+
+// ── review round 2 of #596 ─────────────────────────────────────────────────
+//
+// Each expected outline below is what Obsidian 1.14.4's own parser gives for
+// the text (its worker run on the string, outside the repo), and each cache
+// is the one it gives: start and end offsets of each heading.
+
+const obsCache = (...hs) => hs.map(([heading, level, s, e]) => ({ heading, level, position: { start: { offset: s }, end: { offset: e } } }));
+
+describe("review round 2: CRLF, comments, container fences, list columns", () => {
+  test("a CRLF note: a fence closes, and the outline and the cache check see the heading after it", () => {
+    const text = "## A\r\n```\r\ncode\r\n```\r\n## B\r\ntext\r\n";
+    assert.deepEqual(names(text), ["2:A", "2:B"]);
+    const c = obsCache(["A", 2, 0, 4], ["B", 2, 22, 26]);
+    assert.equal(resolveHeadings(text, c).source, "cache");
+  });
+
+  test("the shared fence rule closes a CRLF fence (the link rewriter's spans too)", async () => {
+    const { fencedSpans } = await import("../src/fences.ts");
+    const text = "x\r\n```\r\ncode\r\n```\r\nafter\r\n";
+    assert.deepEqual(fencedSpans(text, 0), [[3, text.indexOf("```\r\nafter") + 3 + 1]]);
+  });
+
+  test("a %% line with a % in its text opens no comment; the later lone %% does (as Obsidian reads it)", () => {
+    const t1 = "## A\n%% 50% done\n## Hidden\n%%\n\n## B\nb\n";
+    assert.deepEqual(names(t1), ["2:A", "2:Hidden"]);
+    assert.equal(resolveHeadings(t1, obsCache(["A", 2, 0, 4], ["Hidden", 2, 17, 26])).source, "cache");
+    const t2 = "## A\nsee %%\n## Hidden\n%%\n\n## B\nb\n";
+    assert.deepEqual(names(t2), ["2:A", "2:Hidden"]);
+    assert.equal(resolveHeadings(t2, obsCache(["A", 2, 0, 4], ["Hidden", 2, 12, 21])).source, "cache");
+  });
+
+  test("a comment closes in mid-line, and the rest of that line is a heading", () => {
+    const text = "%% c\n%% ## X\n";
+    assert.deepEqual(names(text), ["2:X"]);
+    assert.equal(resolveHeadings(text, obsCache(["X", 2, 7, 12])).source, "cache");
+  });
+
+  test("a fence inside a comment is comment text: the comment closes at the next %%", () => {
+    assert.deepEqual(names("%%\n```\n%%\n```\n## Z\n"), []);
+    assert.deepEqual(names("```\n%%\n```\n## Z\n%%\n## W\n"), ["2:Z"]);
+  });
+
+  test("an unclosed fence in a quote or a list item ends with its container", () => {
+    assert.deepEqual(names("## A\n> ```\n> x\n\n## B\nb\n"), ["2:A", "2:B"]);
+    assert.deepEqual(names("## A\n- ```\n  x\n\n## B\nb\n"), ["2:A", "2:B"]);
+    assert.deepEqual(names("> ```\nlazy text\n## B\n"), ["2:B"]);
+    assert.deepEqual(names("- ```\n  x\n\n  y\n## B\n"), ["2:B"]);
+  });
+
+  test("a heading indented less than the list item's content column is outside the list", () => {
+    assert.deepEqual(names("- item\n\n # H\n"), ["1:H"]);
+    assert.deepEqual(names("- item\n\n  # H\n"), []);
+    assert.deepEqual(names("1. item\n\n  # H\n"), ["1:H"]);
+    assert.deepEqual(names("- item\n # H\n"), ["1:H"]);
+    assert.deepEqual(names("* item\n    - deep\n  # in item\n"), []);
+  });
+
+  test("the FS server: a replace on a heading above a CRLF fence keeps the section after it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "note-sections-r2-"));
+    try {
+      const v = createVaultAt(root);
+      await writeFile(path.join(root, "c.md"), "## A\r\n```\r\ncode\r\n```\r\n## B\r\ntext\r\n", "utf8");
+      const r = await v.patchNote("c.md", { type: "heading", value: "A" }, "replace", "new");
+      assert.equal(r.found, true);
+      assert.equal(await readFile(path.join(root, "c.md"), "utf8"), "## A\r\nnew\n## B\r\ntext\r\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});

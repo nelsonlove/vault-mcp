@@ -320,6 +320,29 @@ describe("review round 1 of #596", () => {
   });
 });
 
+describe("review round 2 of #596 on the live host", () => {
+  test("a CRLF note on the text path: a replace above a fence keeps the section after it", async () => {
+    const text = "## A\r\n```\r\ncode\r\n```\r\n## B\r\ntext\r\n";
+    const { app, store, caches } = fakeApp({ "C.md": text });
+    caches.delete("C.md");
+    const r = await new ObsidianBackend(app).patchNote("C.md", { type: "heading", value: "A" }, "replace", "new");
+    assert.equal(r.found, true);
+    assert.equal(store.get("C.md"), "## A\n\nnew\n## B\r\ntext\r\n");
+  });
+
+  test("a fresh cache for a note whose %% line holds a % is used as it stands", async () => {
+    const text = "## A\n%% 50% done\n## Hidden\n%%\n\n## B\nb\n";
+    const { app, store, caches } = fakeApp({ "P.md": text });
+    // The cache Obsidian 1.14.4 gives: A and Hidden; B sits inside the comment the lone %% opens.
+    caches.set("P.md", { headings: [
+      { heading: "A", level: 2, position: { start: { offset: 0 }, end: { offset: 4 } } },
+      { heading: "Hidden", level: 2, position: { start: { offset: 17 }, end: { offset: 26 } } },
+    ], blocks: {} });
+    await new ObsidianBackend(app).patchNote("P.md", { type: "heading", value: "A" }, "replace", "new");
+    assert.equal(store.get("P.md"), "## A\n\nnew\n## Hidden\n%%\n\n## B\nb\n");
+  });
+});
+
 describe("the H1 replace rule on the live host (#601)", () => {
   const H1NOTE = "# Title\n\nintro\n\n## Part\n\npart body\n\n## Response\n\nanswer\n";
 
