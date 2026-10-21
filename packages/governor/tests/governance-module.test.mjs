@@ -894,13 +894,11 @@ describe("#101 dispositions-as-data: THE TRIPWIRE — the wrap adds no reachable
     assert.match(tool, /from ["']\.\.\/kernel\/revision\.js["']/, "it reaches the pure kernel revision module");
   });
 
-  test("the submit tool structurally cannot write acceptance: only setAcceptanceStatusProposed writes status", () => {
+  test("the submit tool writes no frontmatter: revision.ts has no status writer and names no accepted value (#599)", () => {
     const revision = code("kernel/revision.ts");
-    // The one status writer takes NO value parameter and hard-codes `proposed`.
-    assert.match(revision, /export function setAcceptanceStatusProposed\(content: string\)/);
-    assert.match(revision, /: proposed`/);
+    assert.ok(!/setAcceptanceStatusProposed/.test(revision), "the status writer must be gone");
+    assert.ok(!/: proposed`/.test(revision), "nothing may write a proposed status");
     assert.ok(!/accepted/.test(revision.replace(/acceptance[-_][sS]tatus/g, "")), "revision.ts must never name an accepted value");
-    // And it must not reference the sanctioned accepted-writer.
     assert.ok(!/\bstampAcceptance\b/.test(revision));
   });
 });

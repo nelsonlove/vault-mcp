@@ -42,13 +42,13 @@ reviewer can send a change back for another pass:
 
 - **Request changes…** (pane, gesture-gated): the reviewer's feedback is inserted into the
   note as a `> [!revision-request] Requested changes (YYYY-MM-DD)` callout directly below
-  the H1 (top of body when the note has no H1), and `acceptance-status` becomes `revising`.
+  the H1 (top of body when the note has no H1). Since #599 `acceptance-status` is left alone.
   There is no `requested-changes` frontmatter property — the feedback lives in the note
   body, and that is where a revising agent reads it.
 - **Withdraw** (pane, gesture-gated, in the Revising section): removes the
-  `[!revision-request]` callout(s) the pane inserted and sets the status back to `proposed`.
-- **`governance_submit_revision`** (the one agent verb): a revising agent resubmits — status
-  back to `proposed`, addressed `[!revision-request]` callout(s) removed, optional summary
+  `[!revision-request]` callout(s) the pane inserted (since #599 it leaves the frontmatter alone).
+- **`governance_submit_revision`** (the one agent verb): a revising agent resubmits — addressed
+  `[!revision-request]` callout(s) removed (the tool leaves the frontmatter alone since #599, so the status stays as it was), optional summary
   inserted as a `> [!revision-report]` callout for the reviewer to dispose of at review. It
   is an ordinary guarded mutating tool (read-only mode, path allowlist, write queue, write
   journal all apply), it refuses `not_revising` when there is nothing to submit, and the
@@ -90,9 +90,9 @@ into a silent baseline advance. Log records written by earlier builds may carry
 
 The pane's request-changes and withdraw dispositions no longer write `acceptance-status`
 either: request-changes inserts the `[!revision-request]` callout, withdraw removes it, and
-neither touches the frontmatter. `governance_submit_revision` (the agent resubmit) is
-unchanged and still moves a note a human set to `acceptance-status: revising` back to
-`proposed`.
+neither touches the frontmatter. `governance_submit_revision` (the agent resubmit) leaves the
+frontmatter alone too: it removes the addressed callouts and inserts the optional report.
+The note stays at whatever `acceptance-status` it had, so the reviewer or Nelson moves it on.
 
 The pane also gains a **Proposed section**: notes with `acceptance-status: proposed` and no
 pending write delta (built from the metadata cache like the Revising section, deduped

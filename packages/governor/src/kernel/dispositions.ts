@@ -139,7 +139,7 @@ export const DISPOSITIONS: ReadonlyArray<DispositionDescriptor> = Object.freeze(
     surface: "mcp-tool",
     label: SUBMIT_REVISION_TOOL,
     effect:
-      "a revising agent resubmits: acceptance-status: proposed, addressed [!revision-request] callouts removed, " +
+      "a revising agent resubmits: addressed [!revision-request] callouts removed (no frontmatter written), " +
       "optional [!revision-report] summary inserted — lands in the pending channel for human review",
   } as const),
   Object.freeze({

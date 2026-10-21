@@ -101,7 +101,8 @@ describe("publication shape", () => {
     assert.match(desc, /no\s+.?requested-changes.?\s+property/i);
     assert.match(desc, /cannot accept/i);
     assert.match(desc, /not_revising/);
-    assert.match(desc, /proposed/);
+    assert.match(desc, /writes no frontmatter/);
+    assert.ok(!/sets `acceptance-status: proposed`/.test(desc), "the description must not promise a status write");
   });
 
   test("args are path + optional summary only (kernel args are the host's, added at ITS interception point)", () => {
@@ -112,8 +113,8 @@ describe("publication shape", () => {
 
 // ── happy path ────────────────────────────────────────────────────────────────
 
-describe("happy path: revising → proposed + callout swap", () => {
-  test("status flips, request callout removed, report inserted with the run-clock date", async () => {
+describe("happy path: callout swap, frontmatter untouched", () => {
+  test("status untouched, request callout removed, report inserted with the run-clock date", async () => {
     const { call, notes, writes } = toolServer({ "Projects/note.md": REVISING });
     const res = await call({ path: "Projects/note.md", summary: "tightened the intro" });
     assert.notEqual(res.isError, true, res.content?.[0]?.text);
@@ -121,12 +122,11 @@ describe("happy path: revising → proposed + callout swap", () => {
     const after = notes.get("Projects/note.md");
     assert.equal(
       after,
-      "---\nacceptance-status: proposed\nuid: abc\n---\n" +
+      "---\nacceptance-status: revising\nuid: abc\n---\n" +
         "# Note\n\n> [!revision-report] Revision report (2026-08-18)\n> tightened the intro\n\nBody text\n",
     );
     assert.deepEqual(res.structuredContent, {
       path: "Projects/note.md",
-      acceptance_status: "proposed",
       removed_requests: 1,
       report_inserted: true,
       filesChanged: 1,
@@ -141,7 +141,17 @@ describe("happy path: revising → proposed + callout swap", () => {
     assert.equal(res.structuredContent.report_inserted, false);
     assert.ok(!notes.get("n.md").includes("[!revision-report]"));
     assert.ok(!notes.get("n.md").includes("[!revision-request]"));
-    assert.match(notes.get("n.md"), /acceptance-status: proposed/);
+    assert.match(notes.get("n.md"), /acceptance-status: revising/);
+  });
+
+  test("a submit writes none of acceptance-status, accepted-by, accepted-on (#599): the frontmatter is byte-identical", async () => {
+    const { call, notes } = toolServer({ "n.md": REVISING });
+    const res = await call({ path: "n.md", summary: "done" });
+    assert.notEqual(res.isError, true, res.content?.[0]?.text);
+    const fmOf = (c) => c.slice(0, c.indexOf("\n---", 4));
+    assert.equal(fmOf(notes.get("n.md")), fmOf(REVISING));
+    assert.ok(!/accepted-by|accepted-on/.test(notes.get("n.md")));
+    assert.equal("acceptance_status" in res.structuredContent, false);
   });
 });
 
@@ -216,7 +226,7 @@ describe("accepted-family payloads cannot ride through the tool", () => {
     assert.match(after, /> accepted-by: attacker/);
     const fm = parseGuardFrontmatter(after);
     assert.deepEqual(Object.keys(fm).sort(), ["acceptance-status", "uid"]);
-    assert.equal(fm["acceptance-status"], "proposed");
+    assert.equal(fm["acceptance-status"], "revising");
     // And the shared guard agrees the written transition was clean.
     assert.equal(revisionWriteRefusalReason(REVISING, after), null);
   });
