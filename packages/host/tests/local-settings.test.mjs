@@ -28,7 +28,7 @@ const SHAPE = {
   schemes: [{ id: "jd", provider: "johnny-decimal" }],
   protectedProperties: [{ key: "k", grade: "agent-forbidden" }],
   writeScope: { mode: "all", paths: [] },
-  host: { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: true },
+  host: { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: false },
   cliPolicy: { deny: [], allowOpaque: [], neverOpaque: [], opaqueWildcards: [], opaqueSnapshot: {} },
 };
 
@@ -428,6 +428,25 @@ describe("the plugin class, with a fake loadData and saveData (#582 review 1)", 
     return { p, state };
   }
   const synced = { readOnly: false, guardedTerritories: ["Private"], recordFolders: { enabled: true, folders: [], archivePattern: "" }, writeScope: { mode: "all", paths: [] }, host: { headless: "off", stateDir: "", socketPath: "", autoRegisterClaude: true } };
+
+  test("autoRegisterClaude (#598): a fresh install is off and saved; a saved true or false stays; an install without the key keeps on", async () => {
+    const fresh = harness(undefined);
+    await fresh.p.loadSettings();
+    assert.equal(fresh.p.settings.host.autoRegisterClaude, false);
+    const savedFresh = fresh.state.disk;
+    assert.equal(savedFresh?.host?.autoRegisterClaude, false, "the key is written, so a later load keeps false");
+    for (const [stored, want] of [[true, true], [false, false]]) {
+      const h = harness({ ...synced, host: { ...synced.host, autoRegisterClaude: stored } });
+      await h.p.loadSettings();
+      assert.equal(h.p.settings.host.autoRegisterClaude, want);
+    }
+    const old = harness({ readOnly: false, host: { headless: "off" } });
+    await old.p.loadSettings();
+    assert.equal(old.p.settings.host.autoRegisterClaude, true, "no key: unchanged for an existing install");
+    const noHost = harness({ readOnly: false });
+    await noHost.p.loadSettings();
+    assert.equal(noHost.p.settings.host.autoRegisterClaude, true);
+  });
 
   test("no override: load and save behave as before (no extra read)", async () => {
     const { p, state } = harness(synced);

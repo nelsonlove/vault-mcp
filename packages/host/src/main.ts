@@ -37,7 +37,7 @@ import { territoriesOnLoad } from "./territory-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
 import { normalizeCliPolicy, type OpaqueSnapshotEntry } from "./mcp/cli-policy.js";
 import { DEFAULT_SYNC_GUARD, normalizeSyncGuard, type SyncGuardSettings } from "./kernel/sync-guard.js";
-import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
+import { DEFAULT_HOST_SETTINGS, normalizeHostSettings, autoRegisterOnLoad, declaredHeadless, autoRegisterAllowed, type HostSettings } from "./headless.js";
 import { DEFAULT_WRITE_SCOPE, normalizeWriteScope, type WriteScope } from "@vault-mcp/core";
 import {
   DEFAULT_RECORD_IDENTIFICATION,
@@ -438,6 +438,12 @@ export default class VaultMcpPlugin extends Plugin {
     // install that predates the key is seeded once with what #455 hard-coded.
     const recordFoldersLoad = recordFoldersOnLoad(own, seed);
     this.settings.recordFolders = recordFoldersLoad.recordFolders;
+    // #598 — autoRegisterClaude is off on a fresh install; an install that
+    // predates the key keeps its old on, saved once. Before the override merge,
+    // so a machine-local value still wins.
+    const autoRegisterLoad = autoRegisterOnLoad(own, seed);
+    const rawHost = this.settings.host as unknown;
+    this.settings.host = { ...(rawHost && typeof rawHost === "object" ? (rawHost as HostSettings) : DEFAULT_HOST_SETTINGS), autoRegisterClaude: autoRegisterLoad.value };
     // #579 — the machine-local override, merged over the synced settings key by
     // key (objects deep-merge, everything else replaces), BEFORE the
     // normalizers below, so an overridden value is coerced like any other.
@@ -525,7 +531,7 @@ export default class VaultMcpPlugin extends Plugin {
     }
     // Persist NOW if the territories key was absent (seeded or fresh), so the
     // seeding branch above can never run a second time for this install.
-    if (territories.persist || recordFoldersLoad.persist) await this.saveSettings();
+    if (territories.persist || recordFoldersLoad.persist || autoRegisterLoad.persist) await this.saveSettings();
   }
   async saveSettings() {
     const local = this.localSettings;

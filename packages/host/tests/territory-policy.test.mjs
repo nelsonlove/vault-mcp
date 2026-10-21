@@ -135,7 +135,7 @@ describe("production reads these predicates — pinned at the source", () => {
     const main = src("main.ts");
     assert.match(main, /const territories = territoriesOnLoad\(own, seed\)/, "the migration must see the plugin's OWN data AND the settings adopted from the pre-split plugin");
     assert.match(main, /this\.settings\.guardedTerritories = territories\.territories/);
-    assert.match(main, /if \(territories\.persist \|\| recordFoldersLoad\.persist\) await this\.saveSettings\(\)/, "the key must be written when it was absent, or the seed branch runs again (the record folders ride the same persist since #482; the conventions key did from #403 until it left with the rail)");
+    assert.match(main, /if \(territories\.persist \|\| recordFoldersLoad\.persist \|\| autoRegisterLoad\.persist\) await this\.saveSettings\(\)/, "the key must be written when it was absent, or the seed branch runs again (the record folders ride the same persist since #482; the conventions key did from #403 until it left with the rail)");
     assert.match(main, /const recordFoldersLoad = recordFoldersOnLoad\(own, seed\)/, "the record-folders seed sees the plugin's own data and the adopted settings, as territories do (#482)");
   });
 

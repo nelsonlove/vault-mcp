@@ -33,11 +33,11 @@ export interface HostSettings {
   stateDir: string;
   /** An absolute path: the socket to bind. Empty (or relative, which is ignored): `<stateDir>/<vault-slug>.sock`. */
   socketPath: string;
-  /** Run `claude mcp …` at load to register the server with Claude Code. Off when headless is declared, whatever this says. */
+  /** Run `claude mcp …` at load to register the server with Claude Code. Off by default on a fresh install (#598); an install that predates the key keeps the old on (see `autoRegisterOnLoad`). Off when headless is declared, whatever this says. */
   autoRegisterClaude: boolean;
 }
 
-export const DEFAULT_HOST_SETTINGS: HostSettings = { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: true };
+export const DEFAULT_HOST_SETTINGS: HostSettings = { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: false };
 
 /** Coerce a partial or hand-edited value; absent ⇒ the defaults. */
 export function normalizeHostSettings(raw: unknown): HostSettings {
@@ -45,7 +45,33 @@ export function normalizeHostSettings(raw: unknown): HostSettings {
   const headless = r.headless === "on" || r.headless === "off" ? r.headless : "auto";
   // A path must be absolute: a relative one would resolve against the renderer's working folder, usually `/`.
   const str = (v: unknown) => (typeof v === "string" && v.trim().startsWith("/") ? v.trim() : "");
-  return { headless, stateDir: str(r.stateDir), socketPath: str(r.socketPath), autoRegisterClaude: r.autoRegisterClaude !== false };
+  return { headless, stateDir: str(r.stateDir), socketPath: str(r.socketPath), autoRegisterClaude: r.autoRegisterClaude === true };
+}
+
+export interface AutoRegisterOnLoad {
+  /** The value to put in `host.autoRegisterClaude` before the settings are coerced. */
+  value: boolean;
+  /** True when the stored settings did not hold the key: save now, so the decision runs at most once per install. */
+  persist: boolean;
+}
+
+/**
+ * The default of `autoRegisterClaude` is off (#598), but an install that
+ * predates the key was registering and keeps doing so. The discriminator is the
+ * same as for the guarded territories: does the plugin already have stored
+ * settings (its own data.json, else ones adopted from the pre-split plugin)?
+ * None (a fresh install): off. Stored settings whose `host` lacks the key: on,
+ * saved once. Otherwise the stored value, untouched.
+ */
+export function autoRegisterOnLoad(own: unknown, adopted?: unknown): AutoRegisterOnLoad {
+  const asObject = (v: unknown) => (v && typeof v === "object" ? (v as Record<string, unknown>) : null);
+  const stored = asObject(own) ?? asObject(adopted);
+  if (!stored) return { value: false, persist: true };
+  const host = asObject(stored.host);
+  if (host && Object.prototype.hasOwnProperty.call(host, "autoRegisterClaude")) {
+    return { value: host.autoRegisterClaude === true, persist: asObject(own) === null };
+  }
+  return { value: true, persist: true };
 }
 
 function envFlag(name: string): boolean | undefined {

@@ -1167,7 +1167,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       });
     this.lock(new Setting(containerEl), "host.autoRegisterClaude")
       .setName("Register with Claude Code at load")
-      .setDesc("On: at load the plugin runs `claude mcp` to add itself to Claude Code when the claude CLI is found. Off (or headless declared, or VAULT_MCP_NO_AUTOREGISTER=1): it runs nothing. The Connect command still works.")
+      .setDesc("Off on a new install. On: at load the plugin runs `claude mcp` to add itself to Claude Code when the claude CLI is found. Off (or headless declared, or VAULT_MCP_NO_AUTOREGISTER=1): it runs nothing. The Connect command still works.")
       .addToggle((t) => t.setValue(host.autoRegisterClaude).onChange(async (v) => saveHost({ autoRegisterClaude: v })));
 
     // ── observation capture ─────────────────────────────────────────────────

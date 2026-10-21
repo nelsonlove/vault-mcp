@@ -27,14 +27,25 @@ const appWith = (leaves, layoutReady = true) => ({ workspace: { layoutReady, ite
 
 describe("the host setting", () => {
   test("absent or hand-edited: coerced to the defaults", () => {
-    assert.deepEqual(H.normalizeHostSettings(undefined), { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: true });
+    assert.deepEqual(H.normalizeHostSettings(undefined), { headless: "auto", stateDir: "", socketPath: "", autoRegisterClaude: false });
     assert.deepEqual(H.normalizeHostSettings({ headless: "yes", stateDir: 4, socketPath: " /s.sock ", autoRegisterClaude: "no" }), {
       headless: "auto",
       stateDir: "",
       socketPath: "/s.sock",
-      autoRegisterClaude: true,
+      autoRegisterClaude: false,
     });
     assert.equal(H.normalizeHostSettings({ autoRegisterClaude: false }).autoRegisterClaude, false);
+    assert.equal(H.normalizeHostSettings({ autoRegisterClaude: true }).autoRegisterClaude, true);
+  });
+
+  test("autoRegisterOnLoad (#598): fresh is off; saved true and false stay; an install without the key keeps on", () => {
+    assert.deepEqual(H.autoRegisterOnLoad(null), { value: false, persist: true }, "fresh install");
+    assert.deepEqual(H.autoRegisterOnLoad({ host: { autoRegisterClaude: true } }), { value: true, persist: false });
+    assert.deepEqual(H.autoRegisterOnLoad({ host: { autoRegisterClaude: false } }), { value: false, persist: false });
+    assert.deepEqual(H.autoRegisterOnLoad({ readOnly: false }), { value: true, persist: true }, "data.json with no host");
+    assert.deepEqual(H.autoRegisterOnLoad({ host: { headless: "on" } }), { value: true, persist: true }, "host without the key");
+    assert.deepEqual(H.autoRegisterOnLoad(null, { host: { autoRegisterClaude: false } }), { value: false, persist: true }, "adopted value kept, saved");
+    assert.deepEqual(H.autoRegisterOnLoad(null, { readOnly: true }), { value: true, persist: true }, "adopted without the key");
   });
 
   test("declared headless: the setting, else VAULT_MCP_HEADLESS; never a probe", () => {
@@ -62,7 +73,8 @@ describe("the host setting", () => {
   test("the load-time claude registration: off by the setting, by headless, or by VAULT_MCP_NO_AUTOREGISTER", () => {
     delete process.env.VAULT_MCP_HEADLESS;
     delete process.env.VAULT_MCP_NO_AUTOREGISTER;
-    const d = H.normalizeHostSettings({});
+    const d = H.normalizeHostSettings({ autoRegisterClaude: true });
+    assert.equal(H.autoRegisterAllowed(H.normalizeHostSettings({})), false, "off by default (#598)");
     assert.equal(H.autoRegisterAllowed(d), true);
     assert.equal(H.autoRegisterAllowed({ ...d, autoRegisterClaude: false }), false);
     assert.equal(H.autoRegisterAllowed({ ...d, headless: "on" }), false);
