@@ -22,6 +22,7 @@ import {
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
 import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
+import { planReplaceText, type ReplaceTextResult } from "../replace-text.js";
 
 /**
  * All filesystem access for the vault goes through this module so that
@@ -839,6 +840,32 @@ class VaultImpl {
     return { found: true, anchor, op, previous };
   }
 
+  /**
+   * Replace exact text in an existing note (`obsidian_replace_text`). The plan (matches, the
+   * frontmatter rule, the long-note rule, the cut-read rule over `replacement`) is replace-text.ts;
+   * the write is this class's own `writeNote` with overwrite, so the accept guard, protected
+   * properties and the frontmatter floor run on the result exactly as on a whole-note write.
+   */
+  async replaceText(
+    relPath: string,
+    old: string,
+    replacement: string,
+    opts: { all: boolean; rangeRuleStandsAside?: boolean },
+  ): Promise<ReplaceTextResult> {
+    if (!relPath.toLowerCase().endsWith(".md")) {
+      throw new Error("Note path must end in .md");
+    }
+    // Read whole: the plan works on the note's own text, never a cut read of it.
+    const text = await this.readNoteWhole(relPath);
+    const plan = planReplaceText(relPath, text, old, replacement, {
+      all: opts.all,
+      limit: CHARACTER_LIMIT,
+      ...(opts.rangeRuleStandsAside ? { rangeRuleStandsAside: true } : {}),
+    });
+    await this.writeNote(relPath, plan.text, true);
+    return plan.result;
+  }
+
   async deleteNote(
     relPath: string,
     confirm: true
@@ -1188,6 +1215,15 @@ export async function patchNote(
   opts: { rangeRuleStandsAside?: boolean } = {},
 ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
   return _impl.patchNote(relPath, anchor, op, content, opts);
+}
+
+export async function replaceText(
+  relPath: string,
+  old: string,
+  replacement: string,
+  opts: { all: boolean; rangeRuleStandsAside?: boolean },
+): Promise<ReplaceTextResult> {
+  return _impl.replaceText(relPath, old, replacement, opts);
 }
 
 export async function readNoteWhole(relPath: string): Promise<string> {

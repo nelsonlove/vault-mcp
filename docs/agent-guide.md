@@ -140,13 +140,17 @@ A useful preview includes collisions, partial-scope behavior, dependencies, revi
 
 Rename a heading with `obsidian_rename_heading`, never by editing its text. A link can point at a heading (`[[Note#Heading]]`, `![[Note#Heading]]`, `[[#Heading]]`), and a heading renamed by `obsidian_patch_note`, `obsidian_write_note` or any other text edit leaves every such link pointing at nothing, with no error anywhere. `obsidian_rename_heading` renames the heading and rewrites the links in one operation, and reports under `skipped` what it did not rewrite (links in record notes, frontmatter links, notes that changed mid-run or could not be written, link forms it does not recognize). It requires `if_rev`, the note's revision as you read it (see Required protection below). Run it with `dry_run: true` first to see which notes it will touch.
 
+### Replace exact text
+
+To change a few words in a note, use `obsidian_replace_text` with the exact text (`old`) and its replacement (`new`), the note's `rev` as `if_rev` and a new `idempotency_key`. It matches the exact text (no regex, no case folding, no newline normalisation), and it is refused when the text is found 0 times (`no_match`) or more than once (`many_matches`, which names the count and the lines) unless you pass `all: true`. Add context to `old` until it is found once. In a note with CRLF line endings, an `old` that spans lines must use `\r\n`. A match may change text inside the frontmatter or inside the body but not a `---` fence, and the frontmatter must still parse after it (`frontmatter_edit`); the result goes through the same acceptance guard as a whole-note write, which refuses a replace that adds, changes or removes a `verified` entry. On a note longer than the read limit, a match past the limit needs a whole read first (`obsidian_read_note` with `full: true`). The result lists each changed span with the text before and after, and the note's new `rev` for your next edit.
+
 ### Required protection
 
 Each write tool requires what its operation needs, and the host refuses a call without it (`Error [protection_required]`, which names the argument and how to get it; 01.43 rules 3–4, 01.33 rule 6f). The per-tool table, the refusal messages and what to do about each are in the [README](../README.md#write-protection-if_rev-and-idempotency_key). The tool's own schema says which: its `if_rev` or `idempotency_key` description opens with `REQUIRED`. In short:
 
 - **`if_rev`** is required on a write that changes content you read: an overwrite (`obsidian_write_note` or `obsidian_write_file` with `overwrite: true`), an `obsidian_edit_file`, a frontmatter set or delete, a patch replace, inserting fileclass fields, a survey rewrite, a heading rename (`obsidian_rename_heading`). Read the note first; `obsidian_read_note` returns its `rev`.
 - **`idempotency_key`** is required on a write that is not naturally idempotent: an append (including append at heading), a patch append or prepend, a move or rename (`obsidian_move_file` too), a scheme move, running a command or the CLI, creating a base, importing notes. Use a new key for each intended write, and the same key only to retry that write.
-- **Both** are required to trash or delete a note (`obsidian_trash` also trashes a `.base` or `.canvas` file).
+- **Both** are required to trash or delete a note (`obsidian_trash` also trashes a `.base` or `.canvas` file), and to replace text with `obsidian_replace_text`.
 - **Neither** is required to create a note or a `.base`/`.canvas` file (`overwrite: false`), to open a periodic note, or for claims, plugin state and navigation, which are not vault writes. In `obsidian_write_notes`, an item without `if_rev` is a create and is refused if the note exists.
 
 ### Bases and Canvas files

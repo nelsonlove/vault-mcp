@@ -15,7 +15,7 @@ cloudflared (LaunchAgent)  ──►  http://127.0.0.1:8787
 front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vault>.sock
      │                                               │ unix socket (when Obsidian is live)
      ├─ Obsidian LIVE:  bridge.mjs ──► vault-mcp plugin ──► Obsidian APIs  (44 tools)
-     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (20 tools)
+     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (21 tools)
 ```
 
 ## Failover behavior
@@ -23,7 +23,7 @@ front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vau
 | Obsidian state | Mode | Tool surface | Notes |
 | --- | --- | --- | --- |
 | Running + plugin enabled | `live` | 44 tools (full `obsidian_*` set) | Writes go through Obsidian APIs — canonical, sync-safe, **journaled and serialized** by the plugin kernel |
-| Closed / plugin disabled | `fs` | 20 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. |
+| Closed / plugin disabled | `fs` | 21 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. | <!-- outside-name-ok: the FS journal's documented default location; only the tool count changed on this row -->
 | Reopened after closure | `live` | Back to 44 tools (auto) | Open SSE channels get a `notifications/tools/list_changed` push |
 
 `GET /health` returns:
