@@ -46,6 +46,7 @@ import {
   AcceptForbiddenError,
   acceptTransitionReason,
   acceptForbiddenReason,
+  duplicateFrontmatterKeyReason,
   isVerifiedKey,
   isBlankVerification,
   frontmatterOf,
@@ -237,6 +238,13 @@ export function composeNote(args: ComposeArgs): ComposeResult {
   // checked too. Rejection is a TRANSITION: introducing or changing acceptance
   // to the accepted-family is blocked, preserving an existing value verbatim
   // (compared against args.existing) is allowed.
+  // #605: with no structured block, the body's own fence is what lands; a key
+  // it repeats (at the root or in a `verified` record) is refused, judged by the
+  // guard's reader, whatever `parseYaml` keeps of the two.
+  if (Object.keys(structuredFm).length === 0) {
+    const dup = duplicateFrontmatterKeyReason(args.body);
+    if (dup) throw new AcceptForbiddenError(dup);
+  }
   const resultingFm =
     Object.keys(structuredFm).length > 0
       ? structuredFm

@@ -85,6 +85,9 @@ export function acceptForbiddenTrailer(reason: string): string {
   // The YAML-unclassifiable refusal names its own remedy (correct the
   // frontmatter, or edit in Obsidian); repeating the retired keys after it
   // would point at the wrong problem. The invariant alone.
+  if (/frontmatter repeats the key/.test(reason)) {
+    return `Write each key once and retry; the accept guard compares what a reader sees, and two copies of a key make that unknowable.`;
+  }
   if (/could not be confidently inspected/.test(reason)) {
     return `The transport never persists acceptance — the accept verb is in no API; acceptance is a human gesture only.`;
   }
@@ -1181,6 +1184,39 @@ const FRONTMATTER_UNCLASSIFIABLE_REASON =
   "anchor/alias/tag, an unterminated quoted string, a multi-document marker, or a malformed key line). " +
   "Correct the frontmatter, or make the edit directly in Obsidian, and retry";
 
+/**
+ * A frontmatter that repeats a key at its root or inside a `verified` record
+ * (#605). Typed apart from the unclassifiable refusal so a road that parses
+ * with another reader (the CLI proxy, a write_notes body fence) can run this
+ * check alone and keep its own reader for everything else.
+ */
+export class DuplicateFrontmatterKeyError extends AcceptForbiddenError {
+  readonly duplicateKey: string;
+  constructor(key: string) {
+    super(`the frontmatter repeats the key '${key}', and a reader keeps only one of the two, so the write cannot be checked against what a reader will see`);
+    this.name = "DuplicateFrontmatterKeyError";
+    this.duplicateKey = key;
+  }
+}
+
+function duplicateKey(key: string): never {
+  throw new DuplicateFrontmatterKeyError(key);
+}
+
+/**
+ * The reason `markdown`'s leading frontmatter repeats a key at its root or
+ * inside a `verified` record, or null. Any other construct the guard's reader
+ * cannot classify is NOT reported here: the caller keeps its own reader for it.
+ */
+export function duplicateFrontmatterKeyReason(markdown: string): string | null {
+  try {
+    parseGuardFrontmatter(markdown);
+  } catch (e) {
+    if (e instanceof DuplicateFrontmatterKeyError) return `the frontmatter repeats the key '${e.duplicateKey}'`;
+  }
+  return null;
+}
+
 function unclassifiable(): never {
   throw new AcceptForbiddenError(FRONTMATTER_UNCLASSIFIABLE_REASON);
 }
@@ -1303,12 +1339,12 @@ function flowReadQuoted(c: FlowCursor): string {
   return unclassifiable(); // unterminated
 }
 
-function flowParseValue(c: FlowCursor): GuardValue {
+function flowParseValue(c: FlowCursor, strict = false): GuardValue {
   flowSkipSpace(c);
   if (c.i >= c.s.length) return null;
   const ch = c.s[c.i];
-  if (ch === "[") return flowParseSeq(c);
-  if (ch === "{") return flowParseMap(c);
+  if (ch === "[") return flowParseSeq(c, strict);
+  if (ch === "{") return flowParseMap(c, strict);
   if (ch === '"' || ch === "'") {
     const raw = flowReadQuoted(c);
     const unq = unquoteIfQuoted(raw);
@@ -1322,7 +1358,7 @@ function flowParseValue(c: FlowCursor): GuardValue {
   return interpretScalar(tok);
 }
 
-function flowParseSeq(c: FlowCursor): GuardValue[] {
+function flowParseSeq(c: FlowCursor, strict = false): GuardValue[] {
   c.i++; // consume '['
   const out: GuardValue[] = [];
   flowSkipSpace(c);
@@ -1331,7 +1367,7 @@ function flowParseSeq(c: FlowCursor): GuardValue[] {
     return out;
   }
   for (;;) {
-    out.push(flowParseValue(c));
+    out.push(flowParseValue(c, strict));
     flowSkipSpace(c);
     if (c.i >= c.s.length) unclassifiable();
     if (c.s[c.i] === ",") {
@@ -1352,7 +1388,7 @@ function flowParseSeq(c: FlowCursor): GuardValue[] {
   }
 }
 
-function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
+function flowParseMap(c: FlowCursor, strict = false): Record<string, GuardValue> {
   c.i++; // consume '{'
   const out: Record<string, GuardValue> = {};
   flowSkipSpace(c);
@@ -1376,7 +1412,9 @@ function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
     flowSkipSpace(c);
     if (c.s[c.i] !== ":") unclassifiable();
     c.i++;
-    out[key] = flowParseValue(c);
+    // #605: a repeated key is refused where it can carry a record (the root, a verified entry).
+    if (strict && Object.prototype.hasOwnProperty.call(out, key)) duplicateKey(key);
+    out[key] = flowParseValue(c, strict);
     flowSkipSpace(c);
     if (c.i >= c.s.length) unclassifiable();
     if (c.s[c.i] === ",") {
@@ -1397,9 +1435,9 @@ function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
 }
 
 /** Parse a complete flow collection occupying the whole of `text`. */
-function parseFlow(text: string): GuardValue {
+function parseFlow(text: string, strict = false): GuardValue {
   const c: FlowCursor = { s: text, i: 0 };
-  const v = flowParseValue(c);
+  const v = flowParseValue(c, strict);
   flowSkipSpace(c);
   if (c.i !== c.s.length) unclassifiable(); // trailing junk after the collection
   return v;
@@ -1439,6 +1477,13 @@ const SEQ_ITEM_RE = /^-(?:[ \t]+(.*))?$/;
 
 class BlockReader {
   i = 0;
+  /** The top-level key whose value is being read (#605: a repeated key under a `verified` key is refused). */
+  top: string | null = null;
+
+  /** Whether a repeated key is refused where the reader is now: the root, or anywhere under a `verified` key. */
+  strictAt(indent: number): boolean {
+    return indent === 0 || (this.top !== null && isVerifiedKey(this.top));
+  }
   constructor(readonly lines: string[]) {}
 
   /** Index of the next significant line, or -1. Validates every line it passes over. */
@@ -1471,6 +1516,11 @@ class BlockReader {
       const kv = parseKeyLine(body);
       if (!kv) unclassifiable();
       this.i = at + 1;
+      // #605: the parser kept the LAST of two equal keys, so a forged block written
+      // before the real one was compared as unchanged. A repeated key at the root,
+      // or anywhere inside a `verified` record, is refused instead.
+      if (Object.prototype.hasOwnProperty.call(out, kv.key) && this.strictAt(indent)) duplicateKey(kv.key);
+      if (indent === 0) this.top = kv.key;
       out[kv.key] = this.parseValueAfterKey(kv.rest, indent);
     }
   }
@@ -1542,7 +1592,7 @@ class BlockReader {
       const bs = /^([|>])([+-]?\d*|\d*[+-]?)\s*$/.exec(rest);
       if (bs) return this.readBlockScalar(bs[1] === ">", keyIndent);
       if (rest.startsWith("[") || rest.startsWith("{")) {
-        return parseFlow(this.gatherContinuation(rest, keyIndent, ""));
+        return parseFlow(this.gatherContinuation(rest, keyIndent, ""), this.strictAt(keyIndent) && this.top !== null && isVerifiedKey(this.top));
       }
       return this.finishScalar(rest, keyIndent);
     }
@@ -1648,7 +1698,7 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
       if (CONTROL_CHAR_RE.test(line)) unclassifiable();
       if (line.trim().startsWith("#")) unclassifiable(); // a comment inside a flow collection
     }
-    const v = parseFlow(rest.join("\n"));
+    const v = parseFlow(rest.join("\n"), true);
     // A MAPPING root is what Obsidian honors as properties, so parse it and let
     // the predicate inspect it. A SEQUENCE root is not honored as properties at
     // all: an EMPTY one provably carries no assertion, so report "no keys"; a
