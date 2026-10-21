@@ -24,29 +24,124 @@ export function linesOf(text: string, from: number): Array<[number, number]> {
   }
 }
 
+// What ends a fence's container early (a quote or a list item): a line,
+// after the lead it still has, that starts a block Obsidian lets interrupt the
+// container: an ATX heading, a thematic break, a fence, a `%%` comment or a
+// list item. Plain text is a lazy continuation and stays in the fence.
+export const INTERRUPTS = /^(?:#{1,6}(?:[ \t]|$)|(?:(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})$|`{3,}|~{3,}|%%[^%]*$|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+
+// A quote also ends at a line that opens an HTML block, a `$$` math block or
+// indented code (Obsidian lets these interrupt a quote, but not a list item).
+const QUOTE_INTERRUPTS = /^(?: {4}|\t|\$\$|<(?:script|pre|style|textarea)(?:\s|>|$)|<!--|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t]|\/?>|$))/i;
+
+/** What one line is to a fence: it opens one, is inside one, closes one, or
+ *  none of these. `endedBefore` is set when the open fence's container ended
+ *  before this line (the fence ends at the line before). */
+export interface FenceStep {
+  kind: "open" | "inside" | "close" | "none";
+  endedBefore: boolean;
+}
+
 /**
- * Fenced code blocks, by line: a fence opens on a line of three or more
- * backticks or tildes (after any indentation or blockquote markers, so a fence
- * inside a list item or a quote counts), and closes on a line holding only a
- * run of the same character at least as long. An unclosed fence runs to the end
- * of the note.
+ * The fence rule as a line-by-line state machine, so a caller that also
+ * tracks other blocks (comments, math) can step it only where code can start.
+ * A fence opens on three or more backticks or tildes after any indentation,
+ * blockquote markers and one list marker; a backtick fence's info string may
+ * not hold a backtick. It closes on a line holding only a run of the same
+ * character at least as long (after indentation and quote markers). A fence
+ * opened inside a quote or on a list item ends with that container: for a
+ * quote, at a blank line or at a line with fewer `>` markers that starts an
+ * interrupting block; for a list item, at a line indented less than the
+ * fence's column that starts an interrupting block, or, after a blank line,
+ * at any line indented less. Checked against Obsidian 1.14.4's parser. A line
+ * keeps any `\r` it ends with; the rule reads it without.
+ */
+export class FenceTracker {
+  private open: { ch: string; len: number; quotes: number; column: number | null; sawBlank: boolean } | null = null;
+
+  get isOpen(): boolean { return this.open !== null; }
+
+  /** `nextLine`, when given, is the line after: a line under a quote that a
+   *  setext underline follows is a heading, which ends the quote.
+   *  `context.column`, when given, is the content column of the list item
+   *  the line is in (0 outside a list): a fence then opens only within three
+   *  spaces of it, as Obsidian reads one (four spaces more is indented code),
+   *  and a fence opened inside the item ends with it. Without `context` a
+   *  fence opens at any indent (the link rewriter's reading). */
+  step(rawLine: string, nextLine?: string, context?: { column: number }): FenceStep {
+    const raw = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    let endedBefore = false;
+    if (this.open) {
+      const o = this.open;
+      const lead = LEAD.exec(raw)![0];
+      const quotes = (lead.match(/>/g) ?? []).length;
+      const rest = raw.slice(lead.length);
+      const blank = rest.trim() === "";
+      const indent = /^ */.exec(raw)![0].length;
+      let ends = false;
+      // Indentation counts for indented code, so it is read on the unquoted line.
+      if (o.quotes > 0 && quotes < o.quotes && QUOTE_INTERRUPTS.test(quotes === 0 ? raw : rest)) ends = true;
+      if (o.quotes > 0) {
+        if (blank && quotes < o.quotes) ends = true;
+        else if (quotes < o.quotes && (INTERRUPTS.test(rest) || (!blank && nextLine !== undefined && /^(=+|-+)\r?$/.test(nextLine)))) ends = true;
+      }
+      if (!ends && o.column !== null && !blank && indent < o.column) {
+        if (o.sawBlank || INTERRUPTS.test(raw.slice(indent))) ends = true;
+      }
+      if (ends) { this.open = null; endedBefore = true; }
+      else if (blank) o.sawBlank = true;
+    }
+    if (this.open) {
+      // A list marker may precede an opening fence, never a closing one, and
+      // the closer sits in the opener's quote: as many `>` markers.
+      const lead = LEAD.exec(raw)![0];
+      const line = raw.slice(lead.length);
+      const m = /^(`{3,}|~{3,})[ \t]*$/.exec(line);
+      const sameQuote = (lead.match(/>/g) ?? []).length === this.open.quotes;
+      if (m && sameQuote && m[1][0] === this.open.ch && m[1].length >= this.open.len) { this.open = null; return { kind: "close", endedBefore }; }
+      return { kind: "inside", endedBefore };
+    }
+    const line = raw.replace(FENCE_LEAD, "");
+    const m = /^(`{3,}|~{3,})/.exec(line);
+    if (m && !(m[1][0] === "`" && line.slice(m[0].length).includes("`"))) {
+      const fenceLead = raw.length - line.length;
+      const quoteLead = LEAD.exec(raw)![0];
+      const marker = fenceLead > quoteLead.length;
+      const spaces = /^ */.exec(raw)![0].length;
+      const col = context?.column ?? 0;
+      // With a context, the fence (or the list marker before it) sits at
+      // most three spaces past the item's content column.
+      if (context && quoteLead.length === spaces && (spaces < (marker ? 0 : col) || spaces > col + 3)) return { kind: "none", endedBefore };
+      this.open = {
+        ch: m[1][0], len: m[1].length, sawBlank: false,
+        quotes: (quoteLead.match(/>/g) ?? []).length,
+        column: marker ? fenceLead : context && col > 0 ? col : null,
+      };
+      return { kind: "open", endedBefore };
+    }
+    return { kind: "none", endedBefore };
+  }
+}
+
+/**
+ * Fenced code blocks, by line, as [start, end) spans: the `FenceTracker` rule
+ * over every line from `from` on. An unclosed fence runs to the end of the
+ * note, or to where its container ends.
  */
 export function fencedSpans(text: string, from: number): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
-  let open: { start: number; ch: string; len: number } | null = null;
-  for (const [a, b] of linesOf(text, from)) {
-    // A list marker may precede an opening fence, never a closing one.
-    const line = text.slice(a, b).replace(open ? LEAD : FENCE_LEAD, "");
-    if (!open) {
-      const m = /^(`{3,}|~{3,})/.exec(line);
-      // A backtick fence's info string may not hold a backtick (then it is inline code).
-      if (m && !(m[1][0] === "`" && line.slice(m[0].length).includes("`"))) open = { start: a, ch: m[1][0], len: m[1].length };
-    } else {
-      const m = /^(`{3,}|~{3,})[ \t]*$/.exec(line);
-      if (m && m[1][0] === open.ch && m[1].length >= open.len) { spans.push([open.start, b]); open = null; }
-    }
+  const tracker = new FenceTracker();
+  let start = -1;
+  let lastEnd = from;
+  const lines = linesOf(text, from);
+  for (let k = 0; k < lines.length; k++) {
+    const [a, b] = lines[k];
+    const st = tracker.step(text.slice(a, b), k + 1 < lines.length ? text.slice(lines[k + 1][0], lines[k + 1][1]) : undefined);
+    if (st.endedBefore && start >= 0) { spans.push([start, lastEnd]); start = -1; }
+    if (st.kind === "open") start = a;
+    else if (st.kind === "close") { spans.push([start, b]); start = -1; }
+    lastEnd = b;
   }
-  if (open) spans.push([open.start, text.length]);
+  if (start >= 0) spans.push([start, text.length]);
   return spans;
 }
-
