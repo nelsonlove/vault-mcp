@@ -80,12 +80,21 @@ export type { FrontmatterScalar, FrontmatterEditValue, NoteRef, SearchHit, Searc
 const KEY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_\-]*):\s*(.*?)\s*$/;
 
 function needsQuoting(s: string): boolean {
-  return /[,:#&*!|>'"%@`{}[\]]|^\s|\s$/.test(s);
+  // A backslash or a control character (a line break included) is quoted too:
+  // written plain or half-escaped, YAML would read it as another value, or as
+  // more keys.
+  return /[,:#&*!|>'"%@`{}[\]\\\x00-\x1f\x7f]|^\s|\s$/.test(s);
 }
 
+/**
+ * One scalar as YAML text. A quoted value is a JSON string, which is a valid
+ * YAML double-quoted scalar (JSON is a subset of YAML 1.2): every backslash,
+ * quote, line break and control character is escaped, so YAML reads back the
+ * exact value that was set, on one line.
+ */
 function serializeScalar(v: FrontmatterScalar): string {
   if (typeof v === "boolean" || typeof v === "number") return String(v);
-  if (needsQuoting(v)) return `"${v.replace(/"/g, '\\"')}"`;
+  if (needsQuoting(v)) return JSON.stringify(v);
   return v;
 }
 
@@ -692,6 +701,8 @@ class VaultImpl {
 
     if (!region.match) {
       const newText = `---\n${serialized}\n---\n\n${text}`;
+      // The text that lands is checked too, not only the {key: value} above.
+      await this.guardWrittenContent(relPath, newText);
       await fs.writeFile(abs, newText, "utf8");
       return { previous: undefined, created_frontmatter: true };
     }
@@ -707,7 +718,10 @@ class VaultImpl {
       if (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
       lines.push(...serialized.split("\n"));
     }
-    await fs.writeFile(abs, reassemble(region, lines.join("\n")), "utf8");
+    const newText = reassemble(region, lines.join("\n"));
+    // The text that lands is checked too, not only the {key: value} above.
+    await this.guardWrittenContent(relPath, newText);
+    await fs.writeFile(abs, newText, "utf8");
     return { previous, created_frontmatter: false };
   }
 
@@ -735,7 +749,9 @@ class VaultImpl {
     this.guardResultingFrontmatter(beforeFm, afterFm);
     const previous = parseSingleKeyFromLines(lines, key, range);
     lines.splice(range.start, range.end - range.start);
-    await fs.writeFile(abs, reassemble(region, lines.join("\n")), "utf8");
+    const newText = reassemble(region, lines.join("\n"));
+    await this.guardWrittenContent(relPath, newText);
+    await fs.writeFile(abs, newText, "utf8");
     return { previous, existed: true };
   }
 
