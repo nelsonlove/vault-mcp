@@ -84,6 +84,9 @@ export function acceptForbiddenTrailer(reason: string): string {
   if (/cannot read as YAML does/.test(reason)) {
     return `Write that key or value in a plain form (no backslash escapes, no tag or anchor, on one line) and retry; the accept guard compares what a YAML reader sees, and this form it cannot read the same way.`;
   }
+  if (/a link rewrite would change the guarded frontmatter key/.test(reason)) {
+    return `A link inside a verification field, an acceptance key or a declared protected property is never rewritten by an agent; the note was left unchanged, and a human updates that link in Obsidian.`;
+  }
   if (/frontmatter repeats the key/.test(reason)) {
     return `Write each key once and retry; the accept guard compares what a reader sees, and two copies of a key make that unknowable.`;
   }
@@ -588,6 +591,76 @@ export function unverifiableProtectedPropertyIn(rawBefore: string): string | nul
     if (l.includes(p.key) || l.includes(p.key.replace(/-/g, "_"))) return p.key;
   }
   return null;
+}
+
+/**
+ * The written-content guard over a note's whole text, given its text BEFORE the
+ * write and its RESULTING text: throws `AcceptForbiddenError` when the write
+ * would add, change or remove a `verified` entry, an acceptance key or a
+ * declared protected property, or when either side holds frontmatter the guard
+ * cannot read as YAML does.
+ *
+ * The same steps as the write primitives' own guard (ObsidianBackend's and
+ * VaultImpl's `guardWrittenContent`), for a road that already holds the before
+ * text, such as a rewrite inside `vault.process` (#614: the link rewrites of a
+ * move, repoint and heading rename): parse the result first, then the before;
+ * a before that cannot be parsed reads as no prior frontmatter, unless its
+ * block mentions a guarded key, which refuses. `beforeText` null: a new note.
+ */
+export function assertWrittenTextAllowed(beforeText: string | null, resultingContent: string): void {
+  const after = parseGuardFrontmatter(resultingContent);
+  if (!acceptTransitionNeedsBefore(after)) return;
+  let before: Record<string, unknown> | null = null;
+  if (beforeText !== null) {
+    try {
+      before = parseGuardFrontmatter(beforeText);
+    } catch {
+      const k = unverifiableProtectedPropertyIn(beforeText);
+      if (k) throw new AcceptForbiddenError(unverifiableBeforeReason(k));
+      before = null;
+    }
+  }
+  const reason = acceptTransitionReason(before, after);
+  if (reason) throw new AcceptForbiddenError(reason);
+}
+
+/**
+ * A rewrite of the links in a note it was not asked to edit (a move's backlink
+ * rewrite, a repoint, a heading rename's link update) never changes the value of
+ * a guarded key (#614): a `verified` entry, an acceptance key (`accepted*`,
+ * `acceptance-status`) or a declared protected property. Throws
+ * `AcceptForbiddenError` naming the key. Stricter than the written-content
+ * guard on purpose: that guard admits some changes to an acceptance key (an
+ * `acceptance-status` that does not assert acceptance), and a link inside one
+ * is still not an agent's to rewrite. Links in other keys are not its concern.
+ * A before the guard's reader cannot read counts as holding no guarded key, so
+ * a result that holds one is refused.
+ */
+export function assertGuardedKeysUnchanged(beforeText: string, resultingContent: string): void {
+  const after = parseGuardFrontmatter(resultingContent) ?? {};
+  let before: Record<string, unknown> | null;
+  try {
+    before = parseGuardFrontmatter(beforeText);
+  } catch {
+    before = null;
+  }
+  const b = before ?? {};
+  const own = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  for (const k of new Set([...Object.keys(b), ...Object.keys(after)])) {
+    if (!guardedKey(k)) continue;
+    if (own(b, k) && own(after, k) && frontmatterValuesEqual(b[k], after[k])) continue;
+    throw new AcceptForbiddenError(`a link rewrite would change the guarded frontmatter key '${k}'`);
+  }
+}
+
+/**
+ * The guard for a link rewrite that already holds the note's before text (the
+ * host's rewrites inside `vault.process`, #614): the written-content guard
+ * (`assertWrittenTextAllowed`), then `assertGuardedKeysUnchanged`.
+ */
+export function assertLinkRewriteAllowed(beforeText: string, resultingContent: string): void {
+  assertWrittenTextAllowed(beforeText, resultingContent);
+  assertGuardedKeysUnchanged(beforeText, resultingContent);
 }
 
 /**
