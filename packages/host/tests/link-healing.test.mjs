@@ -889,4 +889,46 @@ describe("obsidian_repoint_link containment (D1)", () => {
     assert.equal(rec.effects, undefined, "the uncomputable field is simply absent");
     assert.equal(errors.length, 1, "it is swallowed loudly, not silently");
   });
+
+  // #614: each repoint passes the same written-content guard as a write of the
+  // note. A link inside a `verified` entry, an acceptance key or a declared
+  // protected property is never rewritten: the note is left unchanged and named
+  // in `skipped` with the guard's reason, and the other notes are repointed.
+  describe("#614 the written-content guard on every repointed note", () => {
+    const VERIFIED = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\n    note: \"see [[Ghost]]\"\n---\nBody [[Ghost]]\n";
+    const ORDINARY = "---\nrelated: \"[[Ghost]]\"\n---\nBody [[Ghost]]\n";
+    const ACCEPT_KEY = "---\nacceptance-status: \"[[Ghost]]\"\n---\n";
+    const DIVERGE = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\nrelated: '[[Ghost]]'\n---\n";
+    const FILES = { "Projects/Target.md": "# target", "N/V.md": VERIFIED, "N/O.md": ORDINARY, "N/B.md": "Body [[Ghost]]\n", "N/K.md": ACCEPT_KEY };
+    const reasonOf = (res, p) => res.structuredContent.skipped.find((x) => x.path === p)?.reason;
+
+    test("a verified entry's link and an acceptance key's link are not rewritten and are reported; an ordinary key and the body are rewritten", async () => {
+      const { call, contents } = repointServer(FILES);
+      const res = await call(REPOINT);
+      assert.equal(res.isError, undefined, res.content?.[0]?.text);
+      assert.equal(contents.get("N/V.md"), VERIFIED);
+      assert.match(reasonOf(res, "N/V.md"), /^accept_forbidden: .*verification field 'verified'/);
+      assert.equal(contents.get("N/K.md"), ACCEPT_KEY);
+      assert.match(reasonOf(res, "N/K.md"), /^accept_forbidden: a link rewrite would change the guarded frontmatter key 'acceptance-status'/);
+      assert.equal(contents.get("N/O.md"), "---\nrelated: \"[[Target]]\"\n---\nBody [[Target]]\n");
+      assert.equal(contents.get("N/B.md"), "Body [[Target]]\n");
+      assert.deepEqual(res.structuredContent.files.sort(), ["N/B.md", "N/O.md"]);
+    });
+
+    test("a rewrite that YAML would read differently in a block holding a guarded key is refused", async () => {
+      const { call, contents } = repointServer({ "Projects/It's.md": "# target", "N/D.md": DIVERGE, "N/B.md": "Body [[Ghost]]\n" });
+      const res = await call({ link_name: "Ghost", target_path: "Projects/It's.md" });
+      assert.equal(contents.get("N/D.md"), DIVERGE);
+      assert.match(reasonOf(res, "N/D.md"), /^accept_forbidden: .*cannot read as YAML does/);
+      assert.equal(contents.get("N/B.md"), "Body [[It's]]\n");
+    });
+
+    test("a dry run reports the same refusals and writes nothing", async () => {
+      const { call, writes } = repointServer(FILES);
+      const res = await call({ ...REPOINT, dry_run: true });
+      assert.deepEqual(writes, []);
+      assert.match(reasonOf(res, "N/V.md"), /^accept_forbidden: /);
+      assert.deepEqual(res.structuredContent.files.sort(), ["N/B.md", "N/O.md"]);
+    });
+  });
 });

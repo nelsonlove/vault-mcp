@@ -41,6 +41,9 @@ export {
   hasHumanVerification, humanVerificationOf,
   unverifiableProtectedPropertyIn,
   unverifiableBeforeReason,
+  assertWrittenTextAllowed,
+  assertGuardedKeysUnchanged,
+  assertLinkRewriteAllowed,
   parseProtectedPropertyLines,
   formatProtectedPropertyLines,
 } from "./accept-guard.js";

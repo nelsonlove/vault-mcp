@@ -307,6 +307,19 @@ describe("obsidian_edit_file", () => {
 });
 
 describe("obsidian_move_file", () => {
+  test("#614: a link to the file inside a verified entry is not rewritten and is reported; an ordinary key and the body are", async () => {
+    const verified = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\n    note: \"see [[Plan.canvas]]\"\n---\nBody [[Plan.canvas]]\n";
+    const h = await harness({ "Boards/Plan.canvas": CANVAS, "Notes/V.md": verified, "Notes/O.md": "---\nboard: \"[[Plan.canvas]]\"\n---\nBody [[Plan.canvas]]\n" });
+    try {
+      const r = await h.call("obsidian_move_file", { from: "Boards/Plan.canvas", to: "Archive/Board.canvas", idempotency_key: key() });
+      assert.equal(r.isError, undefined, errText(r));
+      assert.equal(h.text.get("Notes/V.md"), verified, "the note with the verified link is left exactly as it was");
+      assert.match(data(r).link_check.failed.find((f) => f.path === "Notes/V.md").reason, /^accept_forbidden: .*verification field 'verified'/);
+      assert.equal(h.text.get("Notes/O.md"), "---\nboard: \"[[Board.canvas]]\"\n---\nBody [[Board.canvas]]\n");
+      assert.equal(h.text.has("Archive/Board.canvas"), true, "the move itself lands");
+    } finally { await h.close(); }
+  });
+
   test("a move needs an idempotency_key, rewrites links in notes to the canvas, and a retry is replayed", async () => {
     const h = await harness({ "Boards/Plan.canvas": CANVAS, "Notes/Index.md": "See ![[Plan.canvas]] and [[Boards/Plan.canvas|the board]].\n" });
     try {
