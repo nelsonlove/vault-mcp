@@ -186,7 +186,6 @@ const MORE_DIVERGENT: Array<[string, string]> = [
   ["a plain value folded over two lines under `verified`", "---\nverified:\n  - by: human:\n      owner\n---\n"],
   ["a double-quoted value with a blank line under `verified`", '---\nverified:\n  - by: "human:ow\n\n      ner"\n---\n'],
   ["a block scalar under `verified`", "---\nverified:\n  - by: |\n      human:owner\n---\n"],
-  ["a comment after a value under `verified`", "---\nverified:\n  - by: human:owner #c\n---\n"],
   ["a flow value over two lines under `verified`", "---\nverified: [{by: human:\n  owner}]\n---\n"],
   ["a nested sequence item under `verified`", "---\nverified:\n  - - human:owner\n---\n"],
   ["a merge key", "---\ntitle: A\n<<: {verified: [{by: human:owner, at: x}]}\n---\n"],
@@ -213,6 +212,9 @@ describe("normal notes still pass, and the guard agrees with YAML on them", () =
     ["a root-flow note with plain values", "---\n{title: A, verified: [{by: human:owner, at: x}]}\n---\n"],
     ["a double-quoted value with no backslash under `verified`", '---\nverified:\n  - by: "human:owner"\n---\n'],
     ["a multi-line value outside every guarded key", "---\ntitle: one\n  two\nstatus: draft\n---\n"],
+    ["a comment after a value under `verified`", "---\nverified:\n  - by: human:owner #c\n---\n"],
+    ["an ordinary comment after acceptance-status", "---\nacceptance-status: draft # todo\n---\n"],
+    ["a comment on the `verified:` line", "---\nverified: # c\n  - by: human:owner\n    at: x\n---\n"],
     ["a guarded value followed by a blank line and a comment", "---\nverified:\n  - by: human:owner\n\n# note\nstatus: draft\n\n---\n"],
   ];
   for (const [name, text] of CONTROLS) {
@@ -230,5 +232,124 @@ describe("normal notes still pass, and the guard agrees with YAML on them", () =
     await backend.writeNote("a.md", '---\ntitle: "a\\\\b"\n"status": draft\n---\nbody\n', false);
     await backend.writeNote("b.md", "---\ntitle: A\n---\nbody\n", false);
     assert.match(await readFile(join(root, "a.md"), "utf8"), /a\\\\b/);
+  });
+});
+
+// ── Round 2 of the review ───────────────────────────────────────────────────
+
+/**
+ * A comment after a quoted value: the old reader checked only that the token
+ * ended with the quote character, so `'accepted' #'` read as `accepted' #` and
+ * was admitted, while YAML reads `accepted`. The reader now cuts the comment as
+ * YAML does, and the yaml cross-check stands behind it.
+ */
+const COMMENT_CASES: Array<[string, string]> = [
+  ["a single-quoted value, then ` #'`", "acceptance-status: 'accepted' #'"],
+  ['a double-quoted value, then ` #"`', 'acceptance-status: "accepted" #"'],
+  ["a tab before the `#`", "acceptance-status: 'accepted'\t#'"],
+  ["a sequence item", "acceptance-status:\n  - 'accepted' # x'"],
+  ["a nested mapping value", "acceptance-status:\n  value: 'accepted' #'"],
+];
+
+describe("round 2: a comment after a quoted guarded value", () => {
+  for (const [name, fm] of COMMENT_CASES) {
+    test(`${name}: YAML reads an accepted value, and the write is refused`, async () => {
+      assert.match(JSON.stringify(YAML.parse(fm)["acceptance-status"]), /"accepted"/);
+      const write = `---\n${fm}\n---\nbody\n`;
+      assert.match(acceptTransitionReason(null, parseGuardFrontmatter(write)) ?? "", /accepted value/);
+      const root = await mkdtemp(join(tmpdir(), "yaml-divergence-r2-"));
+      await writeFile(join(root, "n.md"), PLAIN, "utf8");
+      const backend = new FilesystemBackend(root);
+      await assert.rejects(() => backend.writeNote("n.md", write, true), (e: Error & { code?: string }) => e.code === "accept_forbidden");
+      await assert.rejects(() => backend.replaceText("n.md", "title: A", fm, { all: false }), (e: Error & { code?: string }) => e.code === "accept_forbidden");
+      assert.equal(await readFile(join(root, "n.md"), "utf8"), PLAIN);
+    });
+  }
+
+  test("an ordinary comment no longer refuses a guarded value (writeNote)", async () => {
+    const seed = "---\nverified:\n  - by: human:owner\n    at: x\n---\nbody\n";
+    const root = await mkdtemp(join(tmpdir(), "yaml-divergence-r2-"));
+    await writeFile(join(root, "n.md"), seed, "utf8");
+    const backend = new FilesystemBackend(root);
+    const next = "---\nverified: # c\n  - by: human:owner # the owner\n    at: x\nacceptance-status: draft # todo\n---\nbody\n";
+    await backend.writeNote("n.md", next, true);
+    assert.equal(await readFile(join(root, "n.md"), "utf8"), next);
+  });
+});
+
+/**
+ * The reviewer's held cases: whatever the guard does with each, it either
+ * refuses or reads every guarded key exactly as YAML does.
+ */
+const HELD: Array<[string, string]> = [
+  ["control plain", "acceptance-status: accepted"],
+  ["explicit key", "? verified\n: [{by: 'human:x', at: 1}]"],
+  ["tab key", "verified\t: [{by: 'human:x'}]"],
+  ["single-quoted backslash key", "'\\x76erified': x"],
+  ["a directive", "%YAML 1.2\nverified: x"],
+  ["a document end", "a: 1\n...\nverified: x"],
+  ["an indented root", "  verified: x"],
+  ["a comment first", "# c\nacceptance-status: accepted"],
+  ["a comment after the key", "acceptance-status: # c\n  accepted"],
+  ["a flow key with no space after the colon", "{acceptance-status:accepted}"],
+  ["a root flow sequence", "[{verified: x}]"],
+  ["a no-break space before the colon", "verified\u00a0: [{by: 'human:x'}]"],
+  ["a quoted title with a colon", 'title: "Foo: Bar"\ntags: [a, b]\ndate: 2026-10-01\nnote: "C:\\\\path"'],
+  ["a single-quoted backslash outside the guard", "path: 'C:\\dir'"],
+  ["a double-quoted value with `#` and no space", 'acceptance-status: "accepted"#"'],
+  ["a flow sequence with a comment", "acceptance-status: ['accepted' #x']"],
+  ["a root flow mapping with a comment", "{acceptance-status: 'accepted' #'}"],
+  ["a verified `by` with a comment", "verified:\n  - by: 'human:mallory' #'\n    at: 1"],
+  ["auto-accept with a comment", "auto-accept: 'all' #'"],
+  ["a normal note", "title: Note\ntags:\n  - a\n  - b\ncreated: 2026-10-01T10:00:00-04:00\naliases: []\nurl: https://x.y/z?a=1#frag"],
+  ["two case-variant verified keys", "verified:\n  - by: human:owner\n    at: 1\nVerified:\n  - by: human:owner\n    at: 2"],
+  ["a blank verified with a comment", "verified: '' #'"],
+];
+
+describe("round 2: the reviewer's held cases — refused, or read as YAML reads them", () => {
+  for (const [name, fm] of HELD) {
+    test(name, () => {
+      const text = `---\n${fm}\n---\n`;
+      const g = guardedReading(text);
+      if (g === "refused") return;
+      assert.deepEqual(g, yamlGuarded(text));
+    });
+  }
+});
+
+describe("round 2: the filesystem obsidian_manage_frontmatter set writes what YAML reads back", () => {
+  async function seeded() {
+    const root = await mkdtemp(join(tmpdir(), "yaml-divergence-mf-"));
+    await writeFile(join(root, "n.md"), "---\ntitle: x\n---\nbody\n", "utf8");
+    return { backend: new FilesystemBackend(root), root, read: () => readFile(join(root, "n.md"), "utf8") };
+  }
+
+  test('an escape in acceptance-status ("\\x61ccepted-#") never lands as an accepted value', async () => {
+    const { backend, read } = await seeded();
+    await assert.rejects(() => backend.manageFrontmatter("n.md", "acceptance-status", "set", "\\x61ccepted-#"), (e: Error & { code?: string }) => e.code === "accept_forbidden");
+    assert.equal(await read(), "---\ntitle: x\n---\nbody\n");
+  });
+
+  test("a line break and a quote in a value never write a second key (a forged verified)", async () => {
+    const { backend, read } = await seeded();
+    const value = 'x\\"\nverified:\n  - by: human:mallory\n    at: 2026-10-23\nz: "';
+    await backend.manageFrontmatter("n.md", "status", "set", value);
+    const y = yamlOf(await read());
+    assert.equal(y.verified, undefined);
+    assert.equal(y.status, value);
+  });
+
+  test("a line break in the key never writes a second key", async () => {
+    const { backend, read } = await seeded();
+    await assert.rejects(() => backend.manageFrontmatter("n.md", "x\nverified", "set", "human:mallory"));
+    assert.equal(yamlOf(await read()).verified, undefined);
+  });
+
+  test("an ordinary value with a backslash and a quote reads back exactly", async () => {
+    const { backend, read } = await seeded();
+    for (const value of ['C:\\dir "q"', "a: b", "plain"]) {
+      await backend.manageFrontmatter("n.md", "status", "set", value);
+      assert.equal(yamlOf(await read()).status, value);
+    }
   });
 });

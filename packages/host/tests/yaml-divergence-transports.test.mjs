@@ -173,6 +173,67 @@ for (const [name, fm, yamlSays, refusal] of CASES) {
   });
 }
 
+// Round 2 of the review: a comment after a quoted guarded value. The old reader
+// read `'accepted' #'` as `accepted' #` and admitted it; YAML reads `accepted`.
+const COMMENT_CASES = [
+  ["a single-quoted value, then ` #'`", "acceptance-status: 'accepted' #'"],
+  ['a double-quoted value, then ` #"`', 'acceptance-status: "accepted" #"'],
+  ["a tab before the `#`", "acceptance-status: 'accepted'\t#'"],
+  ["a sequence item", "acceptance-status:\n  - 'accepted' # x'"],
+  ["a nested mapping value", "acceptance-status:\n  value: 'accepted' #'"],
+];
+const ACCEPTED = /accepted value|acceptance-status|cannot read as YAML does/;
+for (const [name, fm] of COMMENT_CASES) {
+  CASES.push([`round 2: ${name}`, fm, (y) => assert.match(JSON.stringify(y["acceptance-status"]), /"accepted"/), ACCEPTED]);
+}
+for (const [name, fm, yamlSays, refusal] of CASES.filter(([n]) => n.startsWith("round 2"))) {
+  describe(name, () => {
+    test("the yaml library reads an accepted value", () => yamlSays(parseYaml(fm)));
+    test("obsidian_write_note", async () => {
+      const { store, call } = harness({ "n.md": SEED });
+      refused(await call("obsidian_write_note", { path: "n.md", content: noteOf(fm), overwrite: true }), refusal);
+      assert.equal(store.get("n.md"), SEED);
+    });
+    test("obsidian_append_note", async () => {
+      const { store, call } = harness({ "e.md": "" });
+      refused(await call("obsidian_append_note", { path: "e.md", content: noteOf(fm) }), refusal);
+      assert.equal(store.get("e.md"), "");
+    });
+    test("obsidian_patch_note", async () => {
+      const cache = { "p.md": { blocks: { b: { position: { start: { offset: 4 }, end: { offset: 9 } } } } } };
+      const { store, backend } = harness({ "p.md": SEED }, cache);
+      await assert.rejects(() => backend.patchNote("p.md", { type: "block", value: "b" }, "replace", fm), (e) => e.code === "accept_forbidden");
+      assert.equal(store.get("p.md"), SEED);
+    });
+    test("obsidian_append_at_heading: its result check", () => {
+      assert.throws(() => guardAppendResult(SEED, noteOf(fm)), (e) => e.code === "accept_forbidden");
+    });
+    test("obsidian_write_notes (composeNote)", () => {
+      const deps = { stringifyYaml: () => "", formatTs: () => "t", now: 0, mintUid: () => "u" };
+      assert.throws(() => composeNote({ ...deps, parseYaml, frontmatter: {}, body: noteOf(fm), stamp: false, existing: null }), (e) => e.code === "accept_forbidden");
+    });
+    test("the CLI proxy", () => {
+      assert.notEqual(cliAcceptRefusal("create", { path: "x.md", content: noteOf(fm) }, parseYaml), null);
+    });
+    test("obsidian_replace_text", async () => {
+      const { store, backend } = harness({ "r.md": SEED });
+      await assert.rejects(() => backend.replaceText("r.md", "zz: 1", fm, { all: false }), (e) => e.code === "accept_forbidden");
+      assert.equal(store.get("r.md"), SEED);
+    });
+  });
+}
+
+describe("round 2: an ordinary comment after a guarded value passes", () => {
+  test("obsidian_write_note carries a record with comments, and a draft status with a comment", async () => {
+    const seed = noteOf("verified:\n  - by: human:owner\n    at: x");
+    const next = noteOf("verified: # c\n  - by: human:owner # the owner\n    at: x\nacceptance-status: draft # todo");
+    const { store, call } = harness({ "n.md": seed });
+    const res = await call("obsidian_write_note", { path: "n.md", content: next, overwrite: true });
+    assert.notEqual(res.isError, true, res.content?.[0]?.text);
+    assert.equal(store.get("n.md"), next);
+  });
+});
+
 describe("normal notes still pass on the host roads", () => {
   const OK = [
     ["a note with no verified key", "title: A\nstatus: draft"],
