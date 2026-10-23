@@ -121,17 +121,18 @@ async function makeClientFromFsServer(
 
 describe("createFsHandler / buildFsServer", () => {
   /**
-   * 1. tools/list returns exactly the 17 note tools and the three .base/.canvas file tools (#575).
+   * 1. tools/list returns exactly the 17 note tools, the three .base/.canvas file tools (#575)
+   *    and obsidian_replace_text.
    */
-  test("tools/list returns exactly the 17 FS_TOOLS and the 3 file tools", async () => {
+  test("tools/list returns exactly the 17 FS_TOOLS, the 3 file tools and the replace tool", async () => {
     const { client, teardown } = await makeClientFromFsServer();
     try {
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 20, `expected 20 tools, got ${tools.length}`);
+      assert.equal(tools.length, 21, `expected 21 tools, got ${tools.length}`);
 
       const names = tools.map((t) => t.name).sort();
-      const expected = [...FS_TOOLS.map((t) => t.name), "obsidian_edit_file", "obsidian_move_file", "obsidian_write_file"].sort();
-      assert.deepEqual(names, expected, "tool names do not match FS_TOOLS and the file tools");
+      const expected = [...FS_TOOLS.map((t) => t.name), "obsidian_edit_file", "obsidian_move_file", "obsidian_write_file", "obsidian_replace_text"].sort();
+      assert.deepEqual(names, expected, "tool names do not match FS_TOOLS, the file tools and the replace tool");
     } finally {
       await teardown();
     }

@@ -65,7 +65,7 @@ const text = (r: unknown) => JSON.stringify(r);
 describe("FS mode under a profile", () => {
   test("no profile: every FS tool, as before, and the three .base/.canvas file tools (#575)", async () => {
     const c = await client();
-    assert.deepEqual((await c.listTools()).tools.map((t) => t.name).sort(), [...FS_NAMES, ...FILE_NAMES].sort());
+    assert.deepEqual((await c.listTools()).tools.map((t) => t.name).sort(), [...FS_NAMES, ...FILE_NAMES, "obsidian_replace_text"].sort());
     await c.close();
   });
 

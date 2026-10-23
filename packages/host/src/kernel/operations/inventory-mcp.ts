@@ -206,6 +206,17 @@ const CORE_FILES: McpSurfaceRow[] = [
   { tool: "obsidian_move_file", readOnly: false, module: "core", distribution: "public-optional", paths: ["from", "to"], postcondition: "Move or rename one .base or .canvas file, or one attachment file whose extension is on the operator's list (never a note), keeping its extension; on the live host links and embeds in notes to it are rewritten.", protection: "key", syncKind: "structure" },
 ];
 
+// ── packages/core — exact-text replace (register-replace-text.ts) ─────────────
+// Registered by `registerReplaceTextTool` on both servers, driving the same backend as the note
+// tools; the backend writes the result through its own writeNote. It replaces content you read, so
+// a token; and a retry after a lost reply would meet a rev conflict (or, with all: true, replace
+// again what is still there), so a key too, which answers a retry with the first result: protection
+// 'both', stricter than the 01.33 "patch (replace)" class (the brief for this tool asks for both).
+
+const CORE_REPLACE: McpSurfaceRow[] = [
+  { tool: "obsidian_replace_text", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Replace one exact piece of text (or, with all, every match) in one existing note; the rest of the note is unchanged.", protection: "both", syncKind: "content" },
+];
+
 // ── core, hand-registered in server.ts ───────────────────────────────────────
 
 const CORE_DIRECT: McpSurfaceRow[] = [
@@ -439,6 +450,7 @@ export const MCP_SURFACE_INVENTORY: McpSurfaceRow[] = [
   ...CORE_DIRECT,
   ...CORE_MESSAGE,
   ...CORE_FILES,
+  ...CORE_REPLACE,
   ...NAV,
   ...INTEGRATIONS,
   ...CLI,

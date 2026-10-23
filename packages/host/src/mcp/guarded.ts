@@ -45,7 +45,7 @@ import {
   type SchemeRegistry,
 } from "../kernel/scheme/registry.js";
 import { OperationRefusedError, type OperationExecutor } from "../kernel/operations/executor.js";
-import { extendInput, inputShapeOf, CHARACTER_LIMIT, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, NO_DIRECT_WRITES, type WholeReads } from "@vault-mcp/core";
+import { extendInput, inputShapeOf, CHARACTER_LIMIT, REPLACE_TEXT_TOOL, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, NO_DIRECT_WRITES, type WholeReads } from "@vault-mcp/core";
 
 /** Guard/queue-level failure envelope: matches the `Error [code]: message` shape guardCall already emits. */
 function codedError(code: string, message: string) {
@@ -727,12 +727,12 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
         const long = await longNoteRefusal();
         if (long) return codedError(long.code, long.message);
         mark("attempted");
-        // The one proof of a whole read, decided here and handed to the one
-        // handler that reads it (obsidian_patch_note passes it to the
-        // backend's replace rule): the backend never infers it from ambient
+        // The one proof of a whole read, decided here and handed to the two
+        // handlers that read it (obsidian_patch_note and obsidian_replace_text
+        // pass it to the backend's long-note rule): the backend never infers it from ambient
         // state, and no other call pays for it.
         const path = (toolArgs as Record<string, unknown>).path;
-        if (name === "obsidian_patch_note" && typeof path === "string") {
+        if ((name === "obsidian_patch_note" || name === REPLACE_TEXT_TOOL) && typeof path === "string") {
           return handler(toolArgs, { ...(extra ?? {}), provenWhole: await provenWhole(path) });
         }
         return handler(toolArgs, extra);

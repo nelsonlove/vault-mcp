@@ -35,6 +35,7 @@ const TABLE = [
   { op: "frontmatter set", class: "token", calls: [["obsidian_manage_frontmatter", { op: "set" }]] },
   { op: "frontmatter delete", class: "token", calls: [["obsidian_manage_frontmatter", { op: "delete" }]] },
   { op: "patch (replace)", class: "token", calls: [["obsidian_patch_note", { op: "replace" }], ["obsidian_edit_file", {}]], note: "obsidian_edit_file replaces or removes one keyed item of a .base or .canvas file (#575): content read, so a token" },
+  { op: "replace text", class: "both", calls: [["obsidian_replace_text", {}]], note: "replaces content you read (a token) and needs idempotency_key, so a retry after a lost reply replays the first result" },
   { op: "append, append at heading, cross-session post", class: "key", calls: [["obsidian_append_note", {}], ["obsidian_append_at_heading", {}]], note: "cross-session post is a satellite tool" },
   { op: "patch append, patch prepend", class: "key", calls: [["obsidian_patch_note", { op: "append" }], ["obsidian_patch_note", { op: "prepend" }]] },
   { op: "frontmatter list append", class: "key", calls: [], note: "the host's manage_frontmatter has no list-append operation (get, set, delete)" },

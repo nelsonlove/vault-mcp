@@ -78,10 +78,10 @@ async function records(): Promise<Array<{ op: string; outcome: string }>> {
 }
 
 describe("the file tools on the file-system server", () => {
-  test("listed beside the 17 note tools; no trash tool on this server", async () => {
+  test("listed beside the 17 note tools and the replace tool; no trash tool on this server", async () => {
     const c = await client();
     const names = (await c.listTools()).tools.map((t) => t.name).sort();
-    assert.deepEqual(names, [...FS_NAMES, ...FILE_NAMES].sort());
+    assert.deepEqual(names, [...FS_NAMES, ...FILE_NAMES, "obsidian_replace_text"].sort());
     assert.equal(names.includes("obsidian_trash"), false);
     await c.close();
   });
