@@ -628,6 +628,12 @@ export function sectionIn(
   return at ? { start: at.start, end: at.end, level: headings[at.index].level } : undefined;
 }
 
+/** The line ending a patch writes in `text`: CRLF when every line break in
+ *  the note is CRLF, else LF (a note that mixes them is written as before). */
+export function lineEndingOf(text: string): "\r\n" | "\n" {
+  return text.includes("\r\n") && !/(^|[^\r])\n/.test(text) ? "\r\n" : "\n";
+}
+
 /** A `replace` on a level-1 heading without `whole_section: true` (#601).
  *  Rendered as `Error [h1_replace]`. */
 export class H1ReplaceError extends Error {

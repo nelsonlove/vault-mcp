@@ -21,7 +21,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
-import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace } from "../note-sections.js";
+import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace, lineEndingOf } from "../note-sections.js";
 import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 
 /**
@@ -763,7 +763,7 @@ class VaultImpl {
     }
 
     const previous = bodyLines.slice(range.start, range.end).join("\n");
-    const insert = content.split("\n");
+    const insert = lineEndingOf(text) === "\r\n" ? content.split(/\r?\n/) : content.split("\n");
 
     // A replace whose section runs past the read limit on a long note would
     // replace text no cut read showed (#441).
@@ -801,6 +801,10 @@ class VaultImpl {
       ];
     }
 
+    // In a CRLF note every line written takes CRLF, the inserted ones too.
+    if (lineEndingOf(text) === "\r\n") {
+      newBodyLines = newBodyLines.map((l, i) => (i < newBodyLines.length - 1 && !l.endsWith("\r") ? l + "\r" : l));
+    }
     const resultingText = fmText + newBodyLines.join("\n");
     // Accept-forbidden guard: an anchor can land at the very first line of a
     // fence-less note for EITHER op:"replace" or op:"prepend" against a

@@ -436,7 +436,55 @@ describe("review round 2: CRLF, comments, container fences, list columns", () =>
       await writeFile(path.join(root, "c.md"), "## A\r\n```\r\ncode\r\n```\r\n## B\r\ntext\r\n", "utf8");
       const r = await v.patchNote("c.md", { type: "heading", value: "A" }, "replace", "new");
       assert.equal(r.found, true);
-      assert.equal(await readFile(path.join(root, "c.md"), "utf8"), "## A\r\nnew\n## B\r\ntext\r\n");
+      assert.equal(await readFile(path.join(root, "c.md"), "utf8"), "## A\r\nnew\r\n## B\r\ntext\r\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+// ── review round 3 of #596 ─────────────────────────────────────────────────
+
+describe("review round 3: fence closers and CRLF writes", () => {
+  for (const nl of ["\n", "\r\n"]) {
+    const t = ["## A", "```", "    ```", "### P", "```", "## B", "b", ""].join(nl);
+    test(`a closer indented four spaces does not close the fence (${JSON.stringify(nl)})`, () => {
+      // Obsidian 1.14.4: one fence from line 1 to line 4; headings A and B.
+      assert.deepEqual(names(t), ["2:A", "2:B"]);
+      const at = t.indexOf("## B");
+      const r = resolveHeadings(t, obsCache(["A", 2, 0, 4], ["B", 2, at, at + 4]));
+      assert.equal(r.source, "cache");
+      assert.equal(sectionIn(r.headings, t.length, "A").end, at);
+    });
+  }
+
+  test("a closer indented three spaces closes; a tab does not", () => {
+    assert.deepEqual(names("## A\n```\n   ```\n### P\n"), ["2:A", "3:P"]);
+    assert.deepEqual(names("## A\n```\n\t```\n### P\n```\n"), ["2:A"]);
+  });
+
+  test("in a quote or a list item the closer's indent counts from the container", () => {
+    assert.deepEqual(names("> ```\n>     ```\n> ## Q\n> ```\n## B\n"), ["2:B"]);
+    assert.deepEqual(names("- ```\n  x\n  ```\n## B\n"), ["2:B"]);
+  });
+
+  test("the FS server writes a CRLF note's inserted lines with CRLF", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "note-sections-r3-"));
+    try {
+      const v = createVaultAt(root);
+      const text = "# T\r\n\r\n## A\r\n\r\na\r\n\r\n## B\r\n\r\nb\r\n";
+      await writeFile(path.join(root, "r.md"), text, "utf8");
+      await v.patchNote("r.md", { type: "heading", value: "A" }, "append", "one\ntwo");
+      await v.patchNote("r.md", { type: "heading", value: "B" }, "prepend", "first");
+      assert.equal(await readFile(path.join(root, "r.md"), "utf8"), "# T\r\n\r\n## A\r\n\r\na\r\n\r\none\r\ntwo\r\n## B\r\nfirst\r\n\r\nb\r\n");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  test("a note that mixes line endings is written as before (LF)", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "note-sections-r3m-"));
+    try {
+      const v = createVaultAt(root);
+      await writeFile(path.join(root, "m.md"), "## A\r\na\n## B\nb\n", "utf8");
+      await v.patchNote("m.md", { type: "heading", value: "B" }, "replace", "new");
+      assert.equal(await readFile(path.join(root, "m.md"), "utf8"), "## A\r\na\n## B\nnew");
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

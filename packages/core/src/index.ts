@@ -133,6 +133,7 @@ export {
   sectionIn,
   H1ReplaceError,
   assertNotH1Replace,
+  lineEndingOf,
 } from "./note-sections.js";
 export type {
   NoteOutline,
