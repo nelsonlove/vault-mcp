@@ -50,6 +50,7 @@ export const structureTiming = { parseTimeoutMs: 5000, cacheWaitMs: 2000 };
 interface MetaLike {
   headings?: CachedHeading[];
   blocks?: Record<string, CachedBlock>;
+  sections?: unknown[];
 }
 
 /** The parts of Obsidian's `MetadataCache` this module reads.
@@ -92,7 +93,9 @@ async function parseWithObsidian(mc: MetadataSource, text: string): Promise<{ he
   } catch {
     return null;
   }
-  if (!meta || typeof meta !== "object") return null;
+  // Obsidian's metadata always carries a `sections` array (empty for an
+  // empty note); an answer without one is not a parse, so the call failed.
+  if (!meta || typeof meta !== "object" || !Array.isArray(meta.sections)) return null;
   // The worker decodes the bytes with a TextDecoder, which drops a leading
   // BOM, so its offsets start one character later than this text's.
   const shift = text.charCodeAt(0) === 0xfeff ? 1 : 0;
@@ -132,13 +135,19 @@ export async function noteStructure(mc: MetadataSource, file: { path: string }, 
   if (parsed) return { headings: parsed.headings, block: want === undefined ? undefined : parsed.blocks[want], source: "obsidian" };
 
   const outline = outlineNote(text);
+  // The cache was built from the same decoded bytes as the worker's parse,
+  // so past a BOM its offsets too start one character later than this text's.
+  const shift = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const moved = <T extends { position: { start: { offset: number }; end: { offset: number } } }>(x: T): T =>
+    shift === 0 || !x?.position ? x : { ...x, position: { ...x.position, start: { ...x.position.start, offset: x.position.start.offset + shift }, end: { ...x.position.end, offset: x.position.end.offset + shift } } };
   const fromCache = (): NoteStructure | null => {
     const cache = mc.getFileCache(file);
-    const cached = cache?.headings ?? [];
+    const cached = Array.isArray(cache?.headings) ? cache!.headings!.map(moved) : cache?.headings ?? [];
     if (!Array.isArray(cached) || !verifyCachedHeadings(text, outline, cached)) return null;
     const headings = cached.map((h) => ({ heading: h.heading, level: h.level, start: h.position.start.offset, end: h.position.end.offset }));
     if (want === undefined) return { headings, source: "cache" };
-    const b = cache?.blocks?.[want];
+    const raw = cache?.blocks?.[want];
+    const b = raw ? moved(raw) : undefined;
     if (b) return verifyCachedBlock(text, outline, want, b) ? { headings, block: { start: b.position.start.offset, end: b.position.end.offset }, source: "cache" } : null;
     // The cache has no such block: it agrees only if the text has none either.
     return findBlock(outline, (id) => id.toLowerCase() === want) ? null : { headings, source: "cache" };
@@ -149,4 +158,43 @@ export async function noteStructure(mc: MetadataSource, file: { path: string }, 
   const later = fromCache();
   if (later) return later;
   throw new CacheMismatchError(file.path);
+}
+
+/** The note changed between the read a patch was placed on and its write.
+ *  Nothing was written; read the note again and retry. */
+export class NoteChangedError extends Error {
+  readonly code = "rev_conflict";
+  constructor(path: string) {
+    super(`${path} changed while the patch was being placed (an edit from the editor, Sync or a plugin landed after the read). Nothing was written. Read the note again and retry.`);
+    this.name = "NoteChangedError";
+  }
+}
+
+/** The parts of Obsidian's `Vault` the write needs. */
+export interface WriteTarget {
+  process?: (file: never, fn: (data: string) => string) => Promise<string>;
+  read(file: never): Promise<string>;
+  modify(file: never, data: string): Promise<void>;
+}
+
+/**
+ * Write `next` over `file` only if the note still holds `text`, the text the
+ * patch was placed on. Through `vault.process`, which in Obsidian 1.14 reads
+ * the file, runs the function and writes the result inside the adapter's
+ * write queue, so no other write through the vault lands between the check
+ * and the write. Without `process` (an older host or a test double) it reads
+ * again and compares just before `modify`. Throws `NoteChangedError` and
+ * writes nothing when the note changed.
+ */
+export async function writeIfUnchanged(vault: WriteTarget, file: { path: string }, text: string, next: string): Promise<void> {
+  const f = file as never;
+  if (typeof vault.process === "function") {
+    await vault.process.call(vault, f, (cur: string) => {
+      if (cur !== text) throw new NoteChangedError(file.path);
+      return next;
+    });
+    return;
+  }
+  if ((await vault.read(f)) !== text) throw new NoteChangedError(file.path);
+  await vault.modify(f, next);
 }

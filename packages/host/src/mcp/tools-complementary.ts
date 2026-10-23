@@ -14,7 +14,7 @@ import {
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
 } from "@vault-mcp/core";
 import { ok, fail, codedError } from "./helpers.js";
-import { noteStructure, type MetadataSource } from "./note-structure.js";
+import { noteStructure, writeIfUnchanged, type MetadataSource, type WriteTarget } from "./note-structure.js";
 import { visiblePaths } from "../guard.js";
 import type { ServerCtx } from "./tools-core.js";
 import { quickAddChoicesFrom, runCommandRefusal, runCommandSnapshotRefusal, vaultTextReader } from "./cli-policy.js";
@@ -189,7 +189,8 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
           // Append heading + content to file
           const appended = `${nl}## ${heading}${nl}${nl}${ins}${nl}`;
           guardAppendResult(text, text + appended);
-          await app.vault.append(file, appended);
+          // Only if the note still holds the text the heading was looked for in.
+          await writeIfUnchanged(app.vault as unknown as WriteTarget, file, text, text + appended);
           return ok({ path: p, found: false, inserted: true, created_heading: true });
         }
 
@@ -202,7 +203,8 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
         const next = head + ins + sep + tail;
 
         guardAppendResult(text, next);
-        await app.vault.modify(file, next);
+        // Written only if the note still holds the text it was placed on.
+        await writeIfUnchanged(app.vault as unknown as WriteTarget, file, text, next);
         return ok({ path: p, found: true, inserted: true });
       } catch (e) { return fail(e); }
     }

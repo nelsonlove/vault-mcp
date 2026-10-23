@@ -50,7 +50,7 @@ import {
   planReplaceText,
 } from "@vault-mcp/core";
 import { sectionIn, assertNotH1Replace, lineEndingOf } from "@vault-mcp/core";
-import { noteStructure, type MetadataSource } from "./note-structure.js";
+import { noteStructure, writeIfUnchanged, type MetadataSource, type WriteTarget } from "./note-structure.js";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
   VaultBackend,
@@ -580,7 +580,9 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
     // the note that would land regardless — so the resulting frontmatter is
     // checked against the current one, and a preserved value passes untouched.
     this.guardResultingFrontmatter(this.fmOf(text), this.fmOf(next) ?? {});
-    await this.app.vault.modify(file, next);
+    // Written only if the note still holds the text the patch was placed on:
+    // an edit that landed while the place was found is never overwritten.
+    await writeIfUnchanged(this.app.vault as unknown as WriteTarget, file, text, next);
     return { found: true, anchor, op, previous };
   }
 

@@ -77,7 +77,7 @@ function parseCache(text) {
       blocks[b[1].toLowerCase()] = { id: b[1], position: { start: { line: s, offset: starts[s] }, end: { line: i, offset: starts[i] + l.length } } };
     }
   }
-  return { headings, blocks };
+  return { headings, blocks, sections: [] };
 }
 
 /**
@@ -105,6 +105,8 @@ function fakeApp(files, { obsidianParse = true, parse = parseCache, changedAfter
       cachedRead: async (f) => store.get(f.path),
       // The cache is NOT refreshed on a write: that is the race under test.
       modify: async (f, c) => { store.set(f.path, c); written(f.path); },
+      // As Obsidian's: read, run, write, with no other write in between.
+      process: async (f, fn) => { const n = fn(store.get(f.path)); store.set(f.path, n); written(f.path); return n; },
       append: async (f, c) => { store.set(f.path, store.get(f.path) + c); written(f.path); },
       create: async (p, c) => { store.set(p, c); },
       createFolder: async () => {},
@@ -375,7 +377,7 @@ describe("review round 3 of #596: the host writes only on a reading it can check
       parse: () => ({ headings: [
         { heading: "A", level: 2, position: { start: { offset: 0 }, end: { offset: 4 } } },
         { heading: "H", level: 2, position: { start: { offset: at }, end: { offset: at + 4 } } },
-      ], blocks: {} }),
+      ], blocks: {}, sections: [] }),
     });
     caches.set("D.md", parseCache(before)); // stale
     await new ObsidianBackend(app).patchNote("D.md", { type: "heading", value: "A" }, "replace", "new");
@@ -424,6 +426,61 @@ describe("review round 3 of #596: the host writes only on a reading it can check
     reparse("R.md");
     await b.patchNote("R.md", { type: "heading", value: "B" }, "prepend", "first");
     assert.equal(store.get("R.md"), "# T\r\n\r\n## A\r\n\r\na\r\none\r\ntwo\r\n\r\n## B\r\n\r\nfirst\r\n\r\nb\r\n");
+  });
+});
+
+describe("review round 4 of #596", () => {
+  const handlersOf = (app) => {
+    const handlers = new Map();
+    registerComplementaryTools({ registerTool(n, _m, h) { handlers.set(n, h); } }, app, { getSettings: () => ({ allowlist: [] }) });
+    return handlers;
+  };
+
+  test("an edit that lands while Obsidian parses the read text is kept: the patch is refused with rev_conflict", async () => {
+    const text = "## A\nold a\n## B\nb\n";
+    const { app, store } = fakeApp({ "N.md": text }, {
+      parse: (t) => {
+        // Another writer (the editor, Sync) changes the note while the worker parses.
+        store.set("N.md", store.get("N.md") + "## C\nuser text\n");
+        return parseCache(t);
+      },
+    });
+    await assert.rejects(() => new ObsidianBackend(app).patchNote("N.md", { type: "heading", value: "A" }, "replace", "new a"), (e) => e.code === "rev_conflict");
+    assert.equal(store.get("N.md"), text + "## C\nuser text\n");
+  });
+
+  test("append_at_heading keeps an edit that lands while it places the text", async () => {
+    const text = "## A\nold a\n## B\nb\n";
+    const { app, store } = fakeApp({ "N.md": text }, {
+      parse: (t) => { store.set("N.md", store.get("N.md") + "## C\nuser text\n"); return parseCache(t); },
+    });
+    const res = await handlersOf(app).get("obsidian_append_at_heading")({ path: "N.md", heading: "A", content: "more", create_if_missing: false }, {});
+    assert.match(res.content[0].text, /^Error \[rev_conflict\]/);
+    assert.equal(store.get("N.md"), text + "## C\nuser text\n");
+  });
+
+  test("a BOM note on the cache road: the cache's offsets are shifted past the BOM, as the parse's are", async () => {
+    const text = "\uFEFF# T\n\n## A\n\na\n\n## B\n\nb\n";
+    const { app, store, caches } = fakeApp({ "U.md": text }, { obsidianParse: false });
+    caches.set("U.md", parseCache(text.slice(1))); // Obsidian's cache: built without the BOM
+    await new ObsidianBackend(app).patchNote("U.md", { type: "heading", value: "A" }, "replace", "new a");
+    assert.equal(store.get("U.md"), "\uFEFF# T\n\n## A\n\nnew a\n## B\n\nb\n");
+  });
+
+  test("an answer from the parse call with no sections is not a parse: no heading is added twice", async () => {
+    const text = "# T\n\n## Log\n\nold\n";
+    const { app, store } = fakeApp({ "E.md": text }, { parse: () => ({}) });
+    const res = await handlersOf(app).get("obsidian_append_at_heading")({ path: "E.md", heading: "Log", content: "new", create_if_missing: true }, {});
+    assert.equal(res.structuredContent.found, true, JSON.stringify(res.structuredContent ?? res.content));
+    assert.equal(store.get("E.md").split("## Log").length, 2, "no second Log heading");
+  });
+
+  test("a move's link reader sees a link after a fence in a list item indented by a tab or four spaces", async () => {
+    const { parseLinks } = await import("../src/mcp/link-rewrite.ts");
+    assert.deepEqual(parseLinks("- item\n\t```\n\tcode\n\t```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
+    assert.deepEqual(parseLinks("- item\n\n    ```\n    code\n    ```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
+    // A link inside that fence is code, as Obsidian reads it.
+    assert.deepEqual(parseLinks("- item\n\t```\n\t[[A]]\n\t```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
   });
 });
 

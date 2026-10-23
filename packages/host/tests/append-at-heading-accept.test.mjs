@@ -185,8 +185,9 @@ describe("obsidian_append_at_heading — ordinary appends still succeed (#109)",
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "Brand New", content: "hello", create_if_missing: true });
     assert.notEqual(res.isError, true, res.content[0].text);
-    assert.equal(calls.append.length, 1);
-    assert.match(calls.append[0][1], /## Brand New/);
+    // Written as the whole note, only if it still holds the text read (#596).
+    assert.equal(calls.modify.length, 1);
+    assert.match(calls.modify[0][1], /## Brand New/);
   });
 
   test("create_if_missing new note succeeds (a body-level fence cannot become leading frontmatter)", async () => {
