@@ -28,6 +28,8 @@
 // TRANSITION over (before, after) — preserve is allowed, introduce/change is
 // not.
 
+import { parseDocument } from "yaml";
+
 /**
  * Typed refusal for the accept-forbidden guard — rendered as `Error [accept_forbidden]`.
  *
@@ -79,6 +81,15 @@ export function acceptForbiddenTrailer(reason: string): string {
   // The YAML-unclassifiable refusal names its own remedy (correct the
   // frontmatter, or edit in Obsidian); repeating the retired keys after it
   // would point at the wrong problem. The invariant alone.
+  if (/cannot read as YAML does/.test(reason)) {
+    return `Write that key or value in a plain form (no backslash escapes, no tag or anchor, on one line) and retry; the accept guard compares what a YAML reader sees, and this form it cannot read the same way.`;
+  }
+  if (/a link rewrite would change the guarded frontmatter key/.test(reason)) {
+    return `A link inside a verification field, an acceptance key or a declared protected property is never rewritten by an agent; the note was left unchanged, and a human updates that link in Obsidian.`;
+  }
+  if (/frontmatter repeats the key/.test(reason)) {
+    return `Write each key once and retry; the accept guard compares what a reader sees, and two copies of a key make that unknowable.`;
+  }
   if (/could not be confidently inspected/.test(reason)) {
     return `The transport never persists acceptance — the accept verb is in no API; acceptance is a human gesture only.`;
   }
@@ -583,6 +594,76 @@ export function unverifiableProtectedPropertyIn(rawBefore: string): string | nul
 }
 
 /**
+ * The written-content guard over a note's whole text, given its text BEFORE the
+ * write and its RESULTING text: throws `AcceptForbiddenError` when the write
+ * would add, change or remove a `verified` entry, an acceptance key or a
+ * declared protected property, or when either side holds frontmatter the guard
+ * cannot read as YAML does.
+ *
+ * The same steps as the write primitives' own guard (ObsidianBackend's and
+ * VaultImpl's `guardWrittenContent`), for a road that already holds the before
+ * text, such as a rewrite inside `vault.process` (#614: the link rewrites of a
+ * move, repoint and heading rename): parse the result first, then the before;
+ * a before that cannot be parsed reads as no prior frontmatter, unless its
+ * block mentions a guarded key, which refuses. `beforeText` null: a new note.
+ */
+export function assertWrittenTextAllowed(beforeText: string | null, resultingContent: string): void {
+  const after = parseGuardFrontmatter(resultingContent);
+  if (!acceptTransitionNeedsBefore(after)) return;
+  let before: Record<string, unknown> | null = null;
+  if (beforeText !== null) {
+    try {
+      before = parseGuardFrontmatter(beforeText);
+    } catch {
+      const k = unverifiableProtectedPropertyIn(beforeText);
+      if (k) throw new AcceptForbiddenError(unverifiableBeforeReason(k));
+      before = null;
+    }
+  }
+  const reason = acceptTransitionReason(before, after);
+  if (reason) throw new AcceptForbiddenError(reason);
+}
+
+/**
+ * A rewrite of the links in a note it was not asked to edit (a move's backlink
+ * rewrite, a repoint, a heading rename's link update) never changes the value of
+ * a guarded key (#614): a `verified` entry, an acceptance key (`accepted*`,
+ * `acceptance-status`) or a declared protected property. Throws
+ * `AcceptForbiddenError` naming the key. Stricter than the written-content
+ * guard on purpose: that guard admits some changes to an acceptance key (an
+ * `acceptance-status` that does not assert acceptance), and a link inside one
+ * is still not an agent's to rewrite. Links in other keys are not its concern.
+ * A before the guard's reader cannot read counts as holding no guarded key, so
+ * a result that holds one is refused.
+ */
+export function assertGuardedKeysUnchanged(beforeText: string, resultingContent: string): void {
+  const after = parseGuardFrontmatter(resultingContent) ?? {};
+  let before: Record<string, unknown> | null;
+  try {
+    before = parseGuardFrontmatter(beforeText);
+  } catch {
+    before = null;
+  }
+  const b = before ?? {};
+  const own = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  for (const k of new Set([...Object.keys(b), ...Object.keys(after)])) {
+    if (!guardedKey(k)) continue;
+    if (own(b, k) && own(after, k) && frontmatterValuesEqual(b[k], after[k])) continue;
+    throw new AcceptForbiddenError(`a link rewrite would change the guarded frontmatter key '${k}'`);
+  }
+}
+
+/**
+ * The guard for a link rewrite that already holds the note's before text (the
+ * host's rewrites inside `vault.process`, #614): the written-content guard
+ * (`assertWrittenTextAllowed`), then `assertGuardedKeysUnchanged`.
+ */
+export function assertLinkRewriteAllowed(beforeText: string, resultingContent: string): void {
+  assertWrittenTextAllowed(beforeText, resultingContent);
+  assertGuardedKeysUnchanged(beforeText, resultingContent);
+}
+
+/**
  * Whether a transition guard must fetch the BEFORE frontmatter to prove a write
  * clean, given only the RESULT. The historical fast path — "the result asserts
  * nothing, skip the disk read" — is only sound while absence in the result is
@@ -716,9 +797,11 @@ export function acceptForbiddenReason(fm: Record<string, unknown> | undefined | 
 
 // ── A minimal frontmatter parser for callers with no full YAML library ──────
 //
-// packages/core has no YAML dependency (its own frontmatter editing in
-// fs-backend/vault.ts and fs-backend/index-store.ts is line-based and
-// best-effort by design). `parseGuardFrontmatter` is a SEPARATE, small
+// packages/core had no YAML dependency when this reader was written (it now
+// carries the `yaml` library for file-formats.ts and replace-text.ts; its own
+// frontmatter editing in fs-backend/vault.ts and fs-backend/index-store.ts is
+// line-based and best-effort by design). Where this reader and YAML would read
+// a key or a guarded value differently, it refuses (YamlDivergenceError). `parseGuardFrontmatter` is a SEPARATE, small
 // reader — scoped ONLY to feed this guard — that additionally recognizes an
 // inline flow-MAP value (`key: {value: accepted}`), which
 // fs-backend/index-store.ts's `parseAllFrontmatter` does not (it has no map
@@ -811,6 +894,123 @@ const FRONTMATTER_UNCLASSIFIABLE_REASON =
   "anchor/alias/tag, an unterminated quoted string, a multi-document marker, or a malformed key line). " +
   "Correct the frontmatter, or make the edit directly in Obsidian, and retry";
 
+/**
+ * A frontmatter that repeats a key at its root or inside a `verified` record
+ * (#605). Typed apart from the unclassifiable refusal so a road that parses
+ * with another reader (the CLI proxy, a write_notes body fence) can run this
+ * check alone and keep its own reader for everything else.
+ */
+export class DuplicateFrontmatterKeyError extends AcceptForbiddenError {
+  readonly duplicateKey: string;
+  constructor(key: string) {
+    super(`the frontmatter repeats the key '${key}', and a reader keeps only one of the two, so the write cannot be checked against what a reader will see`);
+    this.name = "DuplicateFrontmatterKeyError";
+    this.duplicateKey = key;
+  }
+}
+
+function duplicateKey(key: string): never {
+  throw new DuplicateFrontmatterKeyError(key);
+}
+
+/**
+ * A frontmatter construct the guard's reader would read differently from a
+ * YAML parser (the `yaml` library Obsidian's parseYaml uses), at a place where
+ * the guard depends on the reading. Refused, never guessed.
+ *
+ * The rule: the reader does not decode YAML escapes. It refuses instead
+ *   - anywhere: a double-quoted key with a backslash (`"\x76erified"` is
+ *     `verified` to YAML), a quoted key over more than one line (YAML folds
+ *     it), a plain key that opens with a tag, an anchor, an alias or another
+ *     indicator (`!!str verified` is `verified` to YAML), and the merge key `<<`;
+ *   - under a guarded top-level key (`guardedKey`), in block and flow form,
+ *     a root flow mapping included: a double-quoted value with a backslash, a
+ *     value over more than one line, a block scalar (`|`, `>`), and a plain
+ *     value that opens with a YAML indicator.
+ * Single-quoted scalars on one line need no rule: their one escape (`''`) is
+ * decoded here exactly as YAML decodes it. A trailing comment (` #`, a tab
+ * before `#` too) is cut off as YAML cuts it, after a plain or a quoted value.
+ *
+ * Behind those rules stands one root rule (`crossCheckWithYaml`): after its own
+ * reading, the guard parses the same frontmatter with the `yaml` library
+ * (unique keys), and refuses when the two readings differ for any guarded
+ * top-level key, when one reading has a guarded key the other has not, or when
+ * YAML cannot parse a block in which the guard read a guarded key.
+ */
+export class YamlDivergenceError extends AcceptForbiddenError {
+  /** The reason without its trailer, for a road that re-throws it as its own refusal. */
+  readonly reason: string;
+  constructor(what: string) {
+    const reason = `the frontmatter has ${what}, which this guard's reader cannot read as YAML does, so the write cannot be checked against what a reader will see`;
+    super(reason);
+    this.name = "YamlDivergenceError";
+    this.reason = reason;
+  }
+}
+
+function divergent(what: string): never {
+  throw new YamlDivergenceError(what);
+}
+
+/**
+ * Whether a TOP-LEVEL key's value is one the accept guard decides over: the
+ * authority family (`verified*`, `accepted*`, `acceptance-status`) or a
+ * declared protected property.
+ */
+export function guardedKey(key: string): boolean {
+  const c = canonicalPropertyKey(key);
+  return isAuthorityFamilyKey(c) || declaredGradeOf(c) !== null;
+}
+
+/** A key token, raw as written, refused when YAML reads it differently from its text (see YamlDivergenceError). */
+function refuseDivergentKey(raw: string, key: string): void {
+  if (raw.startsWith('"') && raw.includes("\\")) divergent(`a double-quoted key with a backslash escape (${raw})`);
+  if ((raw.startsWith('"') || raw.startsWith("'")) && /[\r\n]/.test(raw)) divergent(`a quoted key over more than one line ('${key.replace(/\s+/g, " ")}')`);
+  if (!raw.startsWith('"') && !raw.startsWith("'") && NEEDS_DOCUMENT_MODEL_RE.test(raw)) divergent(`a key with a tag, an anchor or another indicator ('${key}')`);
+  if (key === "<<") divergent("a merge key ('<<')");
+}
+
+/** A plain scalar that opens with a YAML indicator this reader does not model as YAML does (`|`, `>`, `-`/`?`/`:` then a space, `,`, `]`, `}`). */
+const DIVERGENT_PLAIN_START_RE = /^(?:[|>,\]}]|[-?:](?:\s|$))/;
+
+/** A value token under the guarded key `key`: refused when YAML reads it differently from this reader. */
+function refuseDivergentGuardedValue(raw: string, key: string): void {
+  const t = raw.trim();
+  if (t.startsWith('"') && t.includes("\\")) divergent(`a double-quoted value with a backslash escape under '${key}'`);
+  if (/[\r\n]/.test(t)) divergent(`a value over more than one line under '${key}'`);
+  if (t.startsWith('"') || t.startsWith("'")) return;
+  if (DIVERGENT_PLAIN_START_RE.test(t)) divergent(`a value that opens with a YAML indicator under '${key}' (${t.slice(0, 20)})`);
+}
+
+/**
+ * The reason `markdown`'s leading frontmatter has a form the guard's reader
+ * cannot read as YAML does (see YamlDivergenceError), or null. As for
+ * `duplicateFrontmatterKeyReason`: any other construct the reader cannot
+ * classify is NOT reported here, and the caller keeps its own reader for it.
+ */
+export function yamlDivergenceReason(markdown: string): string | null {
+  try {
+    parseGuardFrontmatter(markdown);
+  } catch (e) {
+    if (e instanceof YamlDivergenceError) return e.reason;
+  }
+  return null;
+}
+
+/**
+ * The reason `markdown`'s leading frontmatter repeats a key at its root or
+ * inside a `verified` record, or null. Any other construct the guard's reader
+ * cannot classify is NOT reported here: the caller keeps its own reader for it.
+ */
+export function duplicateFrontmatterKeyReason(markdown: string): string | null {
+  try {
+    parseGuardFrontmatter(markdown);
+  } catch (e) {
+    if (e instanceof DuplicateFrontmatterKeyError) return `the frontmatter repeats the key '${e.duplicateKey}'`;
+  }
+  return null;
+}
+
 function unclassifiable(): never {
   throw new AcceptForbiddenError(FRONTMATTER_UNCLASSIFIABLE_REASON);
 }
@@ -902,6 +1102,22 @@ interface FlowCursor {
   i: number;
 }
 
+/**
+ * How strict a flow read is. `strict`: a repeated key is refused (#605).
+ * `guarded`: the collection is (inside) the value of a guarded key
+ * (`guardedKey`), so a divergent value form is refused. `root`: the collection
+ * is the whole frontmatter, so each of its keys decides `guarded` for its own
+ * value. `owner`: the guarded key, for the message.
+ */
+interface FlowCtx {
+  strict: boolean;
+  guarded: boolean;
+  root: boolean;
+  owner: string;
+}
+
+const LOOSE_FLOW: FlowCtx = { strict: false, guarded: false, root: false, owner: "" };
+
 function flowSkipSpace(c: FlowCursor): void {
   while (c.i < c.s.length && /\s/.test(c.s[c.i])) c.i++;
 }
@@ -933,14 +1149,15 @@ function flowReadQuoted(c: FlowCursor): string {
   return unclassifiable(); // unterminated
 }
 
-function flowParseValue(c: FlowCursor): GuardValue {
+function flowParseValue(c: FlowCursor, ctx: FlowCtx = LOOSE_FLOW): GuardValue {
   flowSkipSpace(c);
   if (c.i >= c.s.length) return null;
   const ch = c.s[c.i];
-  if (ch === "[") return flowParseSeq(c);
-  if (ch === "{") return flowParseMap(c);
+  if (ch === "[") return flowParseSeq(c, ctx);
+  if (ch === "{") return flowParseMap(c, ctx);
   if (ch === '"' || ch === "'") {
     const raw = flowReadQuoted(c);
+    if (ctx.guarded) refuseDivergentGuardedValue(raw, ctx.owner);
     const unq = unquoteIfQuoted(raw);
     return unq === null ? unclassifiable() : unq;
   }
@@ -948,11 +1165,12 @@ function flowParseValue(c: FlowCursor): GuardValue {
   let start = c.i;
   while (c.i < c.s.length && !",[]{}".includes(c.s[c.i])) c.i++;
   const tok = c.s.slice(start, c.i).trim();
+  if (ctx.guarded) refuseDivergentGuardedValue(tok, ctx.owner);
   if (NEEDS_DOCUMENT_MODEL_RE.test(tok)) unclassifiable();
   return interpretScalar(tok);
 }
 
-function flowParseSeq(c: FlowCursor): GuardValue[] {
+function flowParseSeq(c: FlowCursor, ctx: FlowCtx = LOOSE_FLOW): GuardValue[] {
   c.i++; // consume '['
   const out: GuardValue[] = [];
   flowSkipSpace(c);
@@ -961,7 +1179,7 @@ function flowParseSeq(c: FlowCursor): GuardValue[] {
     return out;
   }
   for (;;) {
-    out.push(flowParseValue(c));
+    out.push(flowParseValue(c, { ...ctx, root: false }));
     flowSkipSpace(c);
     if (c.i >= c.s.length) unclassifiable();
     if (c.s[c.i] === ",") {
@@ -982,7 +1200,7 @@ function flowParseSeq(c: FlowCursor): GuardValue[] {
   }
 }
 
-function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
+function flowParseMap(c: FlowCursor, ctx: FlowCtx = LOOSE_FLOW): Record<string, GuardValue> {
   c.i++; // consume '{'
   const out: Record<string, GuardValue> = {};
   flowSkipSpace(c);
@@ -994,19 +1212,30 @@ function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
     flowSkipSpace(c);
     // key
     let key: string;
+    let rawKey: string;
     if (c.s[c.i] === '"' || c.s[c.i] === "'") {
-      const raw = flowReadQuoted(c);
-      const unq = unquoteIfQuoted(raw);
+      rawKey = flowReadQuoted(c);
+      const unq = unquoteIfQuoted(rawKey);
       key = unq === null ? unclassifiable() : unq;
     } else {
       const start = c.i;
       while (c.i < c.s.length && !":,[]{}".includes(c.s[c.i])) c.i++;
-      key = c.s.slice(start, c.i).trim();
+      rawKey = c.s.slice(start, c.i).trim();
+      key = rawKey;
+      // YAML folds a plain key spread over lines; this reader would keep the break.
+      if (/[\r\n]/.test(key)) divergent(`a key over more than one line ('${key.replace(/\s+/g, " ")}')`);
     }
+    refuseDivergentKey(rawKey, key);
     flowSkipSpace(c);
     if (c.s[c.i] !== ":") unclassifiable();
     c.i++;
-    out[key] = flowParseValue(c);
+    // #605: a repeated key is refused where it can carry a record (the root, a verified entry).
+    if (ctx.strict && Object.prototype.hasOwnProperty.call(out, key)) duplicateKey(key);
+    // A root flow mapping gets the block form's checks: each of its keys decides for its own value.
+    const child: FlowCtx = ctx.root
+      ? { strict: ctx.strict, guarded: guardedKey(key), root: false, owner: key }
+      : { ...ctx, root: false };
+    out[key] = flowParseValue(c, child);
     flowSkipSpace(c);
     if (c.i >= c.s.length) unclassifiable();
     if (c.s[c.i] === ",") {
@@ -1027,9 +1256,9 @@ function flowParseMap(c: FlowCursor): Record<string, GuardValue> {
 }
 
 /** Parse a complete flow collection occupying the whole of `text`. */
-function parseFlow(text: string): GuardValue {
+function parseFlow(text: string, ctx: FlowCtx = LOOSE_FLOW): GuardValue {
   const c: FlowCursor = { s: text, i: 0 };
-  const v = flowParseValue(c);
+  const v = flowParseValue(c, ctx);
   flowSkipSpace(c);
   if (c.i !== c.s.length) unclassifiable(); // trailing junk after the collection
   return v;
@@ -1049,7 +1278,7 @@ const BLOCK_KEY_RE = /^([^\s#][^:]*?):(?:[ \t]+(.*))?$/;
  * this reader against PyYAML over the real vault, where quoted numeric keys
  * `"1": …` exposed the same unquoting gap.)
  */
-function parseKeyLine(body: string): { key: string; rest: string } | null {
+function parseKeyLine(body: string): { key: string; rest: string; raw: string } | null {
   if (body.startsWith('"') || body.startsWith("'")) {
     const c: FlowCursor = { s: body, i: 0 };
     const raw = flowReadQuoted(c);
@@ -1057,11 +1286,11 @@ function parseKeyLine(body: string): { key: string; rest: string } | null {
     if (key === null) unclassifiable();
     const after = body.slice(c.i);
     if (!after.startsWith(":")) return null;
-    return { key, rest: after.slice(1).trim() };
+    return { key, rest: after.slice(1).trim(), raw };
   }
   const km = BLOCK_KEY_RE.exec(body);
   if (!km) return null;
-  return { key: km[1].trim(), rest: (km[2] ?? "").trim() };
+  return { key: km[1].trim(), rest: (km[2] ?? "").trim(), raw: km[1].trim() };
 }
 
 /** `- `, `-` alone, or `- value`. */
@@ -1069,6 +1298,18 @@ const SEQ_ITEM_RE = /^-(?:[ \t]+(.*))?$/;
 
 class BlockReader {
   i = 0;
+  /** The top-level key whose value is being read (#605: a repeated key under a `verified` key is refused). */
+  top: string | null = null;
+
+  /** Whether a repeated key is refused where the reader is now: the root, or anywhere under a `verified` key. */
+  strictAt(indent: number): boolean {
+    return indent === 0 || (this.top !== null && isVerifiedKey(this.top));
+  }
+
+  /** Whether the reader is inside the value of a guarded top-level key (`guardedKey`). */
+  guarded(): boolean {
+    return this.top !== null && guardedKey(this.top);
+  }
   constructor(readonly lines: string[]) {}
 
   /** Index of the next significant line, or -1. Validates every line it passes over. */
@@ -1100,7 +1341,14 @@ class BlockReader {
       if (SEQ_ITEM_RE.test(body)) unclassifiable(); // a sequence where a mapping's key was due
       const kv = parseKeyLine(body);
       if (!kv) unclassifiable();
+      refuseDivergentKey(kv.raw, kv.key);
+      kv.rest = stripTrailingComment(kv.rest);
       this.i = at + 1;
+      // #605: the parser kept the LAST of two equal keys, so a forged block written
+      // before the real one was compared as unchanged. A repeated key at the root,
+      // or anywhere inside a `verified` record, is refused instead.
+      if (Object.prototype.hasOwnProperty.call(out, kv.key) && this.strictAt(indent)) duplicateKey(kv.key);
+      if (indent === 0) this.top = kv.key;
       out[kv.key] = this.parseValueAfterKey(kv.rest, indent);
     }
   }
@@ -1117,7 +1365,10 @@ class BlockReader {
       const body = line.slice(ind);
       const sm = SEQ_ITEM_RE.exec(body);
       if (!sm) return out;
-      const content = (sm[1] ?? "").trim();
+      const rawContent = (sm[1] ?? "").trim();
+      // `- # c` is an empty item to YAML. A comment after a scalar item is cut
+      // where the scalar is read; a `key: value` item cuts its own (parseMapping).
+      const content = rawContent.startsWith("#") ? "" : rawContent;
 
       if (content === "") {
         // `-` alone: the item's structure is on the following, more-indented lines.
@@ -1128,6 +1379,18 @@ class BlockReader {
           continue;
         }
         out.push(this.parseNestedBlock(indentOf(this.lines[nxt]), indent));
+        continue;
+      }
+
+      // A flow collection as an item (`- {by: x}`) is a collection to YAML. Under
+      // a guarded key it is read as one, so the guard sees what a reader sees;
+      // elsewhere the reading stays as it was.
+      if (this.guarded() && (content.startsWith("{") || content.startsWith("["))) {
+        this.i = at + 1;
+        const text = this.gatherContinuation(content, indent, "");
+        if (text !== content) divergent(`a flow value over more than one line under '${this.top}'`);
+        const verifiedHere = this.top !== null && isVerifiedKey(this.top);
+        out.push(parseFlow(text, { strict: verifiedHere, guarded: true, root: false, owner: this.top ?? "" }));
         continue;
       }
 
@@ -1151,7 +1414,7 @@ class BlockReader {
 
       // A plain/quoted scalar item, possibly continued on more-indented lines.
       this.i = at + 1;
-      out.push(this.finishScalar(content, indent));
+      out.push(this.finishScalar(stripTrailingComment(content), indent));
     }
   }
 
@@ -1170,9 +1433,15 @@ class BlockReader {
     if (rest !== "") {
       // Block scalar header: `|`, `>`, with optional chomping/indent indicators.
       const bs = /^([|>])([+-]?\d*|\d*[+-]?)\s*$/.exec(rest);
-      if (bs) return this.readBlockScalar(bs[1] === ">", keyIndent);
+      if (bs) {
+        if (this.guarded()) divergent(`a block scalar under '${this.top}'`);
+        return this.readBlockScalar(bs[1] === ">", keyIndent);
+      }
       if (rest.startsWith("[") || rest.startsWith("{")) {
-        return parseFlow(this.gatherContinuation(rest, keyIndent, ""));
+        const text = this.gatherContinuation(rest, keyIndent, "");
+        if (this.guarded() && text !== rest) divergent(`a flow value over more than one line under '${this.top}'`);
+        const verifiedHere = this.top !== null && isVerifiedKey(this.top);
+        return parseFlow(text, { strict: this.strictAt(keyIndent) && verifiedHere, guarded: this.guarded(), root: false, owner: this.top ?? "" });
       }
       return this.finishScalar(rest, keyIndent);
     }
@@ -1198,7 +1467,14 @@ class BlockReader {
    * line, joined by a space).
    */
   finishScalar(first: string, ownerIndent: number): GuardValue {
-    return scalarToken(this.gatherContinuation(first, ownerIndent, " "));
+    const text = this.gatherContinuation(first, ownerIndent, " ");
+    if (this.guarded()) {
+      // YAML folds a continued scalar (a blank line to a line break, a quoted
+      // line end after a backslash to nothing); this reader joins with a space.
+      if (text !== first) divergent(`a value over more than one line under '${this.top}'`);
+      refuseDivergentGuardedValue(text, this.top as string);
+    }
+    return scalarToken(text);
   }
 
   /** `first` plus every following line indented past `ownerIndent`, joined by `sep`. */
@@ -1246,6 +1522,69 @@ class BlockReader {
 }
 
 /**
+ * `rest` (a value on a key or `-` line) without a trailing comment, as YAML
+ * reads it: a `#` after a space or a tab ends a plain value, and a comment
+ * after the closing quote of a quoted value is dropped. A quoted value that
+ * does not close on this line, a flow collection, or a quoted value followed
+ * by other text is returned as it was (the reader and the YAML cross-check
+ * decide those).
+ */
+function stripTrailingComment(rest: string): string {
+  if (rest.startsWith("#")) return "";
+  const q = rest[0];
+  if (q === '"' || q === "'") {
+    let i = 1;
+    for (; i < rest.length; i++) {
+      if (q === '"' && rest[i] === "\\") {
+        i++;
+        continue;
+      }
+      if (rest[i] === q) {
+        if (q === "'" && rest[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        break;
+      }
+    }
+    if (i >= rest.length) return rest; // not closed on this line
+    const after = rest.slice(i + 1);
+    if (after.trim() === "" || /^[ \t]+#/.test(after)) return rest.slice(0, i + 1);
+    return rest;
+  }
+  if (q === "[" || q === "{") return rest;
+  const m = /[ \t]#/.exec(rest);
+  return m ? rest.slice(0, m.index).trimEnd() : rest;
+}
+
+/**
+ * The root rule (see YamlDivergenceError): the guard's reading `g` of `block`
+ * must agree with the `yaml` library's reading on every guarded top-level key.
+ * A block YAML cannot parse is refused only when the guard read a guarded key
+ * in it (YAML's reader would see no properties at all, the record included).
+ */
+function crossCheckWithYaml(block: string, g: Record<string, unknown>): void {
+  const guarded = Object.keys(g).filter(guardedKey);
+  let y: unknown;
+  try {
+    const doc = parseDocument(block, { uniqueKeys: true, prettyErrors: false });
+    if (doc.errors.length > 0) throw doc.errors[0];
+    y = doc.toJS();
+  } catch {
+    if (guarded.length > 0) divergent(`a block YAML cannot parse, with the guarded key '${guarded[0]}' in it`);
+    return;
+  }
+  const yo: Record<string, unknown> = y && typeof y === "object" && !Array.isArray(y) ? (y as Record<string, unknown>) : {};
+  const keys = new Set([...guarded, ...Object.keys(yo).filter(guardedKey)]);
+  for (const k of keys) {
+    const inG = Object.prototype.hasOwnProperty.call(g, k);
+    const inY = Object.prototype.hasOwnProperty.call(yo, k);
+    if (!inG || !inY) divergent(`the guarded key '${k}', which only ${inG ? "this guard's reader" : "YAML"} finds`);
+    if (!fmEqual(g[k], yo[k])) divergent(`a value under '${k}' that YAML reads differently`);
+  }
+}
+
+/**
  * Parse the leading `---\n…\n---` frontmatter fence of `markdown` into a plain
  * object suitable for `acceptTransitionReason` / `acceptForbiddenReason`.
  *
@@ -1278,7 +1617,7 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
       if (CONTROL_CHAR_RE.test(line)) unclassifiable();
       if (line.trim().startsWith("#")) unclassifiable(); // a comment inside a flow collection
     }
-    const v = parseFlow(rest.join("\n"));
+    const v = parseFlow(rest.join("\n"), { strict: true, guarded: false, root: true, owner: "" });
     // A MAPPING root is what Obsidian honors as properties, so parse it and let
     // the predicate inspect it. A SEQUENCE root is not honored as properties at
     // all: an EMPTY one provably carries no assertion, so report "no keys"; a
@@ -1288,6 +1627,7 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
       return {};
     }
     if (!v || typeof v !== "object") unclassifiable();
+    crossCheckWithYaml(block, v as Record<string, unknown>);
     return v as Record<string, unknown>;
   }
 
@@ -1295,5 +1635,6 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
   // A dedent below column 0 is impossible, so anything left unconsumed means
   // the reader lost its place rather than finished.
   if (reader.peek() >= 0) unclassifiable();
+  crossCheckWithYaml(block, out);
   return out;
 }

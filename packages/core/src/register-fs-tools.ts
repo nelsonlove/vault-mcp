@@ -70,6 +70,12 @@ export interface RegisterFsToolsOpts {
    */
   wholeToken?: (path: string) => { token: string; rev?: number } | undefined;
   /**
+   * The operator's attachment list (the move list), read per call: `obsidian_read_note` treats a
+   * file of one of these types, or of a type on core's default list, as binary and returns no
+   * content for it (the backend's `binaryInfo`). Absent ⇒ the default list only.
+   */
+  binaryExtensions?: () => readonly string[];
+  /**
    * When provided, the return value is merged into every read-tool response as
    * `index_status`. Also read before/after for obsidian_force_reindex timing.
    */
@@ -143,14 +149,14 @@ type ToolRegistrar = { registerTool(name: string, meta: any, handler: (args: any
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function registerFsTools(server: any, backend: VaultBackend, opts: RegisterFsToolsOpts = {}): void {
   const reg = server as ToolRegistrar;
-  const { decodeHtml = false, kernelArgs = false, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml = jsonFlowYaml } = opts;
+  const { decodeHtml = false, kernelArgs = false, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml = jsonFlowYaml, binaryExtensions } = opts;
 
   const dec = (s: string): string => (decodeHtml ? decodeHtmlEntities(s) : s);
 
   const profile = opts.profile;
   for (const tool of FS_TOOLS) {
     if (profile && !profileAllows(profile, tool.name)) continue;
-    const inner = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml);
+    const inner = makeHandler(tool.name, backend, dec, includeIndexStatus, rev, onWholeRead, wholeToken, onCutRead, stringifyYaml, binaryExtensions);
     const mutating = tool.annotations?.readOnlyHint === false;
     const gated = profile
       ? (args: any) => {
@@ -202,6 +208,7 @@ function makeHandler(
   wholeToken?: (path: string) => { token: string; rev?: number } | undefined,
   onCutRead?: (path: string) => void,
   stringifyYaml: (obj: Record<string, unknown>) => string = jsonFlowYaml,
+  binaryExtensions?: () => readonly string[],
 ) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const status = (extra: Record<string, unknown> = {}): Record<string, unknown> =>
@@ -253,6 +260,13 @@ function makeHandler(
       return async ({ path: p, full }: { path: string; full?: boolean }) => {
         try {
           const decoded = dec(p);
+          // A binary file (an attachment type, or NUL bytes) is never read out as text: its rev and
+          // size only, with or without `full`. A note is never asked (the check is for other files).
+          if (backend.binaryInfo && !decoded.toLowerCase().endsWith(".md")) {
+            const revd = revField(decoded);
+            const info = await backend.binaryInfo(decoded, binaryExtensions?.() ?? []);
+            if (info) return ok(status({ path: decoded, ...revd, size: info.size, binary: true }));
+          }
           // rev is sampled BEFORE the content, so a write racing this read can
           // only make the returned rev too OLD — the caller's later `if_rev`
           // then conflicts. Sampling after would hand back a rev newer than the
@@ -572,6 +586,8 @@ function makeHandler(
           if (r.backlinks_files_touched !== null) resp.backlinks_files_touched = r.backlinks_files_touched;
           // The live host checks its own backlink rewrite for damage and says what it found.
           if (r.link_check !== undefined) resp.link_check = r.link_check;
+          // A note the written-content guard refused is left unchanged and named, with the reason (#614).
+          if (r.backlinks_skipped !== undefined) resp.backlinks_skipped = r.backlinks_skipped;
           return ok(status(resp));
         } catch (e) {
           return fail(e);

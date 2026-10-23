@@ -49,6 +49,8 @@ class FakeVaultBackend implements VaultBackend {
    * (default), returns realistic non-zero counts to exercise the FS path.
    */
   nullCounts = false;
+  /** Notes the backend's written-content guard refused during a backlink rewrite (#614). */
+  skipped: Array<{ path: string; reason: string }> | undefined = undefined;
 
   async listNotes(_subdir?: string, limit = 100, offset = 0): Promise<{ total: number; notes: NoteRef[] }> {
     const all = [...this.notes.keys()].sort();
@@ -132,7 +134,7 @@ class FakeVaultBackend implements VaultBackend {
     fromRel: string,
     toRel: string,
     _options: { update_backlinks: boolean; overwrite: boolean },
-  ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null }> {
+  ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null; backlinks_skipped?: Array<{ path: string; reason: string }> }> {
     const content = this.notes.get(fromRel);
     if (content === undefined) throw new Error(`not found: ${fromRel}`);
     this.notes.delete(fromRel);
@@ -144,6 +146,7 @@ class FakeVaultBackend implements VaultBackend {
       to: toRel,
       backlinks_updated: this.nullCounts ? null : 3,
       backlinks_files_touched: this.nullCounts ? null : 2,
+      ...(this.skipped ? { backlinks_skipped: this.skipped } : {}),
     };
   }
 
@@ -438,6 +441,24 @@ describe("registerFsTools", () => {
       assert.ok("backlinks_files_touched" in data, "backlinks_files_touched should be present for numeric-count backend");
       assert.equal(data.backlinks_updated, 3);
       assert.equal(data.backlinks_files_touched, 2);
+    } finally {
+      await teardown();
+    }
+  });
+
+  test("#614: obsidian_move_note passes the notes the guard left unchanged through, with the reason", async () => {
+    const backend = new FakeVaultBackend();
+    backend.skipped = [{ path: "V.md", reason: "accept_forbidden: write would change the verification field 'verified'" }];
+    await backend.writeNote("Source.md", "# Source", true);
+    const { client, teardown } = await makeClientServer(backend);
+    try {
+      const result = await client.callTool({
+        name: "obsidian_move_note",
+        arguments: { from: "Source.md", to: "Dest.md", update_backlinks: true, overwrite: false },
+      });
+      assert.ok(!result.isError, `unexpected error: ${JSON.stringify(result.content)}`);
+      const data = JSON.parse((result.content as Array<{ type: string; text: string }>)[0].text);
+      assert.deepEqual(data.backlinks_skipped, backend.skipped);
     } finally {
       await teardown();
     }

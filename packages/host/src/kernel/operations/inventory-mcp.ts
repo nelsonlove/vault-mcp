@@ -197,12 +197,13 @@ const CORE_MESSAGE: McpSurfaceRow[] = [
 // Registered by `registerFileTools` on both servers, driving the same backend as the note tools.
 // Their protection and Sync kind follow the note tools they mirror: a write is obsidian_write_note's,
 // an edit changes content you read (token, like a patch replace), a move is obsidian_move_note's.
-// Trash is `obsidian_trash`, which already takes any file.
+// Trash is `obsidian_trash`, which already takes any file. The move also takes the attachment types
+// on the operator's list (`fileMoveExtensions`; core's `assertMovePath`); the write and the edit do not.
 
 const CORE_FILES: McpSurfaceRow[] = [
   { tool: "obsidian_write_file", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Create or overwrite one .base or .canvas file with content that parses as its type.", protection: { arg: "overwrite", values: { true: "token" }, otherwise: "exempt" }, syncKind: { arg: "overwrite", values: { true: "content" }, otherwise: "structure" } },
   { tool: "obsidian_edit_file", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Upsert or remove one view of a .base, or one node or edge of a .canvas, by its name or id; the result parses as its type.", protection: "token", syncKind: "content" },
-  { tool: "obsidian_move_file", readOnly: false, module: "core", distribution: "public-optional", paths: ["from", "to"], postcondition: "Move or rename one .base or .canvas file, keeping its extension; on the live host links in notes to it are rewritten.", protection: "key", syncKind: "structure" },
+  { tool: "obsidian_move_file", readOnly: false, module: "core", distribution: "public-optional", paths: ["from", "to"], postcondition: "Move or rename one .base or .canvas file, or one attachment file whose extension is on the operator's list (never a note), keeping its extension; on the live host links and embeds in notes to it are rewritten.", protection: "key", syncKind: "structure" },
 ];
 
 // ── packages/core — exact-text replace (register-replace-text.ts) ─────────────

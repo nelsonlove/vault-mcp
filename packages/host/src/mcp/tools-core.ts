@@ -10,6 +10,7 @@ import { isVisible, type GuardSettings } from "../guard.js";
 import type { ExternalToolEntry } from "./external-tools.js";
 import type { Kernel, ModuleSettings, ServerIdentity } from "../kernel/index.js";
 import { findObsidianBinary } from "./tools-cli.js";
+import { normalizeFileMoveExtensions } from "@vault-mcp/core";
 import type { SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import type { CliCommandPolicy } from "./cli-policy.js";
 import type { SeamConsult } from "./seam.js";
@@ -68,6 +69,10 @@ export interface ServerCtx {
    * `resolveTerritories` and never match on the raw array — a stray blank
    * entry would match every path. */
   guardedTerritories?: string[];
+  /** The file types obsidian_move_file moves besides `.base` and `.canvas` (main.ts's
+   * `fileMoveExtensions`); coerced through `normalizeFileMoveExtensions` where read. Absent ⇒ the
+   * shipped default list. */
+  fileMoveExtensions?: string[];
   // `historyEnabled` / `historyScope` were here until S3c. They were always the
   // GOVERNANCE PROVIDER's facts — the Git history store, its D10 scope, and the
   // decision to record at all belong to whoever owns the standing chain — and
@@ -201,7 +206,7 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
     "obsidian_doctor",
     {
       title: "Diagnostics",
-      description: "Report vault-mcp health: socket path, bound vault, plugin version, which integration plugins are detected, the Sync guard, and the machine-local settings override (its path, whether it was found, and the names of the keys it sets). Read-only.",
+      description: "Report vault-mcp health: socket path, bound vault, plugin version, which integration plugins are detected, the Sync guard, the file types obsidian_move_file moves now (`file_move_extensions`, besides .base and .canvas), and the machine-local settings override (its path, whether it was found, and the names of the keys it sets). Read-only.",
       inputSchema: {},
       annotations: RO,
     },
@@ -227,6 +232,10 @@ export function registerCoreTools(server: McpServer, app: App, ctx: ServerCtx) {
             const now = Date.now();
             return syncGuardReport(normalizeSyncGuard(ctx.syncGuard?.()), snap, judgeSync(snap, now), judgeSync(snap, now, [], false, true));
           })(),
+          // The file types obsidian_move_file moves now, besides .base and .canvas (the
+          // fileMoveExtensions setting, read per call): the tool's description names the setting,
+          // not a list frozen at connection time.
+          file_move_extensions: normalizeFileMoveExtensions(ctx.getSettings().fileMoveExtensions),
           // The machine-local settings override (#579): where it is looked up,
           // whether this machine has one, and which keys it sets — names only,
           // never values (an override can hold paths and patterns).

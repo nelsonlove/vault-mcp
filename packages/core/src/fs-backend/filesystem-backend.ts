@@ -82,6 +82,10 @@ export class FilesystemBackend implements VaultBackend, FileBackend, TextReplace
     return this.vault.readNoteWhole(relPath);
   }
 
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    return this.vault.binaryInfo(relPath, extensions);
+  }
+
   // ── Read: search ───────────────────────────────────────────────────────────
 
   async searchNotes(query: string, limit: number, mode: SearchMode): Promise<SearchHit[]> {
@@ -189,6 +193,7 @@ export class FilesystemBackend implements VaultBackend, FileBackend, TextReplace
     to: string;
     backlinks_updated: number;
     backlinks_files_touched: number;
+    backlinks_skipped?: Array<{ path: string; reason: string }>;
   }> {
     return this.vault.moveNote(fromRel, toRel, {
       update_backlinks: options.update_backlinks,
@@ -212,7 +217,7 @@ export class FilesystemBackend implements VaultBackend, FileBackend, TextReplace
     return this.vault.editFile(relPath, edit);
   }
 
-  async moveFile(fromRel: string, toRel: string, options: { update_backlinks: boolean; overwrite: boolean }) {
+  async moveFile(fromRel: string, toRel: string, options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] }) {
     return this.vault.moveFile(fromRel, toRel, options);
   }
 }

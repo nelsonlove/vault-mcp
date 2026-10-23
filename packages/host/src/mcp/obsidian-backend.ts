@@ -45,6 +45,9 @@ import {
   parseGuardFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
   assertFilePath,
+  assertMovePair,
+  isBinaryAttachmentPath,
+  looksBinary,
   validateFileContent,
   applyFileEdit,
   planReplaceText,
@@ -808,10 +811,12 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
   async moveFile(
     fromRel: string,
     toRel: string,
-    options: { update_backlinks: boolean; overwrite: boolean },
+    options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number | null; backlinks_files_touched: number | null; link_check?: LinkCheck }> {
-    const kind = assertFilePath(fromRel);
-    if (assertFilePath(toRel) !== kind) throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type`);
+    // A .base or .canvas file, or an attachment whose extension is on the operator's list (core's
+    // assertMovePair; a note is refused, it moves with obsidian_move_note); the extension kept, and
+    // an attachment is never replaced (overwrite only for .base and .canvas).
+    assertMovePair(fromRel, toRel, options.extensions ?? [], options.overwrite);
     if (fromRel === toRel) throw new Error("from and to are the same path");
     // Before anything is trashed or any folder is made: a refused name moves nothing.
     await assertMoveName(this.app, fromRel, toRel, options.overwrite);
@@ -834,6 +839,9 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
       check = await moveWithLinks(this.app, file, toRel, {
         updateBacklinks: options.update_backlinks,
         ownLinks: false,
+        // An attachment is linked by its full name (`![[Scan.pdf]]`), so only notes whose text holds
+        // that name are parsed; a .base or .canvas keeps the basename scan it had (#580).
+        ...(file.extension === "base" || file.extension === "canvas" ? {} : { needleName: file.name }),
         visible: (p) => this.visible([p]).length === 1,
         isRecord: recordTest(this.recordIdentification),
       });
@@ -851,6 +859,23 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
       backlinks_files_touched: check.files_rewritten.length,
       link_check: check,
     };
+  }
+
+  /**
+   * `{ size }` for a binary file, else null (VaultBackend.binaryInfo): an attachment type is decided
+   * by its extension without a read; another file that is not a note by a NUL byte in its first
+   * bytes. obsidian_read_note then returns its rev and size and no content.
+   */
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    const f = this.app.vault.getAbstractFileByPath(relPath);
+    if (!(f instanceof TFile) || f.extension === "md") return null;
+    if (isBinaryAttachmentPath(relPath, extensions)) return { size: f.stat.size };
+    if (f.extension === "base" || f.extension === "canvas") return null;
+    const vault = this.app.vault as unknown as { readBinary?: (file: TFile) => Promise<ArrayBuffer> };
+    const binary = vault.readBinary
+      ? looksBinary(new Uint8Array(await vault.readBinary(f)))
+      : (await this.app.vault.read(f)).slice(0, 8000).includes("\u0000");
+    return binary ? { size: f.stat.size } : null;
   }
 }
 

@@ -182,6 +182,15 @@ export interface VaultBackend {
    */
   readNoteWhole?(relPath: string): Promise<string>;
 
+  /**
+   * `{ size }` when the file at `relPath` is binary, else null: binary by its type (core's
+   * `isBinaryAttachmentPath` over the default attachment list and `extensions`, decided without
+   * reading the file), or by a NUL byte in its first bytes. `obsidian_read_note` asks it for a
+   * path that is not a note, and for a binary file returns its rev and size and no content.
+   * Optional; a backend without it reads every file as text.
+   */
+  binaryInfo?(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null>;
+
   // ── Read: search ───────────────────────────────────────────────────────────
 
   /**
@@ -307,6 +316,8 @@ export interface VaultBackend {
     backlinks_files_touched: number | null;
     /** Live host only: what the damage check after its own backlink rewrite found. */
     link_check?: unknown;
+    /** Filesystem backend: notes whose backlink rewrite the written-content guard refused, left unchanged (#614). */
+    backlinks_skipped?: Array<{ path: string; reason: string }>;
   }>;
 
   /**

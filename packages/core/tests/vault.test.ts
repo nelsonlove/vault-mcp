@@ -421,18 +421,23 @@ describe("moveNote — backlink rewrite is guarded (issue #104 moveNote gap)", (
     const backlinksProvider = (p: string) => (p === "old-name.md" ? ["linker.md"] : []);
     const resolveRef = (ref: string) => (ref === "old-name" ? "old-name.md" : undefined);
 
-    await assert.rejects(
-      () =>
-        vault.moveNote("old-name.md", "accepted.md", {
-          update_backlinks: true,
-          overwrite: false,
-          backlinks_provider: backlinksProvider,
-          resolve_ref: resolveRef,
-        }),
-      isAcceptForbidden,
-    );
+    // Since #614 the refusal is per note: the note is left unchanged and named
+    // in `backlinks_skipped` with the guard's reason, and the move (which has
+    // already landed by the time backlinks are rewritten) is not reported as a
+    // failure half-done.
+    const result = await vault.moveNote("old-name.md", "accepted.md", {
+      update_backlinks: true,
+      overwrite: false,
+      backlinks_provider: backlinksProvider,
+      resolve_ref: resolveRef,
+    });
+    assert.equal(result.backlinks_files_touched, 0);
+    assert.equal(result.backlinks_updated, 0);
+    assert.equal(result.backlinks_skipped?.length, 1);
+    assert.equal(result.backlinks_skipped?.[0].path, "linker.md");
+    assert.match(result.backlinks_skipped?.[0].reason ?? "", /^accept_forbidden: /);
 
-    // The backlink file must be untouched — refusal means nothing lands.
+    // The backlink file must be untouched — refusal means nothing lands in it.
     const linkerContent = await vault.readNote("linker.md");
     assert.match(linkerContent, /\[\[old-name\]\]/, "the un-rewritten link must still be present");
     assert.doesNotMatch(linkerContent, /\[\[accepted\]\]/);
@@ -488,3 +493,57 @@ describe("moveNote — backlink rewrite is guarded (issue #104 moveNote gap)", (
   });
 });
 
+
+// ── #614: every backlink rewrite of a move passes the written-content guard ──
+//
+// A link inside a `verified` entry, an acceptance key or a declared protected
+// property is never rewritten: that note is left unchanged and named in
+// `backlinks_skipped` with the guard's reason; links in other keys and in the
+// body are rewritten as before, and the rest of the move lands.
+describe("#614 moveNote: the written-content guard on every backlink rewrite", () => {
+  const VERIFIED = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\n    note: \"see [[old-name]]\"\n---\nBody [[old-name]]\n";
+  const ORDINARY = "---\nrelated: \"[[old-name]]\"\n---\nBody [[old-name]]\n";
+  const ACCEPT_KEY = "---\nacceptance-status: \"[[old-name]]\"\n---\nBody [[old-name]]\n";
+  const DIVERGE = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\nrelated: '[[old-name]]'\n---\nBody [[old-name]]\n";
+  const move = (to: string, sources: string[]) =>
+    vault.moveNote("old-name.md", to, {
+      update_backlinks: true,
+      overwrite: false,
+      backlinks_provider: (p: string) => (p === "old-name.md" ? sources : []),
+      resolve_ref: (ref: string) => (ref === "old-name" ? "old-name.md" : undefined),
+    });
+  const reasonOf = (r: { backlinks_skipped?: Array<{ path: string; reason: string }> }, p: string) => r.backlinks_skipped?.find((x) => x.path === p)?.reason ?? "";
+
+  test("a verified entry's link and an acceptance key's link are not rewritten and are reported; an ordinary key and the body are rewritten", async () => {
+    await writeFile(path.join(tmpRoot, "old-name.md"), "content", "utf8");
+    await writeFile(path.join(tmpRoot, "v.md"), VERIFIED, "utf8");
+    await writeFile(path.join(tmpRoot, "o.md"), ORDINARY, "utf8");
+    await writeFile(path.join(tmpRoot, "b.md"), "Body [[old-name]]\n", "utf8");
+    await writeFile(path.join(tmpRoot, "k.md"), ACCEPT_KEY, "utf8");
+    const r = await move("new-name.md", ["v.md", "o.md", "b.md", "k.md"]);
+    assert.equal(await vault.readNote("v.md"), VERIFIED);
+    assert.match(reasonOf(r, "v.md"), /^accept_forbidden: .*verification field 'verified'/);
+    assert.equal(await vault.readNote("k.md"), ACCEPT_KEY);
+    assert.match(reasonOf(r, "k.md"), /^accept_forbidden: a link rewrite would change the guarded frontmatter key 'acceptance-status'/);
+    assert.equal(await vault.readNote("o.md"), "---\nrelated: \"[[new-name]]\"\n---\nBody [[new-name]]\n");
+    assert.equal(await vault.readNote("b.md"), "Body [[new-name]]\n");
+    assert.equal(r.backlinks_files_touched, 2);
+    assert.equal(r.backlinks_updated, 3, "only the links actually written are counted");
+    assert.equal(await vault.readNote("new-name.md"), "content", "the move itself lands");
+  });
+
+  test("a rewrite that YAML would read differently in a block holding a guarded key is refused", async () => {
+    await writeFile(path.join(tmpRoot, "old-name.md"), "content", "utf8");
+    await writeFile(path.join(tmpRoot, "d.md"), DIVERGE, "utf8");
+    const r = await move("It's.md", ["d.md"]);
+    assert.equal(await vault.readNote("d.md"), DIVERGE);
+    assert.match(reasonOf(r, "d.md"), /^accept_forbidden: .*cannot read as YAML does/);
+  });
+
+  test("an ordinary move reports no backlinks_skipped key at all", async () => {
+    await writeFile(path.join(tmpRoot, "old-name.md"), "content", "utf8");
+    await writeFile(path.join(tmpRoot, "b.md"), "Body [[old-name]]\n", "utf8");
+    const r = await move("new-name.md", ["b.md"]);
+    assert.equal("backlinks_skipped" in r, false);
+  });
+});

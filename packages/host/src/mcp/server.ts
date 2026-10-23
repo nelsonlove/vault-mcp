@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { inRecordFolder } from "./records.js";
 import { TFile, stringifyYaml, parseYaml, type App } from "obsidian";
-import { registerFsTools, registerFileTools, registerReplaceTextTool, normalizeWriteScope, ok,
+import { registerFsTools, registerFileTools, registerReplaceTextTool, normalizeWriteScope, normalizeFileMoveExtensions, ok,
   CHARACTER_LIMIT,
   noteLengthFrom,
   WholeReads,
@@ -575,6 +575,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   }, recordIdentification);
   registerFsTools(server, backend, {
     decodeHtml: false,
+    // obsidian_read_note returns no content for a binary file: the attachment types (core's default
+    // list and the operator's fileMoveExtensions), or a file with NUL bytes. Read per call.
+    binaryExtensions: () => normalizeFileMoveExtensions(ctx.getSettings().fileMoveExtensions),
     // obsidian_write_note's `frontmatter` (#500) is serialized as obsidian_write_notes serializes an item's.
     stringifyYaml,
     rev: (p) => probe.rev(p),
@@ -596,7 +599,8 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
         }
       : {}),
   });
-  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files through the same
+  // obsidian_write_file / _edit_file / _move_file (#575): .base and .canvas files (and, for the move,
+  // the attachment types the operator lists) through the same
   // backend and the same guarded registerTool, so every kernel rule above applies to them. No
   // profile option: the patched registerTool filters by profile here, as for every tool.
   // pathScope: a .base is a query (#580 review 1), so while the allowlist or a vault-wide write
@@ -608,6 +612,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
       if (normalizeWriteScope(st.writeScope).mode !== "all") return "the vault's write scope";
       return null;
     },
+    // The attachment types obsidian_move_file moves besides .base and .canvas: the operator's
+    // fileMoveExtensions setting, read per call (absent ⇒ the shipped default list).
+    moveExtensions: () => normalizeFileMoveExtensions(ctx.getSettings().fileMoveExtensions),
   });
   // obsidian_replace_text: exact text in one note, through the same backend and guarded registerTool,
   // so the kernel (if_rev, idempotency_key, the record guard, the journal), the Sync guard, the

@@ -272,3 +272,44 @@ describe("obsidian_rename_heading honours the record folders too (#482, PR #485 
   });
 });
 
+
+// #614: the link rewrites of a heading rename pass the same written-content guard
+// as a write of the note. This road writes only at the body positions the cache
+// records and never rewrites a frontmatter link (it reports one), so the guard
+// is what keeps a stale position or a note whose frontmatter the guard cannot
+// read from being written blind.
+describe("#614 obsidian_rename_heading's link rewrites pass the written-content guard", () => {
+  const H = { "A.md": "## Old heading\ntext\n" };
+  test("a link inside a verified value is not rewritten and is reported; an ordinary frontmatter link is reported as before; the body is rewritten", async () => {
+    const files = { ...H, "V.md": "---\nverified: \"[[A#Old heading]]\"\n---\nbody [[A#Old heading]]\n", "O.md": "---\nsee: \"[[A#Old heading]]\"\n---\nbody [[A#Old heading]]\n" };
+    const { app, store } = fakeVault(files);
+    const r = await tool(app)({ path: "A.md", heading: "Old heading", new_heading: "New" });
+    assert.equal(r.error, undefined, r.error);
+    assert.equal(store["V.md"], "---\nverified: \"[[A#Old heading]]\"\n---\nbody [[A#New]]\n", "the verified value keeps its link; the body link, which the guard admits, is rewritten");
+    assert.ok(r.data.skipped.some((s) => s.path === "V.md" && /frontmatter link in 'verified'/.test(s.reason)), JSON.stringify(r.data.skipped));
+    assert.ok(r.data.skipped.some((s) => s.path === "O.md" && /frontmatter link in 'see'/.test(s.reason)));
+    assert.equal(store["O.md"], "---\nsee: \"[[A#Old heading]]\"\n---\nbody [[A#New]]\n", "the body link is rewritten, the frontmatter link is not (as before)");
+    assert.deepEqual(r.data.files, ["A.md", "O.md", "V.md"]);
+  });
+
+  test("a note whose guarded key YAML reads differently is left unchanged and reported, in a dry run too", async () => {
+    const diverge = "---\nverified: \"a\\\\b\"\n---\nbody [[A#Old heading]]\n";
+    for (const dry_run of [false, true]) {
+      const { app, store } = fakeVault({ ...H, "D.md": diverge, "B.md": "x [[A#Old heading]]\n" });
+      const r = await tool(app)({ path: "A.md", heading: "Old heading", new_heading: "New", dry_run });
+      assert.equal(store["D.md"], diverge);
+      assert.ok(r.data.skipped.some((s) => s.path === "D.md" && /^accept_forbidden: .*cannot read as YAML does/.test(s.reason)), JSON.stringify(r.data.skipped));
+      assert.deepEqual(r.data.files, ["A.md", "B.md"]);
+      if (!dry_run) assert.equal(store["B.md"], "x [[A#New]]\n");
+    }
+  });
+
+  test("the heading's own note refused by the guard: nothing anywhere is written", async () => {
+    const own = "---\nverified: \"a\\\\b\"\n---\n## Old heading\n";
+    const { app, store } = fakeVault({ "A.md": own, "B.md": "x [[A#Old heading]]\n" });
+    const r = await tool(app)({ path: "A.md", heading: "Old heading", new_heading: "New" });
+    assert.match(r.error, /cannot read as YAML does/);
+    assert.equal(store["A.md"], own);
+    assert.equal(store["B.md"], "x [[A#Old heading]]\n");
+  });
+});

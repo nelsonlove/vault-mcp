@@ -5,7 +5,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, mkdir, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertFilePath, validateFileContent, applyFileEdit, fileKindOf, FILE_TOOL_NAMES, registerFileTools, resolveProfile } from "../src/index.ts";
+import {
+  assertFilePath, validateFileContent, applyFileEdit, fileKindOf, FILE_TOOL_NAMES, registerFileTools, resolveProfile,
+  DEFAULT_FILE_MOVE_EXTENSIONS, FILE_MOVE_EXTENSIONS_ENV_VAR, normalizeFileMoveExtensions, parseFileMoveExtensions, assertMovePath, assertMovePair,
+  readFileMoveExtensions, readFileMoveExtensionsText, isBinaryAttachmentPath, looksBinary,
+} from "../src/index.ts";
 import { FilesystemBackend } from "../src/fs-backend/filesystem-backend.ts";
 
 const BASE = "# made-up base\nfilters:\n  and:\n    - file.ext == \"md\"\nviews:\n  - type: table\n    name: Table # main\n    order: [file.name, status]\n  - type: cards\n    name: Cards\n";
@@ -29,6 +33,84 @@ describe("which paths these tools write", () => {
   test("no hidden folder or name, no empty, '.' or '..' segment", () => {
     for (const p of [".obsidian/x.base", "A/.trash/x.canvas", "A/.base", "A//x.base", "./x.base", "A/../x.canvas", "/x.base"]) assert.equal(code(() => assertFilePath(p)), "unsupported_file", p);
     assert.equal(assertFilePath("Projects 2026/Board one.canvas"), "canvas");
+  });
+});
+
+describe("which files obsidian_move_file moves", () => {
+  test("the default list is pinned: images, audio, video, PDF, and docx xlsx pptx odt zip; no script, config or note type", () => {
+    assert.deepEqual([...DEFAULT_FILE_MOVE_EXTENSIONS], [
+      "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif",
+      "mp3", "wav", "m4a", "ogg", "flac", "webm", "3gp",
+      "mp4", "mov", "mkv", "ogv",
+      "pdf",
+      "docx", "xlsx", "pptx", "odt", "zip",
+    ]);
+    assert.ok(Object.isFrozen(DEFAULT_FILE_MOVE_EXTENSIONS));
+    for (const e of ["md", "base", "canvas", "json", "css", "js", "mjs", "ts", "sh", "exe", "app", "html", "docm", "xlsm"]) assert.equal(DEFAULT_FILE_MOVE_EXTENSIONS.includes(e), false, e);
+    assert.equal(FILE_MOVE_EXTENSIONS_ENV_VAR, "VAULT_MCP_FILE_MOVE_EXTENSIONS");
+  });
+  test("the list is normalized: trimmed, no dot, lower case, letters and digits only, no md/base/canvas, no duplicates", () => {
+    assert.deepEqual(normalizeFileMoveExtensions([" .PDF", "pdf", "Zip", "md", ".base", "canvas", "tar.gz", "a/b", "", 7, "x".repeat(17), "heic"]), ["pdf", "zip", "heic"]);
+    assert.deepEqual(readFileMoveExtensions(["pdf", "md", "tar.gz", 7, "pdf"]).dropped, ["md", "tar.gz", "7"], "duplicates are not reported");
+    assert.deepEqual(normalizeFileMoveExtensions([]), []);
+    assert.deepEqual(parseFileMoveExtensions("pdf, .ZIP  docx"), ["pdf", "zip", "docx"]);
+  });
+  test("only an ABSENT value means the default; a present but malformed one means the empty list (only .base and .canvas), with a warning", () => {
+    assert.deepEqual(normalizeFileMoveExtensions(undefined), [...DEFAULT_FILE_MOVE_EXTENSIONS]);
+    assert.deepEqual(parseFileMoveExtensions(undefined), [...DEFAULT_FILE_MOVE_EXTENSIONS]);
+    for (const bad of ["pdf", null, { pdf: true }, 3, true]) {
+      const warned = [];
+      assert.deepEqual(normalizeFileMoveExtensions(bad, (m) => warned.push(m)), [], JSON.stringify(bad));
+      assert.equal(readFileMoveExtensions(bad).malformed, true);
+      assert.equal(warned.length, 1, JSON.stringify(bad));
+      assert.match(warned[0], /only \.base and \.canvas/);
+    }
+    const warned = [];
+    assert.deepEqual(parseFileMoveExtensions("pdf;zip", (m) => warned.push(m)), [], "text with no valid entry is empty, never the default");
+    assert.deepEqual(parseFileMoveExtensions(""), []);
+    assert.match(warned[0], /VAULT_MCP_FILE_MOVE_EXTENSIONS: left out 'pdf;zip'/);
+    assert.deepEqual(readFileMoveExtensionsText("pdf exe! zip").dropped, ["exe!"]);
+    const quiet = [];
+    normalizeFileMoveExtensions(["pdf"], (m) => quiet.push(m));
+    assert.deepEqual(quiet, [], "nothing left out, no warning");
+  });
+  test("a binary file by type, without a read; or by a NUL byte", () => {
+    assert.equal(isBinaryAttachmentPath("A/Scan.pdf"), true);
+    assert.equal(isBinaryAttachmentPath("A/Scan.PDF", []), true);
+    assert.equal(isBinaryAttachmentPath("A/Photo.heic", ["heic"]), true);
+    for (const p of ["A/Photo.heic", "A/Plan.md", "A/T.base", "A/P.canvas", "A/noext", "A/.pdf"]) assert.equal(isBinaryAttachmentPath(p, []), false, p);
+    assert.equal(looksBinary(new Uint8Array([0x25, 0x50, 0x00])), true);
+    assert.equal(looksBinary(new TextEncoder().encode("plain text")), false);
+  });
+  test("a path on the list moves, in any case; .base and .canvas always; a note never; anything else is refused", () => {
+    const list = ["pdf", "zip"];
+    assert.equal(assertMovePath("Inbox/Scan.pdf", list), "pdf");
+    assert.equal(assertMovePath("Inbox/Scan.PDF", list), "PDF");
+    assert.equal(assertMovePath("Inbox/Bundle 2026.zip", list), "zip");
+    assert.equal(assertMovePath("B/T.base", []), "base");
+    assert.equal(assertMovePath("B/P.canvas", []), "canvas");
+    for (const p of ["Inbox/Scan.pdf", "Inbox/run.exe", "Inbox/x.json", "Inbox/noext", "Inbox/T.BASE"]) assert.equal(code(() => assertMovePath(p, p.endsWith(".pdf") ? [] : list)), "unsupported_file", p);
+    for (const p of ["Notes/Plan.md", "Notes/Plan.MD"]) {
+      assert.equal(code(() => assertMovePath(p, ["md"])), "unsupported_file", p);
+      assert.throws(() => assertMovePath(p, list), /obsidian_move_note/);
+    }
+    for (const p of [".obsidian/x.pdf", "A/.trash/x.zip", "A/.pdf", "A//x.pdf", "./x.pdf", "A/../x.pdf", "/x.pdf"]) assert.equal(code(() => assertMovePath(p, list), p), "unsupported_file", p);
+  });
+  test("a move keeps the extension exactly: no change of type, nor of its case", () => {
+    const list = ["pdf", "zip", "png"];
+    assert.equal(assertMovePair("A/Scan.pdf", "B/Scan 2.pdf", list), undefined);
+    for (const [from, to] of [["A/Scan.pdf", "A/Scan.zip"], ["A/Scan.pdf", "A/Scan.PDF"], ["A/Scan.pdf", "A/Scan.pdf.png"], ["A/P.canvas", "A/P.base"]]) {
+      assert.equal(code(() => assertMovePair(from, to, list)), "unsupported_file", `${from} -> ${to}`);
+      assert.throws(() => assertMovePair(from, to, list), /does not keep the extension/);
+    }
+    assert.equal(code(() => assertMovePair("A/Scan.pdf", "A/Scan.md", list)), "unsupported_file");
+  });
+  test("overwrite is refused for an attachment (overwrite_refused); a .base or .canvas may still overwrite", () => {
+    assert.equal(code(() => assertMovePair("A/Scan.pdf", "B/Scan.pdf", ["pdf"], true)), "overwrite_refused");
+    assert.equal(code(() => assertMovePair("A/x.zip", "B/x.zip", ["zip"], true)), "overwrite_refused");
+    assert.equal(assertMovePair("A/P.canvas", "B/P.canvas", [], true), undefined);
+    assert.equal(assertMovePair("A/T.base", "B/T.base", [], true), undefined);
+    assert.equal(assertMovePair("A/Scan.pdf", "B/Scan.pdf", ["pdf"], false), undefined);
   });
 });
 
@@ -151,6 +233,44 @@ describe("the file-system backend", () => {
     assert.equal(await v.exists("B/P.canvas"), false);
     assert.equal(await v.read("N/Index.md"), "[[P.canvas]]\n", "the note's link is left as it was");
   });
+  test("moveFile moves a PDF and a zip on the list, keeps their bytes, and refuses one off the list, a type change and a note", async () => {
+    const pdf = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x00, 0xff, 0xfe]);
+    const zip = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0xff]);
+    const v = await vault({ "Inbox/Scan.pdf": pdf, "Inbox/Bundle.zip": zip, "Inbox/run.exe": "x", "N/Plan.md": "# Plan\n" });
+    const opt = (extensions) => ({ update_backlinks: true, overwrite: false, ...(extensions ? { extensions } : {}) });
+    // Without a list (a direct caller), only .base and .canvas move.
+    await assert.rejects(v.backend.moveFile("Inbox/Scan.pdf", "Files/Scan.pdf", opt()), (e) => e.code === "unsupported_file");
+    const list = ["pdf", "zip"];
+    let r = await v.backend.moveFile("Inbox/Scan.pdf", "Files/2026/Scan.pdf", opt(list));
+    assert.deepEqual([r.from, r.to, r.backlinks_updated], ["Inbox/Scan.pdf", "Files/2026/Scan.pdf", 0]);
+    assert.match(r.links_note, /does not rewrite links or embeds/);
+    assert.deepEqual(await readFile(join(v.root, "Files/2026/Scan.pdf")), pdf, "the bytes are moved as they were");
+    assert.equal(await v.exists("Inbox/Scan.pdf"), false);
+    r = await v.backend.moveFile("Inbox/Bundle.zip", "Files/Bundle 2026.zip", opt(list));
+    assert.deepEqual(await readFile(join(v.root, "Files/Bundle 2026.zip")), zip);
+    await assert.rejects(v.backend.moveFile("Inbox/run.exe", "Files/run.exe", opt(list)), (e) => e.code === "unsupported_file");
+    await assert.rejects(v.backend.moveFile("Files/2026/Scan.pdf", "Files/2026/Scan.zip", opt(list)), /does not keep the extension/);
+    await assert.rejects(v.backend.moveFile("N/Plan.md", "M/Plan.md", opt(["md", ...list])), /obsidian_move_note/);
+    await assert.rejects(v.backend.moveFile("Files/2026/Scan.pdf", ".hidden/Scan.pdf", opt(list)), (e) => e.code === "unsupported_file");
+    assert.equal(await v.exists("Inbox/run.exe"), true);
+    assert.equal(await v.exists("N/Plan.md"), true);
+    assert.equal(await v.exists("Files/2026/Scan.pdf"), true);
+  });
+  test("moveFile never replaces an attachment: overwrite: true is refused and both files stay", async () => {
+    const v = await vault({ "Inbox/Scan.pdf": "new", "Files/Scan.pdf": "original" });
+    await assert.rejects(v.backend.moveFile("Inbox/Scan.pdf", "Files/Scan.pdf", { update_backlinks: true, overwrite: true, extensions: ["pdf"] }), (e) => e.code === "overwrite_refused");
+    assert.equal(await v.read("Files/Scan.pdf"), "original");
+    assert.equal(await v.read("Inbox/Scan.pdf"), "new");
+    await assert.rejects(v.backend.moveFile("Inbox/Scan.pdf", "Files/Scan.pdf", { update_backlinks: true, overwrite: false, extensions: ["pdf"] }), /already exists/);
+  });
+  test("binaryInfo: an attachment type by its extension, another file by a NUL byte; text and notes are not binary", async () => {
+    const v = await vault({ "A/Scan.pdf": "%PDF text-looking", "A/blob.dat": Buffer.from([1, 2, 0, 3]), "A/readme.txt": "hello", "A/Plan.md": "# x\n", "A/P.canvas": CANVAS });
+    assert.deepEqual(await v.backend.binaryInfo("A/Scan.pdf", []), { size: 17 });
+    assert.deepEqual(await v.backend.binaryInfo("A/blob.dat", []), { size: 4 });
+    assert.equal(await v.backend.binaryInfo("A/readme.txt", []), null);
+    assert.equal(await v.backend.binaryInfo("A/P.canvas", []), null);
+    assert.equal(await v.backend.binaryInfo("A/missing.pdf", []), null);
+  });
   test("the file-system backend's permanent delete stays notes-only", async () => {
     const v = await vault({ "B/P.canvas": CANVAS });
     await assert.rejects(v.backend.deleteNote("B/P.canvas", true), /must end in \.md/);
@@ -179,6 +299,26 @@ describe("registerFileTools", () => {
     const full = fakeServer();
     registerFileTools(full, {}, { profile: resolveProfile("full") });
     assert.equal(full.tools.size, 3);
+  });
+  test("the move hands the operator's list to the backend, read per call, and names it in its description", async () => {
+    const s = fakeServer();
+    let list = ["pdf"];
+    const seen = [];
+    registerFileTools(s, { moveFile: async (from, to, o) => { seen.push(o.extensions); return { from, to, backlinks_updated: null, backlinks_files_touched: null }; } }, { moveExtensions: () => list });
+    const move = s.tools.get("obsidian_move_file");
+    assert.match(move.def.description, /`fileMoveExtensions` setting/);
+    assert.match(move.def.description, /read on each call/);
+    assert.equal(move.def.description.includes(".pdf;"), false, "no list frozen into the description");
+    assert.match(move.def.description, /obsidian_move_note/);
+    await move.handler({ from: "A/x.pdf", to: "B/x.pdf", update_backlinks: true, overwrite: false });
+    list = ["zip"];
+    await move.handler({ from: "A/x.zip", to: "B/x.zip", update_backlinks: true, overwrite: false });
+    assert.deepEqual(seen, [["pdf"], ["zip"]]);
+    const none = fakeServer();
+    const got = [];
+    registerFileTools(none, { moveFile: async (from, to, o) => { got.push(o.extensions); return { from, to, backlinks_updated: null, backlinks_files_touched: null }; } });
+    await none.tools.get("obsidian_move_file").handler({ from: "A/x.canvas", to: "B/x.canvas", update_backlinks: true, overwrite: false });
+    assert.deepEqual(got, [[]], "no list given: none, so only .base and .canvas move");
   });
   test("kernelArgs names if_rev, idempotency_key and intent (the file-system server accepts them)", () => {
     const s = fakeServer();

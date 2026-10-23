@@ -207,3 +207,147 @@ describe("the file tools on the file-system server", () => {
     }
   });
 });
+
+describe("obsidian_move_file on attachment files (VAULT_MCP_FILE_MOVE_EXTENSIONS)", () => {
+  const ENV = "VAULT_MCP_FILE_MOVE_EXTENSIONS";
+  const PDF = Buffer.from([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x37, 0x0a, 0x00, 0xff, 0xfe]);
+  const ZIP = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0xff]);
+  const bytes = (p: string) => readFile(path.join(vault, p));
+  const put = async (p: string, b: Buffer | string) => {
+    await mkdir(path.dirname(path.join(vault, p)), { recursive: true });
+    await writeFile(path.join(vault, p), b);
+  };
+
+  test("unset: the default list; a PDF and a zip move between folders with their bytes, journaled, and the note's embed is left (links_note)", async () => {
+    delete process.env[ENV];
+    await put("Inbox/Scan.pdf", PDF);
+    await put("Inbox/Bundle.zip", ZIP);
+    await put("Notes/Files.md", "![[Scan.pdf]]\n");
+    const c = await client();
+    let r = await call(c, "obsidian_move_file", { from: "Inbox/Scan.pdf", to: "Files/2026/Scan.pdf", idempotency_key: "a-1" });
+    assert.equal(r.isError, undefined, err(r));
+    assert.deepEqual(await bytes("Files/2026/Scan.pdf"), PDF);
+    assert.equal(existsSync(path.join(vault, "Inbox", "Scan.pdf")), false);
+    assert.match(String(r.structuredContent?.links_note), /does not rewrite links or embeds/);
+    assert.equal(await read("Notes/Files.md"), "![[Scan.pdf]]\n");
+    r = await call(c, "obsidian_move_file", { from: "Inbox/Bundle.zip", to: "Files/Bundle 2026.zip" });
+    assert.equal(r.isError, undefined, err(r));
+    assert.deepEqual(await bytes("Files/Bundle 2026.zip"), ZIP);
+    const moves = (await records()).filter((x) => x.op === "obsidian_move_file" && x.outcome === "ok");
+    assert.ok(moves.length >= 2, "each move is journaled");
+    await c.close();
+  });
+
+  test("off the list, a type change, a note and a hidden folder are refused, and nothing moves", async () => {
+    delete process.env[ENV];
+    await put("Inbox/run.exe", "x");
+    await put("Inbox/Two.pdf", PDF);
+    const c = await client();
+    for (const [from, to, want] of [
+      ["Inbox/run.exe", "Files/run.exe", /^Error \[unsupported_file\]: .*does not move here/],
+      ["Inbox/Two.pdf", "Inbox/Two.zip", /does not keep the extension/],
+      ["Inbox/Two.pdf", "Inbox/Two.PDF", /does not keep the extension/],
+      ["Notes/Index.md", "Archive/Index.md", /obsidian_move_note/],
+      ["Inbox/Two.pdf", ".hidden/Two.pdf", /^Error \[unsupported_file\]/],
+    ] as const) {
+      const r = await call(c, "obsidian_move_file", { from, to });
+      assert.match(err(r), want, `${from} -> ${to}`);
+    }
+    assert.equal(existsSync(path.join(vault, "Inbox", "run.exe")), true);
+    assert.equal(existsSync(path.join(vault, "Inbox", "Two.pdf")), true);
+    assert.equal(existsSync(path.join(vault, "Notes", "Index.md")), true);
+    await c.close();
+  });
+
+  test("the variable sets the list: empty moves only .base and .canvas; a listed type moves", async () => {
+    await put("Inbox/Three.pdf", PDF);
+    await put("Inbox/Photo.heic", "x");
+    process.env[ENV] = "";
+    try {
+      const c = await client();
+      let r = await call(c, "obsidian_move_file", { from: "Inbox/Three.pdf", to: "Files/Three.pdf" });
+      assert.match(err(r), /^Error \[unsupported_file\]/);
+      assert.equal(existsSync(path.join(vault, "Inbox", "Three.pdf")), true);
+      process.env[ENV] = "pdf, HEIC";
+      r = await call(c, "obsidian_move_file", { from: "Inbox/Photo.heic", to: "Files/Photo.heic" });
+      assert.equal(r.isError, undefined, err(r));
+      r = await call(c, "obsidian_move_file", { from: "Inbox/Three.pdf", to: "Files/Three.pdf" });
+      assert.equal(r.isError, undefined, err(r));
+      await c.close();
+    } finally {
+      delete process.env[ENV];
+    }
+  });
+
+  test("both ends are path-checked: an escape at either end is refused, and a write scope refuses the move", async () => {
+    await put("Inbox/Four.pdf", PDF);
+    const c = await client();
+    for (const [from, to] of [["Inbox/Four.pdf", "../Four.pdf"], ["../Four.pdf", "Files/Four.pdf"]]) {
+      const r = await call(c, "obsidian_move_file", { from, to });
+      assert.equal(r.isError, true, `${from} -> ${to}`);
+    }
+    assert.equal(existsSync(path.join(vault, "Inbox", "Four.pdf")), true);
+    assert.equal(existsSync(path.join(vault, "..", "Four.pdf")), false);
+    await c.close();
+    process.env[WRITE_SCOPE_ENV_VAR] = JSON.stringify({ mode: "create-only", paths: ["**"] });
+    try {
+      const s = await client();
+      const r = await call(s, "obsidian_move_file", { from: "Inbox/Four.pdf", to: "Files/Four.pdf" });
+      assert.match(err(r), /^Error \[write_scope\]/);
+      assert.equal(existsSync(path.join(vault, "Inbox", "Four.pdf")), true);
+      await s.close();
+    } finally {
+      delete process.env[WRITE_SCOPE_ENV_VAR];
+    }
+  });
+
+  test("a move never replaces an attachment: overwrite: true is refused and both files stay (fs.rename would destroy one)", async () => {
+    await put("Inbox/Five.pdf", "new");
+    await put("Files/Five.pdf", "original");
+    const c = await client();
+    const r = await call(c, "obsidian_move_file", { from: "Inbox/Five.pdf", to: "Files/Five.pdf", overwrite: true });
+    assert.match(err(r), /^Error \[overwrite_refused\]/);
+    assert.equal(await read("Files/Five.pdf"), "original");
+    assert.equal(await read("Inbox/Five.pdf"), "new");
+    await c.close();
+  });
+
+  test("a set but malformed variable means only .base and .canvas move, never the default", async () => {
+    await put("Inbox/Six.pdf", PDF);
+    process.env[ENV] = "pdf;zip";
+    try {
+      const c = await client();
+      const r = await call(c, "obsidian_move_file", { from: "Inbox/Six.pdf", to: "Files/Six.pdf" });
+      assert.match(err(r), /^Error \[unsupported_file\]/);
+      assert.equal(existsSync(path.join(vault, "Inbox", "Six.pdf")), true);
+      await c.close();
+    } finally {
+      delete process.env[ENV];
+    }
+  });
+
+  test("obsidian_read_note on a binary file returns {path, size, binary: true} and no content", async () => {
+    await put("Inbox/Seven.pdf", PDF);
+    await put("Inbox/blob.dat", Buffer.from([1, 2, 0, 3]));
+    await put("Inbox/readme.txt", "hello");
+    const c = await client();
+    for (const full of [false, true]) {
+      const r = await call(c, "obsidian_read_note", { path: "Inbox/Seven.pdf", ...(full ? { full } : {}) });
+      assert.equal(r.isError, undefined, err(r));
+      assert.deepEqual(r.structuredContent, { path: "Inbox/Seven.pdf", size: PDF.length, binary: true });
+    }
+    let r = await call(c, "obsidian_read_note", { path: "Inbox/blob.dat" });
+    assert.deepEqual(r.structuredContent, { path: "Inbox/blob.dat", size: 4, binary: true });
+    r = await call(c, "obsidian_read_note", { path: "Inbox/readme.txt" });
+    assert.equal(r.structuredContent?.content, "hello");
+    await c.close();
+  });
+
+  test("only the move widens: obsidian_write_file still refuses a PDF", async () => {
+    const c = await client();
+    const r = await call(c, "obsidian_write_file", { path: "Inbox/New.pdf", content: "%PDF-1.7" });
+    assert.match(err(r), /^Error \[unsupported_file\]/);
+    assert.equal(existsSync(path.join(vault, "Inbox", "New.pdf")), false);
+    await c.close();
+  });
+});

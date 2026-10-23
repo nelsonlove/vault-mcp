@@ -22,6 +22,9 @@
 //      its text is unchanged, and from its current text otherwise. The moved
 //      note's own relative links (markdown or wiki) are rewritten from its new
 //      folder.
+//   Each rewrite passes the written-content guard first, as any write of a note
+//   does (#614): a note whose rewrite it refuses is left unchanged and reported
+//   in `failed`, and the rest of the move lands.
 //   RECORDS (01.44 rule 8) are never rewritten: a note that links the moved note
 //   from inside a record keeps its link as written, and the moved note's own
 //   links stay as written when it is a record itself. Each link left is reported
@@ -35,6 +38,7 @@ import { TFile, type App } from "obsidian";
 import { indexedLinkers } from "./link-index.js";
 import { parseLinks, rewriteLink, applyEdits, isRelativeLinkpath, type TextLink, type Edit } from "./link-rewrite.js";
 import { recordTest, type IsRecord } from "./records.js";
+import { assertLinkRewriteAllowed } from "@vault-mcp/core";
 
 /** At most this many records are named in `records_left`; `records_left_total` counts them all. */
 export const RECORDS_LEFT_CAP = 100;
@@ -56,7 +60,7 @@ export interface LinkCheck {
   own_links_broken: Array<{ target: string; before: number; after: number }>;
   /** A note the index says links the note, where no link to it was found in its text (or, while its index entry is current, fewer links than the index counts). */
   index_only: string[];
-  /** A note that could not be rewritten, and why. */
+  /** A note that could not be rewritten, and why; left exactly as it was. A note the written-content guard refused (a link in a `verified` entry, an acceptance key or a declared protected property, #614) is here with the reason prefixed `accept_forbidden:`. */
   failed: Array<{ path: string; reason: string }>;
   /**
    * A record whose links were left as written (01.44 rule 8) and no longer reach
@@ -90,6 +94,13 @@ export interface MoveWithLinksOptions {
    * file, #575: YAML or JSON, which the Markdown link parser must not edit). Default true.
    */
   ownLinks?: boolean;
+  /**
+   * The name the find step looks for in a note's text before it parses the note. Default: the
+   * file's basename (a note is linked as `[[Plan]]`). An attachment is linked by its full name with
+   * the extension (`![[Scan.pdf]]`), so a move of one passes `file.name`: a note that only says
+   * "scan" is then not parsed (#594 review 1). Encoded forms are matched as for the basename.
+   */
+  needleName?: string;
   /** Which notes are records, never rewritten. Every live road passes the operator's settings (#397, #482). Default: only the shipped note marker `record: true`, and NO folder (the plugin ships no folder names, #482). */
   isRecord?: IsRecord;
 }
@@ -179,7 +190,7 @@ export async function moveWithLinks(app: App, file: TFile, to: string, opts: Mov
   const visible = opts.visible ?? (() => true);
   const update = opts.updateBacklinks !== false;
   const oldPath = file.path;
-  const names = needles(file.basename);
+  const names = needles(opts.needleName ?? file.basename);
   const check: LinkCheck = { ok: true, links_rewritten: 0, files_rewritten: [], candidates: 0, stale_sources: 0, still_linking_old: [], not_reaching_new: [], own_links_broken: [], index_only: [], failed: [], records_left: [], records_left_total: 0, find_ms: 0, check_ms: 0, hidden: 0 };
   const isRecord = opts.isRecord ?? recordTest();
   // Records whose links are left as written, with the links that reached the note (or, for the moved note, their targets).
@@ -275,11 +286,16 @@ export async function moveWithLinks(app: App, file: TFile, to: string, opts: Mov
         }
         const next = applyEdits(data, edits);
         if (next === null) throw new Error("the note's links overlap or moved while it was being rewritten");
+        // The written-content guard, as for any write of a note (#614): a link in a `verified` entry, an
+        // acceptance key or a declared protected property is never rewritten by an agent. A refusal throws
+        // here, before anything is written, so the note is left exactly as it was and is reported in `failed`.
+        if (next !== data) assertLinkRewriteAllowed(data, next);
         n = edits.length;
         return next;
       });
     } catch (e) {
-      check.failed.push({ path: srcPath, reason: e instanceof Error ? e.message : String(e) });
+      const msg = e instanceof Error ? e.message : String(e);
+      check.failed.push({ path: srcPath, reason: (e as { code?: unknown }).code === "accept_forbidden" ? `accept_forbidden: ${msg}` : msg });
       continue;
     }
     texts.forget(srcPath);

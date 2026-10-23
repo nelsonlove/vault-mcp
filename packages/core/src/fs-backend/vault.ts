@@ -12,6 +12,7 @@ import type {
 } from "../vault-backend.js";
 import {
   AcceptForbiddenError,
+  assertGuardedKeysUnchanged,
   acceptTransitionReason,
   acceptTransitionNeedsBefore,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
@@ -22,7 +23,7 @@ import {
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
 import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace, lineEndingOf } from "../note-sections.js";
-import { assertFilePath, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
+import { assertFilePath, assertMovePair, isBinaryAttachmentPath, looksBinary, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 import { planReplaceText, type ReplaceTextResult } from "../replace-text.js";
 
 /**
@@ -81,12 +82,21 @@ export type { FrontmatterScalar, FrontmatterEditValue, NoteRef, SearchHit, Searc
 const KEY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_\-]*):\s*(.*?)\s*$/;
 
 function needsQuoting(s: string): boolean {
-  return /[,:#&*!|>'"%@`{}[\]]|^\s|\s$/.test(s);
+  // A backslash or a control character (a line break included) is quoted too:
+  // written plain or half-escaped, YAML would read it as another value, or as
+  // more keys.
+  return /[,:#&*!|>'"%@`{}[\]\\\x00-\x1f\x7f]|^\s|\s$/.test(s);
 }
 
+/**
+ * One scalar as YAML text. A quoted value is a JSON string, which is a valid
+ * YAML double-quoted scalar (JSON is a subset of YAML 1.2): every backslash,
+ * quote, line break and control character is escaped, so YAML reads back the
+ * exact value that was set, on one line.
+ */
 function serializeScalar(v: FrontmatterScalar): string {
   if (typeof v === "boolean" || typeof v === "number") return String(v);
-  if (needsQuoting(v)) return `"${v.replace(/"/g, '\\"')}"`;
+  if (needsQuoting(v)) return JSON.stringify(v);
   return v;
 }
 
@@ -486,6 +496,27 @@ class VaultImpl {
     return fs.readFile(this.resolveInVault(relPath), "utf8");
   }
 
+  /** `{ size }` for a binary file (by type, or a NUL byte in its first 8,000 bytes), else null; see VaultBackend. */
+  async binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+    const abs = this.resolveInVault(relPath);
+    let st;
+    try {
+      st = await fs.stat(abs);
+    } catch {
+      return null; // the read that follows names the error
+    }
+    if (!st.isFile()) return null;
+    if (isBinaryAttachmentPath(relPath, extensions)) return { size: st.size };
+    const fh = await fs.open(abs, "r");
+    try {
+      const buf = new Uint8Array(Math.min(st.size, 8000));
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      return looksBinary(buf.subarray(0, bytesRead)) ? { size: st.size } : null;
+    } finally {
+      await fh.close();
+    }
+  }
+
   async writeNote(
     relPath: string,
     content: string,
@@ -656,6 +687,8 @@ class VaultImpl {
 
     if (!region.match) {
       const newText = `---\n${serialized}\n---\n\n${text}`;
+      // The text that lands is checked too, not only the {key: value} above.
+      await this.guardWrittenContent(relPath, newText);
       await fs.writeFile(abs, newText, "utf8");
       return { previous: undefined, created_frontmatter: true };
     }
@@ -671,7 +704,10 @@ class VaultImpl {
       if (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
       lines.push(...serialized.split("\n"));
     }
-    await fs.writeFile(abs, reassemble(region, lines.join("\n")), "utf8");
+    const newText = reassemble(region, lines.join("\n"));
+    // The text that lands is checked too, not only the {key: value} above.
+    await this.guardWrittenContent(relPath, newText);
+    await fs.writeFile(abs, newText, "utf8");
     return { previous, created_frontmatter: false };
   }
 
@@ -699,7 +735,9 @@ class VaultImpl {
     this.guardResultingFrontmatter(beforeFm, afterFm);
     const previous = parseSingleKeyFromLines(lines, key, range);
     lines.splice(range.start, range.end - range.start);
-    await fs.writeFile(abs, reassemble(region, lines.join("\n")), "utf8");
+    const newText = reassemble(region, lines.join("\n"));
+    await this.guardWrittenContent(relPath, newText);
+    await fs.writeFile(abs, newText, "utf8");
     return { previous, existed: true };
   }
 
@@ -875,7 +913,7 @@ class VaultImpl {
       /** Callback that resolves a ref to a path via the index. */
       resolve_ref: (ref: string) => string | undefined;
     }
-  ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number }> {
+  ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; backlinks_skipped?: Array<{ path: string; reason: string }> }> {
     const absFrom = this.resolveInVault(fromRel);
     const absTo = this.resolveInVault(toRel);
     if (!toRel.toLowerCase().endsWith(".md")) {
@@ -910,6 +948,7 @@ class VaultImpl {
 
     let backlinksUpdated = 0;
     let backlinksFilesTouched = 0;
+    let backlinksSkipped: Array<{ path: string; reason: string }> = [];
     if (options.update_backlinks) {
       const result = await rewriteBacklinks(
         this,
@@ -920,6 +959,7 @@ class VaultImpl {
       );
       backlinksUpdated = result.refs_rewritten;
       backlinksFilesTouched = result.files_touched;
+      backlinksSkipped = result.skipped;
     }
 
     return {
@@ -927,6 +967,8 @@ class VaultImpl {
       to: toRel,
       backlinks_updated: backlinksUpdated,
       backlinks_files_touched: backlinksFilesTouched,
+      // Only when a note was left unchanged, so an ordinary move's result is as before.
+      ...(backlinksSkipped.length > 0 ? { backlinks_skipped: backlinksSkipped } : {}),
     };
   }
 
@@ -966,12 +1008,11 @@ class VaultImpl {
   async moveFile(
     fromRel: string,
     toRel: string,
-    options: { update_backlinks: boolean; overwrite: boolean },
+    options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
-    const kind = assertFilePath(fromRel);
-    if (assertFilePath(toRel) !== kind) {
-      throw new Error(`'${toRel}' does not keep the extension of '${fromRel}'; a move does not change a file's type.`);
-    }
+    // A .base or .canvas file, or one whose extension is on the operator's list; the extension kept,
+    // and no overwrite of an attachment (fs.rename would destroy the file replaced, for good).
+    assertMovePair(fromRel, toRel, options.extensions ?? [], options.overwrite);
     const absFrom = this.resolveInVault(fromRel);
     const absTo = this.resolveInVault(toRel);
     if (absFrom === absTo) throw new Error("'from' and 'to' resolve to the same path");
@@ -980,11 +1021,14 @@ class VaultImpl {
       linked: true,
       folderExists: (p) => existsSync(path.join(this.root, p)),
     });
+    let fromIsFile = false;
     try {
-      await fs.access(absFrom);
+      fromIsFile = (await fs.stat(absFrom)).isFile();
     } catch {
       throw new Error(`not found: ${fromRel}`);
     }
+    // A folder whose name ends like a file is not a file: this tool moves one file.
+    if (!fromIsFile) throw new Error(`not a file: ${fromRel}`);
     if (existsSync(absTo) && !options.overwrite) {
       throw new Error(`Destination '${toRel}' already exists. Pass overwrite: true to replace.`);
     }
@@ -996,7 +1040,7 @@ class VaultImpl {
       backlinks_updated: 0,
       backlinks_files_touched: 0,
       links_note:
-        "The file-system server does not rewrite links to a .base or .canvas file: its link index covers notes only. " +
+        "The file-system server does not rewrite links or embeds to a file that is not a note: its link index covers notes only. " +
         "A note that linked the old path still names it; move the file on the live Obsidian server to have them rewritten, or fix them with obsidian_patch_note.",
     };
   }
@@ -1048,9 +1092,10 @@ async function rewriteBacklinks(
   toRel: string,
   backlinksProvider: (path: string) => string[],
   resolveRef: (ref: string) => string | undefined
-): Promise<{ refs_rewritten: number; files_touched: number }> {
+): Promise<{ refs_rewritten: number; files_touched: number; skipped: Array<{ path: string; reason: string }> }> {
+  const skipped: Array<{ path: string; reason: string }> = [];
   const sources = backlinksProvider(fromRel);
-  if (sources.length === 0) return { refs_rewritten: 0, files_touched: 0 };
+  if (sources.length === 0) return { refs_rewritten: 0, files_touched: 0, skipped };
 
   const fromPathNoExt = fromRel.replace(/\.md$/i, "");
   const toBasename = path.basename(toRel, ".md");
@@ -1074,6 +1119,7 @@ async function rewriteBacklinks(
     }
 
     let changed = false;
+    let rewrites = 0;
     const next = text.replace(WIKILINK_TOKEN_RE, (match, target: string, suffix: string) => {
       const trimmed = target.trim();
       // Only rewrite if this ref currently resolves to the from-note.
@@ -1086,7 +1132,7 @@ async function rewriteBacklinks(
       else if (trimmed === fromPathNoExt) newTarget = toPathNoExt;
       else newTarget = toBasename;
       changed = true;
-      totalRewrites++;
+      rewrites++;
       return `[[${newTarget}${suffix || ""}]]`;
     });
 
@@ -1099,12 +1145,26 @@ async function rewriteBacklinks(
       // itself to carry a line break plus the assertion — but the other
       // three content-write paths on this backend are all guarded, and this
       // one should not be the exception.
-      await vault.guardWrittenContent(src, next);
+      //
+      // A refusal leaves this note unchanged and is reported in `skipped` with
+      // the guard's reason (#614): a link in a `verified` entry, an acceptance
+      // key or a declared protected property is never rewritten by an agent.
+      // The move itself has already landed, so the other notes are still
+      // rewritten rather than the call failing half-done.
+      try {
+        await vault.guardWrittenContent(src, next);
+        assertGuardedKeysUnchanged(text, next);
+      } catch (e) {
+        if (!(e instanceof AcceptForbiddenError)) throw e;
+        skipped.push({ path: src, reason: `accept_forbidden: ${e.message}` });
+        continue;
+      }
       await fs.writeFile(absSrc, next, "utf8");
+      totalRewrites += rewrites;
       filesTouched++;
     }
   }
-  return { refs_rewritten: totalRewrites, files_touched: filesTouched };
+  return { refs_rewritten: totalRewrites, files_touched: filesTouched, skipped };
 }
 
 // ── Module-level singleton (process.env.VAULT_PATH) ──────────────────────────
@@ -1228,7 +1288,7 @@ export async function moveNote(
     backlinks_provider: (path: string) => string[];
     resolve_ref: (ref: string) => string | undefined;
   }
-): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number }> {
+): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; backlinks_skipped?: Array<{ path: string; reason: string }> }> {
   return _impl.moveNote(fromRel, toRel, options);
 }
 
@@ -1240,10 +1300,14 @@ export async function editFile(relPath: string, edit: FileEdit): Promise<FileEdi
   return _impl.editFile(relPath, edit);
 }
 
+export async function binaryInfo(relPath: string, extensions: readonly string[]): Promise<{ size: number } | null> {
+  return _impl.binaryInfo(relPath, extensions);
+}
+
 export async function moveFile(
   fromRel: string,
   toRel: string,
-  options: { update_backlinks: boolean; overwrite: boolean },
+  options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
 ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; links_note: string }> {
   return _impl.moveFile(fromRel, toRel, options);
 }
