@@ -75,6 +75,10 @@ export interface NoteOutline {
   /** For a line on which a `%%` comment closes, the column after the
    *  closing `%%` (Obsidian reads the rest as a new block); else -1. */
   commentClose: number[];
+  /** Fenced code blocks as [start, end) offsets, each from its opening
+   *  line's start to its closing line's end (or where its container ended,
+   *  or the end of the text). */
+  fences: Array<[number, number]>;
   headings: TextHeading[];
 }
 
@@ -133,6 +137,9 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     lineStarts[i] = off;
     off += lines[i].length + 1;
   }
+  // A leading BOM is not part of the first line's Markdown (Obsidian's
+  // reader drops it): the first line starts after it.
+  if (text.charCodeAt(0) === 0xfeff) { lines[0] = lines[0].slice(1); lineStarts[0] = 1; }
   const hidden: boolean[] = new Array(lines.length).fill(false);
   const headingLine: boolean[] = new Array(lines.length).fill(false);
   const headings: TextHeading[] = [];
@@ -155,6 +162,9 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
   // only where a block can start: never inside a `%%` comment or `$$` math,
   // and a `%%` inside a fence is code.
   const fence = new FenceTracker();
+  const fences: Array<[number, number]> = [];
+  let fenceStart = -1;
+  const lineEnd = (i: number) => lineStarts[i] + lines[i].length;
 
   type Open =
     | { kind: "math"; len: number }
@@ -204,9 +214,11 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     const s = bare(lines[i]);
     if (!open && fence.isOpen) {
       const st = fence.step(lines[i], lines[i + 1], { column: items.length ? items[items.length - 1] : 0 });
+      if (st.endedBefore && fenceStart >= 0) { fences.push([fenceStart, lineEnd(i - 1)]); fenceStart = -1; }
       if (st.kind !== "none") {
         hidden[i] = true;
-        if (st.kind === "close") prev = "boundary";
+        if (st.kind === "open") fenceStart = lineStarts[i];
+        if (st.kind === "close") { fences.push([fenceStart, lineEnd(i)]); fenceStart = -1; prev = "boundary"; }
         continue;
       }
       // The fence's container ended before this line: read it as usual.
@@ -280,6 +292,7 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     }
     if (fence.step(lines[i], lines[i + 1], { column }).kind === "open") {
       hidden[i] = true;
+      fenceStart = lineStarts[i];
       continue;
     }
     const atx = nested ? null : parseAtxLine(s);
@@ -348,7 +361,19 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
     prev = "text";
   }
 
-  return { lines, lineStarts, bodyLine, hidden, headingLine, commentClose, headings };
+  if (fence.isOpen && fenceStart >= 0) fences.push([fenceStart, text.length]);
+  return { lines, lineStarts, bodyLine, hidden, headingLine, commentClose, fences, headings };
+}
+
+/**
+ * Fenced code blocks of `text` that start at or after `from`, as [start,
+ * end) spans: the fences the heading parser finds (`outlineNote`), so the
+ * link rewriter and the patch tools read code the same way, with the same
+ * list and quote context (a fence in a list item may be indented by a tab or
+ * four spaces under the item). The front matter is skipped.
+ */
+export function fencedSpans(text: string, from = 0): Array<[number, number]> {
+  return outlineNote(text).fences.filter(([a]) => a >= from);
 }
 
 /** A heading's section: from just after the heading to the next heading of

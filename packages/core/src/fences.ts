@@ -88,7 +88,7 @@ export class FenceTracker {
       const quotes = (lead.match(/>/g) ?? []).length;
       const rest = raw.slice(lead.length);
       const blank = rest.trim() === "";
-      const indent = /^ */.exec(raw)![0].length;
+      const indent = columnsOf(raw);
       let ends = false;
       // Indentation counts for indented code, so it is read on the unquoted line.
       if (o.quotes > 0 && quotes < o.quotes && QUOTE_INTERRUPTS.test(quotes === 0 ? raw : rest)) ends = true;
@@ -123,11 +123,12 @@ export class FenceTracker {
       const fenceLead = raw.length - line.length;
       const quoteLead = LEAD.exec(raw)![0];
       const marker = fenceLead > quoteLead.length;
-      const spaces = /^ */.exec(raw)![0].length;
+      const indent = columnsOf(raw);
       const col = context?.column ?? 0;
       // With a context, the fence (or the list marker before it) sits at
-      // most three spaces past the item's content column.
-      if (context && quoteLead.length === spaces && (spaces < (marker ? 0 : col) || spaces > col + 3)) return { kind: "none", endedBefore };
+      // most three columns past the item's content column (a tab counts to
+      // the next four).
+      if (context && !quoteLead.includes(">") && (indent < (marker ? 0 : col) || indent > col + 3)) return { kind: "none", endedBefore };
       this.open = {
         ch: m[1][0], len: m[1].length, sawBlank: false,
         quotes: (quoteLead.match(/>/g) ?? []).length,
@@ -138,27 +139,4 @@ export class FenceTracker {
     }
     return { kind: "none", endedBefore };
   }
-}
-
-/**
- * Fenced code blocks, by line, as [start, end) spans: the `FenceTracker` rule
- * over every line from `from` on. An unclosed fence runs to the end of the
- * note, or to where its container ends.
- */
-export function fencedSpans(text: string, from: number): Array<[number, number]> {
-  const spans: Array<[number, number]> = [];
-  const tracker = new FenceTracker();
-  let start = -1;
-  let lastEnd = from;
-  const lines = linesOf(text, from);
-  for (let k = 0; k < lines.length; k++) {
-    const [a, b] = lines[k];
-    const st = tracker.step(text.slice(a, b), k + 1 < lines.length ? text.slice(lines[k + 1][0], lines[k + 1][1]) : undefined);
-    if (st.endedBefore && start >= 0) { spans.push([start, lastEnd]); start = -1; }
-    if (st.kind === "open") start = a;
-    else if (st.kind === "close") { spans.push([start, b]); start = -1; }
-    lastEnd = b;
-  }
-  if (start >= 0) spans.push([start, text.length]);
-  return spans;
 }
