@@ -170,6 +170,8 @@ export class NoteChangedError extends Error {
   }
 }
 
+const stripBom = (s: string): string => (s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);
+
 /** The parts of Obsidian's `Vault` the write needs. */
 export interface WriteTarget {
   process?: (file: never, fn: (data: string) => string) => Promise<string>;
@@ -189,9 +191,13 @@ export interface WriteTarget {
 export async function writeIfUnchanged(vault: WriteTarget, file: { path: string }, text: string, next: string): Promise<void> {
   const f = file as never;
   if (typeof vault.process === "function") {
+    // Obsidian's Vault.read drops a leading BOM, but process hands its
+    // function the file as it is on disk. So the texts are compared without
+    // one, and the BOM is written back exactly as it was on disk.
     await vault.process.call(vault, f, (cur: string) => {
-      if (cur !== text) throw new NoteChangedError(file.path);
-      return next;
+      const bom = cur.charCodeAt(0) === 0xfeff ? "\uFEFF" : "";
+      if (stripBom(cur) !== stripBom(text)) throw new NoteChangedError(file.path);
+      return bom + stripBom(next);
     });
     return;
   }
