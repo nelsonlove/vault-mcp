@@ -11,6 +11,11 @@ export { ok, fail } from "./responses.js";
 // one implementation.
 export {
   AcceptForbiddenError,
+  DuplicateFrontmatterKeyError,
+  duplicateFrontmatterKeyReason,
+  YamlDivergenceError,
+  yamlDivergenceReason,
+  guardedKey,
   acceptTransitionReason,
   acceptForbiddenReason,
   frontmatterOf,
