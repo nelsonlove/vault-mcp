@@ -741,8 +741,11 @@ class VaultImpl {
     const bom = text.charCodeAt(0) === 0xfeff ? text[0] : "";
     const stripped = bom ? text.slice(1) : text;
     const fmMatch = LEADING_FRONTMATTER_RE.exec(stripped);
-    const fmText = fmMatch ? bom + fmMatch[0] : "";
-    const body = fmMatch ? stripped.slice(fmMatch[0].length) : text;
+    // A leading BOM is written back as it was, in front of any front matter;
+    // the body starts after both, so the parser never sees it and a heading
+    // on the first line of a BOM note with no front matter is found.
+    const fmText = bom + (fmMatch ? fmMatch[0] : "");
+    const body = fmMatch ? stripped.slice(fmMatch[0].length) : stripped;
     const outline = outlineNote(body, { frontmatter: false });
     const bodyLines = outline.lines;
 
