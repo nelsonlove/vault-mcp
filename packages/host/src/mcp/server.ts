@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { inRecordFolder } from "./records.js";
 import { TFile, stringifyYaml, parseYaml, type App } from "obsidian";
-import { registerFsTools, registerFileTools, normalizeWriteScope, ok,
+import { registerFsTools, registerFileTools, registerReplaceTextTool, normalizeWriteScope, ok,
   CHARACTER_LIMIT,
   noteLengthFrom,
   WholeReads,
@@ -609,6 +609,11 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
       return null;
     },
   });
+  // obsidian_replace_text: exact text in one note, through the same backend and guarded registerTool,
+  // so the kernel (if_rev, idempotency_key, the record guard, the journal), the Sync guard, the
+  // allowlist, the write scope and the profile apply; the backend writes the result through its own
+  // writeNote, so the accept guard runs as on a whole-note write. rev: the note's new mtime, for a next edit.
+  registerReplaceTextTool(server, backend, { rev: (p) => probe.rev(p) });
 
   // ── remaining tools — live-only, complementary, nav, integrations ────────────
   registerCoreTools(server, app, ctx);

@@ -32,6 +32,7 @@ Xvfb.
 | `obsidian_search_by_frontmatter` | Find notes whose frontmatter has `property == value` (case-insensitive property, exact value; array fields match any element) | no |
 | `obsidian_manage_frontmatter` | Get / set / delete a single frontmatter field. Surgical line edits preserve other keys' formatting. Refuses block-scalar / inline-object shapes | yes (set/delete are destructive) |
 | `obsidian_patch_note` | Anchor-based edit: insert/replace content relative to a heading section or `^block-id` paragraph. `previous` returned for undo/audit. never replace on an H1 anchor; a heading's section runs to the next heading of equal or higher level, so the H1's section is the whole note | yes (destructive) |
+| `obsidian_replace_text` | Replace one exact piece of text in a note (no regex), or every match with `all: true`; refused when found 0 times (`no_match`) or more than once without `all` (`many_matches`, with the count). A match may not touch a frontmatter fence, and the result goes through the same accept guard as `obsidian_write_note`. On a note longer than the read limit, a match past the limit is refused here (this server has no whole-read proof). Returns each changed span before and after | yes (destructive) |
 | `obsidian_delete_note` | Permanently delete a note. Requires `confirm: true` literal in the call schema | yes (destructive — propagates via Sync) |
 | `obsidian_move_note` | Move / rename a note. By default rewrites `[[wikilinks]]` that resolved to `from` so they now point at `to`, preserving each ref's visual shape | yes (destructive — multi-file mutation) |
 | `obsidian_write_note` | Create / overwrite a note | yes (destructive) |
@@ -341,7 +342,7 @@ upstream to your Mac and iPhone. **Run from inside `/var/lib/obsidian/vault`.**
 - claude.ai desktop browser → Settings → Connectors → Add custom connector
 - URL: `https://<your-domain>/mcp`
 - Auth: none (Phase 1)
-- Save — all 20 tools appear in the per-tool permission list. Set each to
+- Save — all 21 tools appear in the per-tool permission list. Set each to
   Allow / Ask / Deny to taste.
 - Open Claude on iOS — connector syncs automatically (you can't add from iOS,
   only use)

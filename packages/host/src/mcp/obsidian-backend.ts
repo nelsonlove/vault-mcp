@@ -47,6 +47,7 @@ import {
   assertFilePath,
   validateFileContent,
   applyFileEdit,
+  planReplaceText,
 } from "@vault-mcp/core";
 import { sectionIn, assertNotH1Replace, lineEndingOf } from "@vault-mcp/core";
 import { noteStructure, type MetadataSource } from "./note-structure.js";
@@ -66,6 +67,8 @@ import type {
   FileBackend,
   FileEdit,
   FileEditResult,
+  TextReplaceBackend,
+  ReplaceTextResult,
 } from "@vault-mcp/core";
 
 /** Every markdown path under `folder`, so the count can be filtered before it is reported. */
@@ -98,7 +101,7 @@ async function ensureParentFolders(app: App, filePath: string): Promise<void> {
 
 // ── ObsidianBackend ───────────────────────────────────────────────────────────
 
-export class ObsidianBackend implements VaultBackend, FileBackend {
+export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBackend {
   constructor(
     private readonly app: App,
     private readonly visible: VisibleFilter = (paths) => paths,
@@ -579,6 +582,36 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     this.guardResultingFrontmatter(this.fmOf(text), this.fmOf(next) ?? {});
     await this.app.vault.modify(file, next);
     return { found: true, anchor, op, previous };
+  }
+
+  // ── exact-text replace ───────────────────────────────────────────────────────
+
+  /**
+   * Replace exact text in an existing note (`obsidian_replace_text`). The plan (matches, the
+   * frontmatter rule, the long-note rule, the cut-read rule over `replacement`) is core's
+   * replace-text.ts; the write is this class's own `writeNote` with overwrite, so the accept guard
+   * (parsed from the raw text on disk and in the result), the protected properties and the
+   * write-facts report run exactly as on obsidian_write_note. Never creates a note.
+   */
+  async replaceText(
+    relPath: string,
+    old: string,
+    replacement: string,
+    opts: { all: boolean; rangeRuleStandsAside?: boolean },
+  ): Promise<ReplaceTextResult> {
+    if (!relPath.endsWith(".md")) throw new Error("path must end in .md");
+    const file = this.app.vault.getAbstractFileByPath(relPath);
+    if (!(file instanceof TFile)) throw new Error(`not found: ${relPath}`);
+    // The note's own text, whole: never a cut read of it.
+    const text = await this.app.vault.read(file);
+    const plan = planReplaceText(relPath, text, old, replacement, {
+      all: opts.all,
+      limit: CHARACTER_LIMIT,
+      // The rule stands aside on the transport's word alone (the guard's proof, #443).
+      ...(opts.rangeRuleStandsAside ? { rangeRuleStandsAside: true } : {}),
+    });
+    await this.writeNote(relPath, plan.text, true);
+    return plan.result;
   }
 
   // ── full note ops ────────────────────────────────────────────────────────────

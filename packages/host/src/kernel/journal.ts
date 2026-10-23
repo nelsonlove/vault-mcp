@@ -183,7 +183,8 @@ export interface JournalAdapter {
 // ── argument digest ───────────────────────────────────────────────────────────
 
 // Keys whose string values are note bodies — always summarized, never recorded.
-const BODY_KEYS = new Set(["content", "body", "data", "text", "template_content"]);
+// `old` and `new` are obsidian_replace_text's note text: like a body, never recorded.
+const BODY_KEYS = new Set(["content", "body", "data", "text", "template_content", "old", "new"]);
 const MAX_STRING = 120;
 const MAX_ARRAY = 10;
 const MAX_DEPTH = 3;

@@ -15,7 +15,7 @@ cloudflared (LaunchAgent)  ──►  http://127.0.0.1:8787
 front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vault>.sock
      │                                               │ unix socket (when Obsidian is live)
      ├─ Obsidian LIVE:  bridge.mjs ──► vault-mcp plugin ──► Obsidian APIs  (44 tools)
-     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (20 tools)
+     └─ Obsidian DOWN:  FilesystemBackend (direct disk read/write)           (21 tools)
 ```
 
 ## Failover behavior
@@ -23,13 +23,13 @@ front.ts (LaunchAgent)  ── presence poll ──►  ~/.claude/vault-mcp/<vau
 | Obsidian state | Mode | Tool surface | Notes |
 | --- | --- | --- | --- |
 | Running + plugin enabled | `live` | 44 tools (full `obsidian_*` set) | Writes go through Obsidian APIs — canonical, sync-safe, **journaled and serialized** by the plugin kernel |
-| Closed / plugin disabled | `fs` | 20 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. |
+| Closed / plugin disabled | `fs` | 21 tools (FS read + write) | Writes are direct disk edits; Obsidian Sync reconciles on relaunch. **Serialized in-process and journaled** (issue #92) to `~/.claude/vault-mcp/journal/<slug>/YYYY-MM.jsonl` via `fs-write-kernel.ts`, but they still bypass the plugin kernel's governance (`if_rev`, idempotency, locks, pending review) and cross-process serialization — so FS-mode writes are **refused** unless the deployment opts in via `VAULT_MCP_FS_ALLOW_WRITES=true`. Reads are never affected. | <!-- outside-name-ok: the FS journal's documented default location; only the tool count changed on this row -->
 | Reopened after closure | `live` | Back to 44 tools (auto) | Open SSE channels get a `notifications/tools/list_changed` push |
 
 `GET /health` returns:
 
 ```json
-{ "status": "ok", "mode": "live|fs", "authEnabled": true, "fsWriteSyncCaveat": true, "fsWritesEnabled": false }
+{ "status": "ok", "mode": "live|fs", "authEnabled": true, "fsWriteSyncCaveat": true, "fsWritesEnabled": false, "bridgeSpawnEbadf": { "count": 0, "watcherStops": 0 } }
 ```
 
 `mode` tells a monitor which surface is active. `fsWriteSyncCaveat` is always
@@ -40,6 +40,10 @@ Obsidian reopens. `fsWritesEnabled` reflects `VAULT_MCP_FS_ALLOW_WRITES` — `fa
 into FS-mode writes — which are serialized in-process and journaled
 (server-side JSONL, see the table above), but carry none of the plugin
 kernel's governance guarantees.
+
+`bridgeSpawnEbadf` counts LIVE bridge spawns that failed with `EBADF` since the front started (`lastAt` is the time of the last one). A vault watcher left running in LIVE mode breaks child_process fd setup under launchd, so when such a spawn fails while the FS watcher runs in LIVE mode, the front stops the watcher (`watcherStops`) and logs one loud error the first time; the front keeps running (#583). A count that keeps rising with `watcherStops` at 0 means the cause is something else; a restart of the front may be needed.
+
+The FS watcher only runs in FS mode. On presence "up" the front stops it, and that stop also cancels an index build or watcher start still in flight, so a short down and up (a plugin reload) leaves no watcher behind. An FS request that reaches the handler after "up" is served from the index but starts no watcher (#583).
 
 ## 1. Token + env
 
@@ -156,6 +160,7 @@ Two Clerk realities shaped the wiring:
 | `VAULT_MCP_TOKEN` | *(required if no OAuth)* | static Bearer token (Claude Code/API) |
 | `VAULT_MCP_SOCKET` | *(derived)* | absolute path to plugin Unix socket; overrides slug derivation |
 | `VAULT_MCP_PRESENCE_POLL_MS` | `5000` | how often (ms) to probe the socket for Obsidian presence |
+| `VAULT_MCP_FS_PREWARM_DELAY_MS` | `10000` | how long (ms) presence must stay down before the FS index and vault watcher are prewarmed (#583). A shorter down, such as a plugin reload, never starts them; an FS-mode request in the meantime still builds them on demand. `0` prewarms at once (the behaviour before #583); a value that is not a whole number from 0 to 2147483647 falls back to the default with a warning |
 | `VAULT_MCP_BRIDGE` | `~/.claude/vault-mcp/bridge.mjs` | plugin stdio bridge to spawn per LIVE session |
 | `VAULT_MCP_IDLE_MS` | `1800000` (30 min) | idle-reap window for LIVE sessions |
 | `VAULT_MCP_MAX_SESSIONS` | `32` | concurrent LIVE-backend cap |

@@ -330,6 +330,7 @@ filesystem-expressible write tool routes through. The methods that carry it:
 | Append | `obsidian_append_note` | `guardWrittenContent` over `existing + appended` (both the "note exists" and "creating the note" branches — closing the "S5" empty-note case where an appended leading fence becomes real frontmatter) |
 | Frontmatter edit | `obsidian_manage_frontmatter` | `guardResultingFrontmatter(before, after)` |
 | Structured patch | `obsidian_patch_note` | `guardResultingFrontmatter` over the parsed before/after |
+| Exact-text replace | `obsidian_replace_text` | the result is written through `writeNote`, so `guardWrittenContent` over the final content; before that, core's `planReplaceText` refuses a match on a frontmatter fence and a result whose frontmatter no longer parses |
 
 **Move is not a content write.** `obsidian_move_note` / `obsidian_move_notes` rename through
 `app.fileManager.renameFile` and never touch note content, so a move cannot introduce

@@ -79,6 +79,11 @@ export {
 export type { FileKind, FileEdit, FileEditOp, FileEditResult } from "./file-formats.js";
 export { registerFileTools, BaseUnderScopeError, FILE_TOOL_NAMES, WRITE_FILE_TOOL, EDIT_FILE_TOOL, MOVE_FILE_TOOL } from "./register-file-tools.js";
 export type { FileBackend, RegisterFileToolsOpts } from "./register-file-tools.js";
+// obsidian_replace_text: the plan both backends run, and the tool both servers register.
+export { REPLACE_TEXT_TOOL, REPLACE_MAX_SPANS, REPLACE_SPAN_CONTEXT, REPLACE_SPAN_TEXT_CAP, ReplaceTextError, findMatches, planReplaceText } from "./replace-text.js";
+export type { ReplaceTextResult, ReplaceSpan, ReplacePlanOpts, ReplaceTextCode } from "./replace-text.js";
+export { registerReplaceTextTool } from "./register-replace-text.js";
+export type { TextReplaceBackend, RegisterReplaceTextOpts } from "./register-replace-text.js";
 export { strictInput, isObjectSchema, inputShapeOf, inputObjectOf, extendInput } from "./strict-input.js";
 export type { InputShape, InputSchema } from "./strict-input.js";
 export { renderNoteWithFrontmatter, opensWithFrontmatter, jsonFlowYaml } from "./note-frontmatter.js";
@@ -166,6 +171,7 @@ export {
   deleteFrontmatterField,
   getFrontmatterField,
   patchNote,
+  replaceText,
   deleteNote,
   moveNote,
   writeFile,

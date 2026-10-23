@@ -2,6 +2,8 @@ import { createVaultAt } from "./vault.js";
 import { IndexStore } from "./index-store.js";
 import type { FileEdit, FileEditResult } from "../file-formats.js";
 import type { FileBackend } from "../register-file-tools.js";
+import type { TextReplaceBackend } from "../register-replace-text.js";
+import type { ReplaceTextResult } from "../replace-text.js";
 import type {
   VaultBackend,
   NoteRef,
@@ -44,7 +46,7 @@ import type {
  * from the SAME implementation, instead of two guard call sites that could
  * drift apart. This class is plain delegation, unchanged from before #104.
  */
-export class FilesystemBackend implements VaultBackend, FileBackend {
+export class FilesystemBackend implements VaultBackend, FileBackend, TextReplaceBackend {
   private readonly vault: ReturnType<typeof createVaultAt>;
   private readonly index: IndexStore;
 
@@ -150,6 +152,15 @@ export class FilesystemBackend implements VaultBackend, FileBackend {
     opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     return this.vault.patchNote(relPath, anchor, op, content, opts);
+  }
+
+  async replaceText(
+    relPath: string,
+    old: string,
+    replacement: string,
+    opts: { all: boolean; rangeRuleStandsAside?: boolean },
+  ): Promise<ReplaceTextResult> {
+    return this.vault.replaceText(relPath, old, replacement, opts);
   }
 
   // ── Write: full note ops ───────────────────────────────────────────────────
