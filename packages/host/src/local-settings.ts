@@ -164,6 +164,7 @@ export const STRING_LISTS: ReadonlySet<string> = new Set([
   "trustedReadOnlyPlugins",
   "redactProfiles",
   "guardedTerritories",
+  "fileMoveExtensions",
   "writeScope.paths",
   "recordFolders.folders",
   "cliPolicy.deny",

@@ -1,5 +1,5 @@
 // register-file-tools.ts — the three tools that write, edit and move `.base` and `.canvas` files
-// (#575), registered on both servers the way the note tools are: the live host passes its
+// (#575), and the move of attachment files whose extension is on the operator's list, registered on both servers the way the note tools are: the live host passes its
 // ObsidianBackend through its guarded registerTool (kernel: if_rev, idempotency_key, the journal,
 // the Sync guard, the allowlist, the write scope, the connection profile), and the file-system
 // server passes its write-kernel backend (queue and journal; if_rev and idempotency_key accepted
@@ -8,6 +8,9 @@
 // A separate registrar, not three more FS_TOOLS rows: FS_TOOLS is the 17 note tools, and their
 // count and schemas are pinned as such on both servers. Trash stays with `obsidian_trash` on the
 // live host, which already takes any file.
+//
+// Only the MOVE takes more than `.base` and `.canvas`: it does not read or change a file's bytes.
+// The write and the edit validate content, and stay those two types.
 
 import { z } from "zod";
 import { ok, fail } from "./responses.js";
@@ -28,11 +31,14 @@ export interface FileBackend {
   writeFile(relPath: string, content: string, overwrite: boolean): Promise<{ path: string; created: boolean }>;
   /** Apply one keyed edit (file-formats.ts `applyFileEdit`); a remove of an absent item writes nothing. */
   editFile(relPath: string, edit: FileEdit): Promise<FileEditResult & { path: string }>;
-  /** Move or rename a `.base` or `.canvas` file; the extension stays the same. */
+  /**
+   * Move or rename a `.base` or `.canvas` file, or a file whose extension is on `extensions`
+   * (core's `assertMovePair`; absent ⇒ only `.base` and `.canvas`). The extension stays the same.
+   */
   moveFile(
     fromRel: string,
     toRel: string,
-    options: { update_backlinks: boolean; overwrite: boolean },
+    options: { update_backlinks: boolean; overwrite: boolean; extensions?: readonly string[] },
   ): Promise<{
     from: string;
     to: string;
@@ -61,6 +67,12 @@ export interface RegisterFileToolsOpts {
    * file-system server: its write scope. A connection profile's own write scope counts too.
    */
   pathScope?: () => string | null;
+  /**
+   * The extensions `obsidian_move_file` moves besides `.base` and `.canvas`, normalized (core's
+   * `normalizeFileMoveExtensions`), read per call. The live host: its `fileMoveExtensions`
+   * setting; the file-system server: `VAULT_MCP_FILE_MOVE_EXTENSIONS`. Absent ⇒ none.
+   */
+  moveExtensions?: () => readonly string[];
 }
 
 /**
@@ -186,26 +198,29 @@ export function registerFileTools(server: any, backend: FileBackend, opts: Regis
   }
 
   if (offered(MOVE_FILE_TOOL)) {
+    const extensions = () => opts.moveExtensions?.() ?? [];
     reg.registerTool(
       MOVE_FILE_TOOL,
       {
-        title: "Move or rename a .base or .canvas file",
+        title: "Move or rename a .base, .canvas or attachment file",
         description:
-          "Move (or rename) a .base or .canvas file to another vault path with the same extension. `to` may keep the file's own name and the folders it is already in, but any NEW name or folder may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`. Refuses if `to` exists unless overwrite: true (on the live Obsidian server the file replaced goes to the system trash). Parent folders are created as needed. " +
-          "Links TO the file: on the live Obsidian server, with update_backlinks true (the default), links in notes ([[Board.canvas]], ![[Tasks.base]]) are rewritten to the new path and checked for damage (`link_check`), as obsidian_move_note does; the file's own text is never rewritten, and links inside other .canvas files are not tracked (Obsidian's link index does not count them). The file-system server does not rewrite links to these files at all (`links_note` says so). " +
+          "Move (or rename) a .base or .canvas file, or an attachment file whose type the operator allows, to another vault path with the same extension (the same case, too). " +
+          "The allowed types are .base, .canvas and the extensions the operator lists (the `fileMoveExtensions` setting on the live Obsidian server, `VAULT_MCP_FILE_MOVE_EXTENSIONS` on the file-system server), read on each call; by default images, audio, video, PDF, and docx xlsx pptx odt zip. A type off the list is refused with `unsupported_file`, and that error names the current list (obsidian_doctor reports it too, as `file_move_extensions`). A note (.md) is refused here: move it with obsidian_move_note. No path may be in a hidden folder. " +
+          "`to` may keep the file's own name and the folders it is already in, but any NEW name or folder may not hold a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]): refused with `unsafe_name`. Refuses if `to` exists unless overwrite: true, which is allowed only for a .base or .canvas (on the live Obsidian server the file replaced goes to the system trash); an attachment is never replaced (`overwrite_refused`). Parent folders are created as needed. " +
+          "Links TO the file: on the live Obsidian server, with update_backlinks true (the default), links and embeds in notes ([[Board.canvas]], ![[Tasks.base]], ![[Scan.pdf]], ![](Photo.png)) are rewritten to the new path and checked for damage (`link_check`), as obsidian_move_note does; the file's own text is never rewritten, and links inside other .canvas files and HTML embeds in notes (<img src>, <video src>, <audio src>) are not tracked or rewritten. The file-system server does not rewrite links to these files at all (`links_note` says so). " +
           SCOPE +
-          "The file's content is not read or changed, so no validation runs.",
+          "The file's content is not read or changed, so no validation runs. To delete one of these files, use obsidian_trash on the live Obsidian server.",
         inputSchema: schema({
-          from: z.string().min(1).describe("Existing vault-relative path of the .base or .canvas file."),
+          from: z.string().min(1).describe("Existing vault-relative path of the file, e.g. 'Inbox/Scan.pdf'."),
           to: z.string().min(1).describe("New vault-relative path, with the same extension."),
           update_backlinks: z.boolean().default(true).describe("Rewrite links in notes that reach `from` (live Obsidian server). false: rename only. Ignored by the file-system server, which rewrites none."),
-          overwrite: z.boolean().default(false).describe("Replace `to` if it already exists. Default false (refuses)."),
+          overwrite: z.boolean().default(false).describe("Replace `to` if it already exists, for a .base or .canvas only; refused for an attachment. Default false (refuses)."),
         }),
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
       },
       gated(MOVE_FILE_TOOL, async ({ from, to, update_backlinks, overwrite }: { from: string; to: string; update_backlinks: boolean; overwrite: boolean }) => {
         try {
-          const r = await backend.moveFile(dec(from), dec(to), { update_backlinks, overwrite });
+          const r = await backend.moveFile(dec(from), dec(to), { update_backlinks, overwrite, extensions: extensions() });
           const resp: Record<string, unknown> = { from: r.from, to: r.to, moved: true };
           if (r.backlinks_updated !== null) resp.backlinks_updated = r.backlinks_updated;
           if (r.backlinks_files_touched !== null) resp.backlinks_files_touched = r.backlinks_files_touched;

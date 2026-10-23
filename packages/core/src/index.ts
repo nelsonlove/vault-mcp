@@ -69,7 +69,8 @@ export {
 } from "./tool-registry.js";
 export type { Capability, ToolDef, ToolAnnotations } from "./tool-registry.js";
 export { registerFsTools } from "./register-fs-tools.js";
-// .base and .canvas files (#575): validation, the keyed edit, and the three tools both servers register.
+// .base and .canvas files (#575): validation, the keyed edit, and the three tools both servers register;
+// and which other files obsidian_move_file moves (the operator's extension list).
 export {
   FILE_EXTENSIONS,
   FILE_EDIT_OPS,
@@ -80,8 +81,20 @@ export {
   assertFilePath,
   validateFileContent,
   applyFileEdit,
+  DEFAULT_FILE_MOVE_EXTENSIONS,
+  FILE_MOVE_EXTENSIONS_ENV_VAR,
+  normalizeFileMoveExtensions,
+  parseFileMoveExtensions,
+  assertMovePath,
+  assertMovePair,
+  readFileMoveExtensions,
+  readFileMoveExtensionsText,
+  fileMoveExtensionsWarning,
+  AttachmentOverwriteError,
+  isBinaryAttachmentPath,
+  looksBinary,
 } from "./file-formats.js";
-export type { FileKind, FileEdit, FileEditOp, FileEditResult } from "./file-formats.js";
+export type { FileKind, FileEdit, FileEditOp, FileEditResult, FileMoveExtensionsRead } from "./file-formats.js";
 export { registerFileTools, BaseUnderScopeError, FILE_TOOL_NAMES, WRITE_FILE_TOOL, EDIT_FILE_TOOL, MOVE_FILE_TOOL } from "./register-file-tools.js";
 export type { FileBackend, RegisterFileToolsOpts } from "./register-file-tools.js";
 // obsidian_replace_text: the plan both backends run, and the tool both servers register.
@@ -155,6 +168,7 @@ export {
   writeFile,
   editFile,
   moveFile,
+  binaryInfo,
   createVaultAt,
 } from "./fs-backend/vault.js";
 export type { VaultImpl } from "./fs-backend/vault.js";

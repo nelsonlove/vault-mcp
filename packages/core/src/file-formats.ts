@@ -62,6 +62,21 @@ export function fileKindOf(path: string): FileKind | null {
 }
 
 /**
+ * No segment may be empty, `.` or `..`, or start with `.` (a hidden folder such as the app's config
+ * folder is never written here, and a hidden name such as `.base` alone is refused too). An absolute
+ * path has an empty first segment, so it is refused here as well.
+ */
+function assertPlainSegments(path: string): void {
+  const segs = path.split("/");
+  if (segs.some((s) => s === "" || s === "." || s === "..")) {
+    throw new UnsupportedFileError(`'${path}' has an empty, '.' or '..' segment; give a plain vault-relative path. Nothing was written.`);
+  }
+  if (segs.some((s) => s.startsWith("."))) {
+    throw new UnsupportedFileError(`'${path}' is in a hidden folder or has a hidden name; these tools never write there. Nothing was written.`);
+  }
+}
+
+/**
  * The kind of a path these tools may write, or a refusal: the extension must be `.base` or
  * `.canvas`, the name before it must not be empty, and no segment may be empty, `.` or `..`, or
  * start with `.` (a hidden folder such as the app's config folder is never written here).
@@ -71,15 +86,181 @@ export function assertFilePath(path: string): FileKind {
   if (!kind) {
     throw new UnsupportedFileError(`'${path}' is not a .base or .canvas file; these tools write only those two types (a note goes through obsidian_write_note). Nothing was written.`);
   }
-  const segs = path.split("/");
-  if (segs.some((s) => s === "" || s === "." || s === "..")) {
-    throw new UnsupportedFileError(`'${path}' has an empty, '.' or '..' segment; give a plain vault-relative path. Nothing was written.`);
-  }
-  // A hidden name (`.base` alone, with no name before the extension) is caught here too.
-  if (segs.some((s) => s.startsWith("."))) {
-    throw new UnsupportedFileError(`'${path}' is in a hidden folder or has a hidden name; these tools never write there. Nothing was written.`);
-  }
+  assertPlainSegments(path);
   return kind;
+}
+
+// ── which files obsidian_move_file moves ────────────────────────────────────
+//
+// A move does not read or change a file's bytes, so it can take more types than the write and
+// the edit, which validate content and stay `.base` and `.canvas` only. `.base` and `.canvas` are
+// always movable; a note (`.md`) never is here, because the note tools carry the note rules
+// (link rewriting of the note's own links, the accept and record guards, frontmatter); any other
+// type is movable when its extension is on the operator's list.
+
+/**
+ * The extensions `obsidian_move_file` moves by default, besides `.base` and `.canvas`: lower case,
+ * without the dot. The attachment types Obsidian itself opens (images, audio, video, PDF), plus the
+ * office and archive files an operator commonly files beside notes. No executable or script type,
+ * no type Obsidian reads as configuration (`json`, `css`, `js`), and no `md`.
+ */
+export const DEFAULT_FILE_MOVE_EXTENSIONS: readonly string[] = Object.freeze([
+  // images
+  "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif",
+  // audio
+  "mp3", "wav", "m4a", "ogg", "flac", "webm", "3gp",
+  // video
+  "mp4", "mov", "mkv", "ogv",
+  // documents
+  "pdf",
+  // office and archive files
+  "docx", "xlsx", "pptx", "odt", "zip",
+]);
+
+/** The file-system server reads the list from this variable (comma- or space-separated); unset ⇒ the default, empty ⇒ none. */
+export const FILE_MOVE_EXTENSIONS_ENV_VAR = "VAULT_MCP_FILE_MOVE_EXTENSIONS";
+
+/** The extensions a move always takes or never takes, whatever the list says. */
+const ALWAYS_MOVABLE = new Set(["base", "canvas"]);
+const NEVER_ON_LIST = new Set(["md", "base", "canvas"]);
+
+/** The operator's list read as the move uses it, with what was left out, for a warning. */
+export interface FileMoveExtensionsRead {
+  extensions: string[];
+  /** Entries left out: not 1 to 16 letters or digits after cleaning, or `md`, `base` or `canvas`. */
+  dropped: string[];
+  /** The value was present but not a list (or the text named no valid entry): only `.base` and `.canvas` move. */
+  malformed: boolean;
+}
+
+/**
+ * Read the operator's list. ABSENT (`undefined`) ⇒ the default list. Present but not a list (a
+ * string, `null`, an object, a number) ⇒ the EMPTY list, so only `.base` and `.canvas` move: a
+ * malformed value never widens the move. In a list, each entry is trimmed, a leading dot dropped,
+ * lower-cased, and kept only when it is 1 to 16 letters or digits; `md`, `base` and `canvas` are
+ * left out (`.base` and `.canvas` always move; a note never does here); duplicates are kept once.
+ */
+export function readFileMoveExtensions(raw: unknown): FileMoveExtensionsRead {
+  if (raw === undefined) return { extensions: [...DEFAULT_FILE_MOVE_EXTENSIONS], dropped: [], malformed: false };
+  if (!Array.isArray(raw)) return { extensions: [], dropped: [], malformed: true };
+  const extensions: string[] = [];
+  const dropped: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== "string") {
+      dropped.push(String(v));
+      continue;
+    }
+    const e = v.trim().replace(/^\./, "").toLowerCase();
+    if (!/^[a-z0-9]{1,16}$/.test(e) || NEVER_ON_LIST.has(e)) {
+      dropped.push(v);
+      continue;
+    }
+    if (!extensions.includes(e)) extensions.push(e);
+  }
+  return { extensions, dropped, malformed: false };
+}
+
+/** The warning text for a read that left something out, or null when nothing was. */
+export function fileMoveExtensionsWarning(read: FileMoveExtensionsRead, source: string): string | null {
+  if (read.malformed) return `${source} is not a list of extensions; obsidian_move_file moves only .base and .canvas until it is fixed.`;
+  if (read.dropped.length > 0) return `${source}: left out ${read.dropped.map((d) => `'${d}'`).join(", ")} (an extension is 1 to 16 letters or digits; md, base and canvas are never on the list).`;
+  return null;
+}
+
+/** The list as the move uses it (`readFileMoveExtensions`); `warn` gets the warning when something was left out. */
+export function normalizeFileMoveExtensions(raw: unknown, warn?: (message: string) => void, source = "fileMoveExtensions"): string[] {
+  const read = readFileMoveExtensions(raw);
+  const w = fileMoveExtensionsWarning(read, source);
+  if (w && warn) warn(w);
+  return read.extensions;
+}
+
+/**
+ * The list from text (the environment variable, the settings field): undefined ⇒ the default;
+ * otherwise split on commas and white space and read as a list. Text whose entries are all
+ * invalid gives the empty list, so only `.base` and `.canvas` move.
+ */
+export function readFileMoveExtensionsText(text: string | undefined): FileMoveExtensionsRead {
+  if (text === undefined) return readFileMoveExtensions(undefined);
+  return readFileMoveExtensions(text.split(/[\s,]+/).filter(Boolean));
+}
+
+/** As `readFileMoveExtensionsText`, the list only; `warn` gets the warning when something was left out. */
+export function parseFileMoveExtensions(text: string | undefined, warn?: (message: string) => void, source = FILE_MOVE_EXTENSIONS_ENV_VAR): string[] {
+  const read = readFileMoveExtensionsText(text);
+  const w = fileMoveExtensionsWarning(read, source);
+  if (w && warn) warn(w);
+  return read.extensions;
+}
+
+/**
+ * A move with `overwrite: true` of a file that is not a `.base` or `.canvas`: refused before
+ * anything is touched. An attachment is often an original (a scan, a signed PDF), and replacing
+ * one would lose it (on the file-system server, for good). Nothing was moved.
+ */
+export class AttachmentOverwriteError extends Error {
+  readonly code = "overwrite_refused";
+  constructor(path: string) {
+    super(`'${path}': obsidian_move_file never replaces an existing attachment, so overwrite: true is refused for any file that is not a .base or .canvas. Move or trash the file at the destination first, or choose another name. Nothing was moved.`);
+    this.name = "AttachmentOverwriteError";
+  }
+}
+
+/**
+ * Whether a vault file is binary by its type: an extension (any case) on the default attachment
+ * list or on `extensions`, and not `md`, `base` or `canvas`. Decided without reading the file.
+ */
+export function isBinaryAttachmentPath(path: string, extensions: readonly string[] = []): boolean {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return false;
+  const e = name.slice(dot + 1).toLowerCase();
+  if (NEVER_ON_LIST.has(e)) return false;
+  return DEFAULT_FILE_MOVE_EXTENSIONS.includes(e) || extensions.includes(e);
+}
+
+/** A NUL byte in the first bytes of a file: the usual sign of a binary file. */
+export function looksBinary(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 8000);
+  for (let i = 0; i < n; i++) if (bytes[i] === 0) return true;
+  return false;
+}
+
+/**
+ * Refuse a path `obsidian_move_file` does not move (`unsupported_file`), else return its extension
+ * as written. The same segment rules as a write (nothing hidden, no `.`, `..` or empty segment, no
+ * absolute path); `.base` and `.canvas` (exact, lower case) always; a note never; another type when
+ * its extension, in any case, is on `extensions` (normalized, as `normalizeFileMoveExtensions` gives it).
+ */
+export function assertMovePath(path: string, extensions: readonly string[]): string {
+  assertPlainSegments(path);
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1) : "";
+  if (ALWAYS_MOVABLE.has(ext)) return ext;
+  const lower = ext.toLowerCase();
+  if (lower === "md") {
+    throw new UnsupportedFileError(`'${path}' is a note; move it with obsidian_move_note, which also heals the note's own links and applies the note guards. Nothing was moved.`);
+  }
+  if (lower !== "" && !NEVER_ON_LIST.has(lower) && extensions.includes(lower)) return ext;
+  const allowed = [".base", ".canvas", ...extensions.map((e) => `.${e}`)].join(" ");
+  throw new UnsupportedFileError(
+    `'${path}' ${ext === "" ? "has no extension" : `is a .${ext} file`}, which obsidian_move_file does not move here. It moves: ${allowed} (the operator sets the list). Nothing was moved.`,
+  );
+}
+
+/**
+ * The checks a move makes before it touches anything: both paths movable, the extension kept
+ * exactly as written (a rename does not change a file's type, nor the case of its extension), and
+ * no `overwrite` unless the file is a `.base` or `.canvas` (`AttachmentOverwriteError`).
+ */
+export function assertMovePair(fromRel: string, toRel: string, extensions: readonly string[], overwrite = false): void {
+  const from = assertMovePath(fromRel, extensions);
+  const to = assertMovePath(toRel, extensions);
+  if (from !== to) {
+    throw new UnsupportedFileError(`'${toRel}' does not keep the extension of '${fromRel}' (.${from}); a move does not change a file's type. Nothing was moved.`);
+  }
+  if (overwrite && !ALWAYS_MOVABLE.has(from)) throw new AttachmentOverwriteError(toRel);
 }
 
 // ── validation ──────────────────────────────────────────────────────────────

@@ -57,7 +57,10 @@ import {
   writeFile,
   editFile,
   moveFile,
+  binaryInfo,
   registerFileTools,
+  parseFileMoveExtensions,
+  FILE_MOVE_EXTENSIONS_ENV_VAR,
   registerReplaceTextTool,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
@@ -188,6 +191,24 @@ export function getFsWriteKernel(): FsWriteKernel {
   }
   return processKernel;
 }
+
+/**
+ * The file types obsidian_move_file moves besides `.base` and `.canvas`, from
+ * `VAULT_MCP_FILE_MOVE_EXTENSIONS` (comma- or space-separated extensions without the dot), read
+ * per call. Unset ⇒ core's default list; set but empty, or with no valid entry ⇒ only `.base` and
+ * `.canvas` (a warning names what was left out). The same meaning as the plugin's `fileMoveExtensions` setting.
+ */
+export function fsFileMoveExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const raw = env[FILE_MOVE_EXTENSIONS_ENV_VAR];
+  // Set but holding no valid entry ⇒ empty (only .base and .canvas move), never the default. The
+  // warning is logged once per value, not on every call.
+  return parseFileMoveExtensions(raw, (m) => {
+    if (warnedMoveList === raw) return;
+    warnedMoveList = raw;
+    console.warn(`[vault-mcp] ${m}`);
+  });
+}
+let warnedMoveList: string | undefined;
 
 /**
  * The write scope on this transport (core's write-scope.ts): the same value as the
@@ -360,6 +381,8 @@ export function makeBackend(
 
     readNoteWhole: (relPath) => readNoteWhole(relPath),
 
+    binaryInfo: (relPath, extensions) => binaryInfo(relPath, extensions),
+
     searchNotes: (query, limit, mode) => searchNotes(query, limit, mode),
 
     findByTag: (tag, limit) => findByTag(tag, limit),
@@ -463,7 +486,7 @@ export function makeBackend(
         () => deleteNote(relPath, confirm),
       ),
 
-    // .base and .canvas files (#575): the same gate, path check, write scope, cut-read check,
+    // .base and .canvas files (#575), and for the move the attachment types on the list: the same gate, path check, write scope, cut-read check,
     // queue and journal as the note writes. There is no trash on this server, and its one
     // removal tool (obsidian_delete_note, a permanent delete) stays notes-only.
     writeFile: async (relPath, content, overwrite) =>
@@ -525,6 +548,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     ...(profile ? { profile, exists: existsInVault } : {}),
     ...(scanner ? { scanner } : {}),
     decodeHtml: true,
+    // obsidian_read_note returns no content for a binary file (an attachment type, or NUL bytes).
+    binaryExtensions: () => fsFileMoveExtensions(),
     // This server has no kernel and no withKernelArgs: name the kernel arguments here, accepted and not checked.
     kernelArgs: true,
     includeIndexStatus: (opts?.indexStatus ?? true) ? indexStatus : undefined,
@@ -548,6 +573,9 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
     // A .base is a query (#580 review 1): not written, edited or moved while the write scope limits
     // paths. This server has no path allowlist; its write scope is the one path rule it has.
     pathScope: () => (fsWriteScope().mode !== "all" ? `the write scope (${WRITE_SCOPE_ENV_VAR})` : null),
+    // The attachment types obsidian_move_file moves besides .base and .canvas, read per call:
+    // unset ⇒ core's default list, empty ⇒ none (the plugin's fileMoveExtensions setting, here an env var).
+    moveExtensions: () => fsFileMoveExtensions(),
   });
   // obsidian_replace_text: exact text in one note, under the same profile, decoding and
   // kernel-argument rules; its replies pass through the secret scanner too when it is on.
