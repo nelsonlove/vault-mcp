@@ -34,6 +34,17 @@ export const INTERRUPTS = /^(?:#{1,6}(?:[ \t]|$)|(?:(?:-[ \t]*){3,}|(?:_[ \t]*){
 // indented code (Obsidian lets these interrupt a quote, but not a list item).
 const QUOTE_INTERRUPTS = /^(?: {4}|\t|\$\$|<(?:script|pre|style|textarea)(?:\s|>|$)|<!--|<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:[ \t]|\/?>|$))/i;
 
+/** The indentation of `s` in columns: a tab moves to the next multiple of four. */
+export function columnsOf(s: string): number {
+  let col = 0;
+  for (const ch of s) {
+    if (ch === " ") col++;
+    else if (ch === "\t") col += 4 - (col % 4);
+    else break;
+  }
+  return col;
+}
+
 /** What one line is to a fence: it opens one, is inside one, closes one, or
  *  none of these. `endedBefore` is set when the open fence's container ended
  *  before this line (the fence ends at the line before). */
@@ -57,7 +68,7 @@ export interface FenceStep {
  * keeps any `\r` it ends with; the rule reads it without.
  */
 export class FenceTracker {
-  private open: { ch: string; len: number; quotes: number; column: number | null; sawBlank: boolean } | null = null;
+  private open: { ch: string; len: number; quotes: number; column: number | null; closeCol: number; sawBlank: boolean } | null = null;
 
   get isOpen(): boolean { return this.open !== null; }
 
@@ -92,13 +103,18 @@ export class FenceTracker {
       else if (blank) o.sawBlank = true;
     }
     if (this.open) {
-      // A list marker may precede an opening fence, never a closing one, and
-      // the closer sits in the opener's quote: as many `>` markers.
+      // A list marker may precede an opening fence, never a closing one; the
+      // closer sits in the opener's quote (as many `>` markers), indented at
+      // most three columns past the fence's container (four or a tab more
+      // is code, as Obsidian reads it).
       const lead = LEAD.exec(raw)![0];
-      const line = raw.slice(lead.length);
+      const quotes = (lead.match(/>/g) ?? []).length;
+      const afterQuotes = quotes === 0 ? raw : raw.slice(lead.length);
+      const indent = columnsOf(afterQuotes);
+      const line = afterQuotes.replace(/^[ \t]*/, "");
       const m = /^(`{3,}|~{3,})[ \t]*$/.exec(line);
-      const sameQuote = (lead.match(/>/g) ?? []).length === this.open.quotes;
-      if (m && sameQuote && m[1][0] === this.open.ch && m[1].length >= this.open.len) { this.open = null; return { kind: "close", endedBefore }; }
+      const sameQuote = quotes === this.open.quotes;
+      if (m && sameQuote && indent <= this.open.closeCol + 3 && m[1][0] === this.open.ch && m[1].length >= this.open.len) { this.open = null; return { kind: "close", endedBefore }; }
       return { kind: "inside", endedBefore };
     }
     const line = raw.replace(FENCE_LEAD, "");
@@ -116,6 +132,7 @@ export class FenceTracker {
         ch: m[1][0], len: m[1].length, sawBlank: false,
         quotes: (quoteLead.match(/>/g) ?? []).length,
         column: marker ? fenceLead : context && col > 0 ? col : null,
+        closeCol: marker ? fenceLead - quoteLead.length : context ? col : 0,
       };
       return { kind: "open", endedBefore };
     }
