@@ -22,6 +22,7 @@ import {
   leadingFrontmatterBlock,
 } from "../accept-guard.js";
 import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from "../truncation.js";
+import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace, lineEndingOf } from "../note-sections.js";
 import { assertFilePath, assertMovePair, isBinaryAttachmentPath, looksBinary, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 import { planReplaceText, type ReplaceTextResult } from "../replace-text.js";
 
@@ -254,49 +255,12 @@ function coerceScalarValue(raw: string): FrontmatterScalar {
 
 // ── Anchor-based patching ────────────────────────────────────────────────────
 
-const HEADING_LINE_RE = /^(#{1,6})\s+(.+?)\s*$/;
-
-function findHeadingSection(lines: string[], headingText: string): { start: number; end: number } | undefined {
-  let headingIdx = -1;
-  let level = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(HEADING_LINE_RE);
-    if (m && m[2] === headingText) {
-      headingIdx = i;
-      level = m[1].length;
-      break;
-    }
-  }
-  if (headingIdx === -1) return undefined;
-  let end = lines.length;
-  for (let i = headingIdx + 1; i < lines.length; i++) {
-    const m = lines[i].match(HEADING_LINE_RE);
-    if (m && m[1].length <= level) {
-      end = i;
-      break;
-    }
-  }
-  return { start: headingIdx + 1, end };
-}
-
-function findBlock(lines: string[], blockId: string): { start: number; end: number } | undefined {
-  const token = "^" + blockId;
-  let anchorLine = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const idx = lines[i].indexOf(token);
-    if (idx === -1) continue;
-    const next = lines[i].charAt(idx + token.length);
-    if (next !== "" && !/\s/.test(next)) continue;
-    anchorLine = i;
-    break;
-  }
-  if (anchorLine === -1) return undefined;
-  let start = anchorLine;
-  while (start > 0 && lines[start - 1].trim() !== "") start--;
-  let end = anchorLine;
-  while (end < lines.length - 1 && lines[end + 1].trim() !== "") end++;
-  return { start, end: end + 1 };
-}
+// Headings and blocks are found by the shared, fence-aware parser in
+// `note-sections.ts` (#593), the one the live host checks its cache with: a
+// `#` line inside a code fence, a math block or a comment is not a heading,
+// and a block's run of lines stops at a heading or a fence. `patchNote`
+// outlines the body (the note without its front matter) once and works in
+// its line indices.
 
 // Match an outbound wikilink token in markdown.
 const WIKILINK_TOKEN_RE = /\[\[([^\]|#^]+?)((?:[|#^][^\]]*)?)\]\]/g;
@@ -798,7 +762,7 @@ class VaultImpl {
     content: string,
     /** `rangeRuleStandsAside`: the transport proved a whole read of this note
      *  at its current rev (#443), so a replace past the limit is allowed. */
-    opts: { rangeRuleStandsAside?: boolean } = {},
+    opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     // A cut read handed back as the fragment is refused first (#441).
     assertNotTruncatedRead(relPath, content);
@@ -815,21 +779,33 @@ class VaultImpl {
     const bom = text.charCodeAt(0) === 0xfeff ? text[0] : "";
     const stripped = bom ? text.slice(1) : text;
     const fmMatch = LEADING_FRONTMATTER_RE.exec(stripped);
-    const fmText = fmMatch ? bom + fmMatch[0] : "";
-    const body = fmMatch ? stripped.slice(fmMatch[0].length) : text;
-    const bodyLines = body.split("\n");
+    // A leading BOM is written back as it was, in front of any front matter;
+    // the body starts after both, so the parser never sees it and a heading
+    // on the first line of a BOM note with no front matter is found.
+    const fmText = bom + (fmMatch ? fmMatch[0] : "");
+    const body = fmMatch ? stripped.slice(fmMatch[0].length) : stripped;
+    const outline = outlineNote(body, { frontmatter: false });
+    const bodyLines = outline.lines;
 
-    const range =
-      anchor.type === "heading"
-        ? findHeadingSection(bodyLines, anchor.value)
-        : findBlock(bodyLines, anchor.value);
+    let range: { start: number; end: number } | undefined;
+    let headingLevel = 0;
+    if (anchor.type === "heading") {
+      const section = findHeadingSection(outline, body.length, anchor.value);
+      range = section && { start: section.startLine, end: section.endLine };
+      headingLevel = section?.heading.level ?? 0;
+    } else {
+      // Ids are compared lowercased, as Obsidian keys its block cache.
+      const want = anchor.value.toLowerCase();
+      const block = findBlock(outline, (id) => id.toLowerCase() === want);
+      range = block && { start: block.startLine, end: block.endLine };
+    }
 
     if (!range) {
       return { found: false, anchor, op };
     }
 
     const previous = bodyLines.slice(range.start, range.end).join("\n");
-    const insert = content.split("\n");
+    const insert = lineEndingOf(text) === "\r\n" ? content.split(/\r?\n/) : content.split("\n");
 
     // A replace whose section runs past the read limit on a long note would
     // replace text no cut read showed (#441).
@@ -843,6 +819,8 @@ class VaultImpl {
       for (let i = 0; i < last; i++) rangeEnd += bodyLines[i].length + 1;
       assertPatchRangeRead(relPath, text.length, last > 0 ? rangeEnd - 1 : rangeEnd, CHARACTER_LIMIT);
     }
+    // A replace on the H1 replaces the whole note (#601).
+    if (anchor.type === "heading") assertNotH1Replace(relPath, anchor.value, headingLevel, op, opts.wholeSection);
 
     let newBodyLines: string[];
     if (op === "replace") {
@@ -865,6 +843,10 @@ class VaultImpl {
       ];
     }
 
+    // In a CRLF note every line written takes CRLF, the inserted ones too.
+    if (lineEndingOf(text) === "\r\n") {
+      newBodyLines = newBodyLines.map((l, i) => (i < newBodyLines.length - 1 && !l.endsWith("\r") ? l + "\r" : l));
+    }
     const resultingText = fmText + newBodyLines.join("\n");
     // Accept-forbidden guard: an anchor can land at the very first line of a
     // fence-less note for EITHER op:"replace" or op:"prepend" against a
@@ -1272,7 +1254,7 @@ export async function patchNote(
   anchor: PatchAnchor,
   op: PatchOp,
   content: string,
-  opts: { rangeRuleStandsAside?: boolean } = {},
+  opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
 ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
   return _impl.patchNote(relPath, anchor, op, content, opts);
 }

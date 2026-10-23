@@ -174,7 +174,8 @@ describe("a 150k note survives a read → write round trip", () => {
     // A long note whose early section ends before the limit: replace lands.
     const early = "# Early\n\nshort section\n\n# Rest\n\n" + "y".repeat(LONG) + "\n";
     await (await import("node:fs/promises")).writeFile(join(vaultRoot, "Early.md"), early);
-    assert.equal((await backend.patchNote("Early.md", { type: "heading", value: "Early" }, "replace", "replaced")).found, true);
+    // An H1 replace needs `wholeSection` (#601); this test is about the range rule.
+    assert.equal((await backend.patchNote("Early.md", { type: "heading", value: "Early" }, "replace", "replaced", { wholeSection: true })).found, true);
     const disk = await readFile(join(vaultRoot, "Early.md"), "utf8");
     assert.match(disk, /replaced/);
     assert.ok(disk.endsWith("y".repeat(20) + "\n"), "the tail past the limit is intact");
@@ -184,7 +185,7 @@ describe("a 150k note survives a read → write round trip", () => {
     const { backend, vaultRoot } = await fixture();
     const section = "# First\n\n" + "s".repeat(CHARACTER_LIMIT - 20) + "\n" + "\n".repeat(40) + "# Next\n\n" + "y".repeat(1000) + "\n";
     await (await import("node:fs/promises")).writeFile(join(vaultRoot, "Blank.md"), section);
-    assert.equal((await backend.patchNote("Blank.md", { type: "heading", value: "First" }, "replace", "replaced")).found, true);
+    assert.equal((await backend.patchNote("Blank.md", { type: "heading", value: "First" }, "replace", "replaced", { wholeSection: true })).found, true);
     assert.match(await readFile(join(vaultRoot, "Blank.md"), "utf8"), /replaced[\s\S]*# Next/);
   });
 

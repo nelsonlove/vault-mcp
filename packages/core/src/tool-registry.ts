@@ -326,9 +326,10 @@ export const FS_TOOLS: ToolDef[] = [
     title: "Patch a note relative to a heading or block anchor",
     description:
       "Insert / replace content at a named anchor inside a note. Three operations × two anchor types:\n" +
-      "  - `heading` anchor: matches the first `## My Heading` line whose text exactly equals the anchor value (case-sensitive). " +
-      "If multiple headings have the same text, only the first is patched. The anchor's 'content' is the section body — lines from after the heading up to the next heading of equal or higher level, or EOF. The heading line itself is preserved across all three ops.\n" +
-      "  - `block` anchor: matches the first paragraph whose final token is `^<value>` (whitespace-bounded). The anchor's 'content' is the entire paragraph (lines from prior blank line up to next blank line). `prepend`/`append` operate on the WHOLE paragraph, not just the line containing `^<value>`. `replace` swaps the entire paragraph (and the `^<value>` token with it — include it in `content` if you want the block ref preserved).\n" +
+      "  - `heading` anchor: matches the first `## My Heading` line whose text exactly equals the anchor value (case-sensitive; a closing run of `#`s is not part of the text). A `#` line inside a code fence, a `$$` math block, a `%%` comment or an HTML block is not a heading. Headings are found on the note's text as it is at the call, never on an index that may be older. " +
+      "If multiple headings have the same text, only the first is patched. The anchor's 'content' is the section body — lines from after the heading up to the next heading of equal or higher level, or EOF. The heading line itself is preserved across all three ops. " +
+      "A `replace` on a level-1 heading is refused (Error [h1_replace]) unless `whole_section: true` is passed: the H1's section runs to the next H1, so it is the whole note. Prepend and append on an H1 are allowed.\n" +
+      "  - `block` anchor: matches the first paragraph whose final token is `^<value>` (at the end of its line, after a space or alone on the line, outside code fences). The anchor's 'content' is the entire paragraph (lines from the prior blank line up to the next blank line, stopping at a heading or a fence; on a list item, that item's line). `prepend`/`append` operate on the WHOLE paragraph, not just the line containing `^<value>`. `replace` swaps the entire paragraph (and the `^<value>` token with it — include it in `content` if you want the block ref preserved).\n" +
       "`content` is inserted verbatim into the line stream — newlines preserved. Callers wanting paragraph-level separation (a blank line between the inserted content and the anchor's content) should include the blank line(s) in `content` themselves. " +
       "Returns `found: false` if the anchor doesn't match; no write happens. Returns the prior content as `previous` so the caller can undo or audit. " +
       "For frontmatter-field edits use `obsidian_manage_frontmatter` instead — patch_note doesn't shadow it. " +
@@ -345,6 +346,10 @@ export const FS_TOOLS: ToolDef[] = [
         ),
       op: z.enum(["append", "prepend", "replace"]).describe("Where to put the content relative to the anchor."),
       content: z.string().describe("Markdown to insert or use as replacement. Newlines preserved."),
+      whole_section: z
+        .boolean()
+        .optional()
+        .describe("Only for `replace` on a level-1 heading: true replaces the H1's whole section, which is the whole note below the H1 (#601). Without it such a replace is refused."),
     },
     annotations: DESTRUCTIVE,
     capability: "fs-expressible",

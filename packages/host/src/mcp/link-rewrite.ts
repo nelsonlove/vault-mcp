@@ -82,14 +82,30 @@ function linesOf(text: string, from: number): Array<[number, number]> {
  * backticks or tildes (after any indentation or blockquote markers, so a fence
  * inside a list item or a quote counts), and closes on a line holding only a
  * run of the same character at least as long. An unclosed fence runs to the end
- * of the note.
+ * of the note. A line's `\r` (a CRLF note) is not part of the closer: before
+ * that was read, no fence closed in a CRLF note, and the first fence hid every
+ * link after it.
+ *
+ * This is the link rewriter's own rule, and it is simpler than the patch
+ * parser's (core `note-sections.ts`, #593) on purpose. The two read code for
+ * different ends. The patch parser must not take a `#` line inside code for a
+ * heading, so it follows Obsidian's container rules closely. Here a real link
+ * that is hidden is a link left broken after a move, while a link inside code
+ * that is rewritten does no harm; so this rule hides only what it is sure of,
+ * and a change to it is measured against Obsidian's index on its own (the
+ * Fable review of #596). Known residuals, the same as before #596: an unclosed
+ * fence in a list item or a quote runs to the end of the note, where Obsidian
+ * ends it with its container; inside a `%%` comment Obsidian pairs backtick
+ * runs as inline code, where this rule reads a fence; indented code is not
+ * known, so a tab-indented "fence" hides its lines.
  */
 function fencedSpans(text: string, from: number): Array<[number, number]> {
   const spans: Array<[number, number]> = [];
   let open: { start: number; ch: string; len: number } | null = null;
   for (const [a, b] of linesOf(text, from)) {
     // A list marker may precede an opening fence, never a closing one.
-    const line = text.slice(a, b).replace(open ? LEAD : FENCE_LEAD, "");
+    const raw = text.slice(a, b);
+    const line = (raw.endsWith("\r") ? raw.slice(0, -1) : raw).replace(open ? LEAD : FENCE_LEAD, "");
     if (!open) {
       const m = /^(`{3,}|~{3,})/.exec(line);
       // A backtick fence's info string may not hold a backtick (then it is inline code).
