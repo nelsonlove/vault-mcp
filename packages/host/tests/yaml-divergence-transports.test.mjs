@@ -104,20 +104,26 @@ for (const [name, fm, yamlSays, refusal] of CASES) {
       assert.equal(store.get("e.md"), "");
     });
 
-    test("obsidian_patch_note (a block replace inside the fence)", async () => {
-      // Block `b` covers `zz: 1`, the fence's one line.
-      const cache = { "p.md": { blocks: { b: { position: { start: { offset: 4 }, end: { offset: 9 } } } } } };
-      const { store, backend } = harness({ "p.md": SEED }, cache);
-      await assert.rejects(() => backend.patchNote("p.md", { type: "block", value: "b" }, "replace", fm), refusal);
-      assert.equal(store.get("p.md"), SEED);
+    test("obsidian_patch_note (a block replace that closes an open fence)", async () => {
+      // The leading fence is still open; replacing block `b` closes it with
+      // the case's YAML. The cache is the one Obsidian gives this text, as
+      // the patch road checks it against the text (#596).
+      const open = "---\nbody ^b\n";
+      const at = open.indexOf("body ^b");
+      const cache = { "p.md": { blocks: { b: { position: { start: { offset: at }, end: { offset: at + 7 } } } } } };
+      const { store, backend } = harness({ "p.md": open }, cache);
+      await assert.rejects(() => backend.patchNote("p.md", { type: "block", value: "b" }, "replace", fm + "\n---"), (e) => e.code === "accept_forbidden" && refusal.test(e.message));
+      assert.equal(store.get("p.md"), open);
     });
 
     test("obsidian_append_at_heading: its result check (guardAppendResult)", () => {
       assert.throws(() => guardAppendResult(SEED, noteOf(fm)), (e) => e.code === "accept_forbidden" && refusal.test(e.message));
     });
 
-    test("obsidian_append_at_heading: the registered tool (an insert into an empty fence)", async () => {
-      const text = "---\n---\n\nbody\n";
+    test("obsidian_append_at_heading: the registered tool (an insert that closes an open fence)", async () => {
+      // The cache is the one Obsidian gives this text.
+      const text = "---\n## H\n";
+      const at = text.indexOf("## H");
       const store = new Map([["N.md", text]]);
       const calls = [];
       const app = {
@@ -130,17 +136,15 @@ for (const [name, fm, yamlSays, refusal] of CASES) {
         },
         metadataCache: {
           getFileCache: () => ({
-            headings: [
-              { heading: "H", level: 2, position: { start: { line: 0, offset: 0 } } },
-              { heading: "Next", level: 2, position: { start: { line: 1, offset: 4 } } },
-            ],
+            headings: [{ heading: "H", level: 2, position: { start: { line: 1, offset: at }, end: { line: 1, offset: at + 4 } } }],
           }),
         },
       };
       const server = fakeServer();
       registerComplementaryTools(server, app, { getSettings: () => ({ allowlist: [] }) });
-      const res = await server.tools.get("obsidian_append_at_heading").handler({ path: "N.md", heading: "H", content: fm, create_if_missing: false });
+      const res = await server.tools.get("obsidian_append_at_heading").handler({ path: "N.md", heading: "H", content: fm + "\n---", create_if_missing: false });
       assert.equal(res.isError, true, res.content?.[0]?.text);
+      assert.match(res.content[0].text, /\[accept_forbidden\]/);
       assert.match(res.content[0].text, refusal);
       assert.deepEqual(calls, []);
     });
@@ -200,10 +204,12 @@ for (const [name, fm, yamlSays, refusal] of CASES.filter(([n]) => n.startsWith("
       assert.equal(store.get("e.md"), "");
     });
     test("obsidian_patch_note", async () => {
-      const cache = { "p.md": { blocks: { b: { position: { start: { offset: 4 }, end: { offset: 9 } } } } } };
-      const { store, backend } = harness({ "p.md": SEED }, cache);
-      await assert.rejects(() => backend.patchNote("p.md", { type: "block", value: "b" }, "replace", fm), (e) => e.code === "accept_forbidden");
-      assert.equal(store.get("p.md"), SEED);
+      // As above: a block replace that closes an open fence, with the cache Obsidian gives the text.
+      const open = "---\nbody ^b\n";
+      const cache = { "p.md": { blocks: { b: { position: { start: { offset: 4 }, end: { offset: 11 } } } } } };
+      const { store, backend } = harness({ "p.md": open }, cache);
+      await assert.rejects(() => backend.patchNote("p.md", { type: "block", value: "b" }, "replace", fm + "\n---"), (e) => e.code === "accept_forbidden");
+      assert.equal(store.get("p.md"), open);
     });
     test("obsidian_append_at_heading: its result check", () => {
       assert.throws(() => guardAppendResult(SEED, noteOf(fm)), (e) => e.code === "accept_forbidden");
