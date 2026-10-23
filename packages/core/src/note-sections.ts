@@ -129,7 +129,7 @@ function frontmatterEnd(text: string): number {
  * `frontmatter: false` treats the whole text as body (a caller that has cut
  * the front matter off already).
  */
-export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}): NoteOutline {
+export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesInComments?: boolean } = {}): NoteOutline {
   const lines = text.split("\n");
   const lineStarts: number[] = new Array(lines.length);
   let off = 0;
@@ -235,6 +235,15 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
           break;
         }
         case "comment": {
+          // For the link rewriter, a fence inside a `%%` comment is still
+          // code: Obsidian indexes no link inside it. The same fence rule is
+          // stepped, and the comment closes as usual (at the next `%%`).
+          if (opts.fencesInComments) {
+            const st = fence.step(lines[i], lines[i + 1], { column: items.length ? items[items.length - 1] : 0 });
+            if (st.endedBefore && fenceStart >= 0) { fences.push([fenceStart, lineEnd(i - 1)]); fenceStart = -1; }
+            if (st.kind === "open") fenceStart = lineStarts[i];
+            if (st.kind === "close") { fences.push([fenceStart, lineEnd(i)]); fenceStart = -1; }
+          }
           const at = s.indexOf("%%");
           if (at >= 0) {
             open = null;
@@ -370,10 +379,12 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}):
  * end) spans: the fences the heading parser finds (`outlineNote`), so the
  * link rewriter and the patch tools read code the same way, with the same
  * list and quote context (a fence in a list item may be indented by a tab or
- * four spaces under the item). The front matter is skipped.
+ * four spaces under the item). Unlike the heading outline, a fence inside a
+ * `%%` comment counts here, as Obsidian indexes no link in it. The front
+ * matter is skipped.
  */
 export function fencedSpans(text: string, from = 0): Array<[number, number]> {
-  return outlineNote(text).fences.filter(([a]) => a >= from);
+  return outlineNote(text, { fencesInComments: true }).fences.filter(([a]) => a >= from);
 }
 
 /** A heading's section: from just after the heading to the next heading of

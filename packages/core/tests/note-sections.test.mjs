@@ -505,3 +505,15 @@ describe("review round 4: one fence rule with list context, and a leading BOM", 
     assert.deepEqual(outlineNote(t).headings.map((h) => [h.heading, h.start, h.end]), [["T", 1, 4], ["A", 6, 10]]);
   });
 });
+
+// ── review round 5 of #596 ─────────────────────────────────────────────────
+
+describe("review round 5: a fence inside a %% comment is code for the link rewriter", () => {
+  test("fencedSpans counts a fence inside a comment; the heading outline does not", async () => {
+    const { fencedSpans } = await import("../src/note-sections.ts");
+    // Obsidian 1.14.4 indexes only [[C]] here: [[A]] and [[B]] sit in code.
+    const t = "%%\n```\n[[A]]\n\n[[B]]\n```\n%%\n[[C]]\n";
+    assert.deepEqual(fencedSpans(t, 0), [[3, t.indexOf("\n%%\n[[C]]")]]);
+    assert.deepEqual(outlineNote(t).fences, []);
+  });
+});

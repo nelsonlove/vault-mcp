@@ -92,7 +92,8 @@ function fakeApp(files, { obsidianParse = true, parse = parseCache, changedAfter
   const store = new Map(Object.entries(files));
   const caches = new Map();
   const listeners = new Set();
-  const reparse = (p) => caches.set(p, parseCache(store.get(p)));
+  // Obsidian builds its cache from the decoded bytes, which drop a leading BOM.
+  const reparse = (p) => caches.set(p, parseCache(store.get(p).replace(/^\uFEFF/, "")));
   for (const p of store.keys()) reparse(p);
   const written = (p) => {
     if (changedAfterWrite === null) return;
@@ -101,11 +102,13 @@ function fakeApp(files, { obsidianParse = true, parse = parseCache, changedAfter
   const app = {
     vault: {
       getAbstractFileByPath: (p) => (store.has(p) ? new TFile(p, 1700) : null),
-      read: async (f) => store.get(f.path),
-      cachedRead: async (f) => store.get(f.path),
+      // As Obsidian's Vault.read: a leading BOM is dropped.
+      read: async (f) => store.get(f.path).replace(/^\uFEFF/, ""),
+      cachedRead: async (f) => store.get(f.path).replace(/^\uFEFF/, ""),
       // The cache is NOT refreshed on a write: that is the race under test.
       modify: async (f, c) => { store.set(f.path, c); written(f.path); },
-      // As Obsidian's: read, run, write, with no other write in between.
+      // As Obsidian's: read, run, write, with no other write in between; the
+      // function gets the file as it is on disk, BOM and all.
       process: async (f, fn) => { const n = fn(store.get(f.path)); store.set(f.path, n); written(f.path); return n; },
       append: async (f, c) => { store.set(f.path, store.get(f.path) + c); written(f.path); },
       create: async (p, c) => { store.set(p, c); },
@@ -460,11 +463,24 @@ describe("review round 4 of #596", () => {
   });
 
   test("a BOM note on the cache road: the cache's offsets are shifted past the BOM, as the parse's are", async () => {
+    // As Obsidian is used through this double, the read text has no BOM.
     const text = "\uFEFF# T\n\n## A\n\na\n\n## B\n\nb\n";
     const { app, store, caches } = fakeApp({ "U.md": text }, { obsidianParse: false });
     caches.set("U.md", parseCache(text.slice(1))); // Obsidian's cache: built without the BOM
     await new ObsidianBackend(app).patchNote("U.md", { type: "heading", value: "A" }, "replace", "new a");
     assert.equal(store.get("U.md"), "\uFEFF# T\n\n## A\n\nnew a\n## B\n\nb\n");
+  });
+
+  test("a BOM note: patch and append are written (not refused as changed), and the BOM stays on disk", async () => {
+    const text = "\uFEFF# T\n\n## A\n\na\n\n## B\n\nb\n";
+    const { app, store, reparse } = fakeApp({ "V.md": text });
+    await new ObsidianBackend(app).patchNote("V.md", { type: "heading", value: "A" }, "replace", "new a");
+    reparse("V.md");
+    const handlers = new Map();
+    registerComplementaryTools({ registerTool(n, _m, h) { handlers.set(n, h); } }, app, { getSettings: () => ({ allowlist: [] }) });
+    const res = await handlers.get("obsidian_append_at_heading")({ path: "V.md", heading: "B", content: "more", create_if_missing: false }, {});
+    assert.equal(res.isError, undefined, res.content?.[0]?.text);
+    assert.equal(store.get("V.md"), "\uFEFF# T\n\n## A\n\nnew a\n## B\n\nb\nmore\n");
   });
 
   test("an answer from the parse call with no sections is not a parse: no heading is added twice", async () => {
@@ -544,5 +560,16 @@ describe("obsidian_append_at_heading with a stale cache", () => {
     const res = await appendTool(app)({ path: "A.md", heading: "Added", content: "more", create_if_missing: false });
     assert.equal(res.structuredContent.found, true);
     assert.equal(store.get("A.md"), "# A\n\nbody\n## Added\n\nadded body\nmore\n");
+  });
+});
+
+describe("review round 5 of #596: the move's link reader and %% comments", () => {
+  test("a fence inside a %% comment is code: its links are not read, and a $$ in it pairs with nothing", async () => {
+    const { parseLinks } = await import("../src/mcp/link-rewrite.ts");
+    // Both expected lists are what Obsidian 1.14.4 indexes for the text.
+    assert.deepEqual(parseLinks("%%\n```\n[[A]]\n\n[[B]]\n```\n%%\n[[C]]\n").map((l) => l.linkpath), ["C"]);
+    assert.deepEqual(parseLinks("%%\n```\n$$\n\n```\n%%\n[[A]]\n\n$$\nx\n$$\n").map((l) => l.linkpath), ["A"]);
+    // A link in a comment outside code is indexed.
+    assert.deepEqual(parseLinks("%%\n[[A]]\n\n[[B]]\n%%\n[[C]]\n").map((l) => l.linkpath), ["A", "B", "C"]);
   });
 });
