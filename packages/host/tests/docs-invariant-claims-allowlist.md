@@ -61,25 +61,6 @@ Known-overstated section instead — see its header for the format.
   source pins "history:restore" — and the command stays in cli-policy.ts's
   UNINSPECTABLE_WRITE_CLI_COMMANDS default-deny set, whose rationale (#110) this sentence
   restates.
-- **This does not touch the agent-side guarantee.** The stamp is an in-app, human-gesture-gated `processFrontMatter` call (`stampAcceptedFrontmatter`, module-scope and unexported in `packages/governor/src/wiring/wiring.ts`, reachable only through the gesture-gated accept handler) — it **bypasses MCP entirely** and is exactly the human path the accept-forbidden guard reserves.
-  substantiated 2026-08-18 (acceptance convergence, #221/#164): packages/core is diff-zero in
-  that change; governance-module.test.mjs pins stampAcceptedFrontmatter as module-scope,
-  unexported, with exactly one caller (acceptNote's injected stampAccepted dep on the
-  gesture path) and asserts the MCP layer references none of the accept path. The residuals
-  in "Known-overstated" (#137/#105/#107) qualify the agent-side guard exactly as before —
-  this sentence claims the CONVERGENCE changed nothing on that side, which is what the
-  zero-diff + regression run substantiate.
-- A failure between the stamp and the baseline advance leaves the note stamped with the old baseline; the retry Accept sees `accepted` and takes the advance-only branch, so a double-stamp is impossible.
-  substantiated 2026-08-18: governance-accept.test.mjs "setBaseline throws AFTER a landed
-  stamp" pins exactly this — the retry stamps zero additional times and lands the baseline
-  on the stamped bytes; acceptNote only stamps when acceptanceStatusOf(content) ===
-  "proposed", which a landed stamp has made "accepted".
-- Every agent transport still refuses the accepted family; `@vault-mcp/core` is unchanged.
-  substantiated 2026-08-18: the accept-guard suites (accept-forbidden, accept-fence-parity,
-  accept-guard-control-char, mcp-template-accept-guard, append-at-heading-accept, cli
-  guards) run unchanged and green in the convergence PR, and packages/core has a zero diff.
-  "Every agent transport" carries the same tracked residuals as the opening claims
-  (#137/#105/#107) — unchanged BY this change, per the section above.
 - The legacy QuickAdd accept-macro gated acceptance on vault-specific checks (uuid7 `uid`, `title`, `description`); that gate maps onto this config — per-vault configuration, never a hardwired vault convention in the plugin.
   substantiated 2026-08-18: requiredFrontmatterKeys defaults EMPTY (no gate) and the plugin
   source names no vault-specific key — the uid/title/description list appears only as a

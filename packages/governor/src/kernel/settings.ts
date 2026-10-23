@@ -33,7 +33,7 @@ export function governanceDisplaySettings(config: unknown): GovernanceDisplaySet
 // confers no accept capability: `acceptedBy` is the identity the human's OWN gesture stamps,
 // and `requiredFrontmatterKeys` can only make Accept REFUSE more, never accept more.
 export interface GovernanceAcceptanceSettings {
-  /** Identity stamped as `accepted-by` (and recorded as the accept log's `by`). */
+  /** Identity recorded on the baseline and as the accept log's `by` (never written into a note). */
   acceptedBy: string;
   /** The conformance gate: keys that must be present + non-empty before a `proposed`
    * note can be accepted. Empty (default) ⇒ no gate. Per-vault CONFIG — the plugin

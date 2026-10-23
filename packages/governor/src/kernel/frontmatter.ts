@@ -5,12 +5,11 @@
 // Anything we don't understand is preserved verbatim.
 //
 // Ported from obsidian-stewardship/src/frontmatter.ts as part of the governance
-// (Acceptance) module fold (#83). The acceptance convergence (#221/#164) REMOVED the
-// string-rewriting `stampAcceptance` helper this file used to carry: the one production
-// writer of the accepted family is now the module-scope `stampAcceptedFrontmatter` in
-// governor/wiring/wiring.ts (Obsidian's own `app.fileManager.processFrontMatter`), reached
-// exclusively through `acceptNote`'s injected `stampAccepted` dep on the gesture-gated
-// accept path. Everything left in this file is READ-ONLY over note content — it can
+// (Acceptance) module fold (#83). The acceptance convergence (#221/#164) removed the
+// string-rewriting `stampAcceptance` helper this file used to carry, and #599 removed its
+// replacement, the in-app stamp of the accepted family: nothing in the governor writes
+// `acceptance-status: accepted`, `accepted-by` or `accepted-on` now.
+// Everything left in this file is READ-ONLY over note content — it can
 // decide, but never write.
 
 export interface ParsedNote {

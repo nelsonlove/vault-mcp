@@ -11,12 +11,9 @@
 //  inserted DIRECTLY BELOW the note's H1 (or at the top of the body when the
 //  note has no H1). `withdraw` and `submit-revision` remove exactly the
 //  `[!revision-request]` callout blocks and nothing else; `submit-revision`
-//  optionally inserts a `[!revision-report]` callout the same way. Only
-//  `acceptance-status` stays frontmatter (the Bases queue needs it), and the
-//  ONE value this module can write there is `proposed` —
-//  `setAcceptanceStatusProposed` takes no value parameter, so this file
-//  structurally cannot write an accepted-family value (the accept verb stays
-//  in no API; the caller additionally re-checks via the shared accept guard).
+//  optionally inserts a `[!revision-report]` callout the same way. This
+//  module writes NO frontmatter at all (#599: the retired accept keys are never
+//  written; the caller additionally re-checks via the shared accept guard).
 //
 //  FRONTMATTER BOUNDARIES come from the shared core recognizer
 //  (`stripLeadingBom` + `LEADING_FRONTMATTER_RE`, @vault-mcp/core) — never a
@@ -65,41 +62,6 @@ export function splitNote(content: string): { head: string; body: string } {
   const after = bomless.slice(m[0].length);
   const term = /^(?:\r\n|\n|\r)/.exec(after)?.[0] ?? "";
   return { head: bom + bomless.slice(0, m[0].length) + term, body: after.slice(term.length) };
-}
-
-/**
- * Set the note's existing top-level `acceptance-status` key to `proposed`.
- * Returns null when the note has no leading frontmatter or no top-level
- * `acceptance-status` key (nothing to transition — the caller refuses first).
- *
- * DELIBERATELY takes no value parameter: `proposed` is the only value this
- * module can write, so no caller can turn it into an acceptance writer.
- * Every other frontmatter line is preserved verbatim (a mixed-EOL block is
- * rejoined with its dominant line ending — see the module header).
- */
-export function setAcceptanceStatusProposed(content: string): string | null {
-  const bomless = stripLeadingBom(content);
-  const bom = content.length === bomless.length ? "" : content.slice(0, content.length - bomless.length);
-  const m = LEADING_FRONTMATTER_RE.exec(bomless);
-  if (!m) return null;
-  const opener = /^---[ \t]*(?:\r\n|\n|\r)/.exec(bomless);
-  if (!opener) return null; // unreachable given the match above; fail closed
-  const innerStart = opener[0].length;
-  const inner = m[1];
-  const eol = eolOf(inner);
-  const lines = inner.split(/\r\n|\n|\r/);
-  let found = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\s/.test(lines[i])) continue; // indented continuation, not a top-level key
-    const key = /^(acceptance[-_]status)[ \t]*:/i.exec(lines[i]);
-    if (key) {
-      lines[i] = `${key[1]}: proposed`; // the note's own key spelling is preserved
-      found = true;
-      break;
-    }
-  }
-  if (!found) return null;
-  return bom + bomless.slice(0, innerStart) + lines.join(eol) + bomless.slice(innerStart + inner.length);
 }
 
 /** Build the quoted callout lines for one revision callout. `text` may be multi-line. */
@@ -255,9 +217,7 @@ export interface SubmitRevisionPlan {
 
 /**
  * The submit-revision content transform, in one pure step:
- *   1. `acceptance-status` → `proposed` (null when the key/frontmatter is
- *      missing — the caller has already refused a non-revising note, so this
- *      only fails closed on a race);
+ *   1. (no frontmatter write: `acceptance-status` is left exactly as it is, #599);
  *   2. remove the addressed `[!revision-request]` callout(s);
  *   3. when `summary` is given, insert a `[!revision-report]` callout below
  *      the H1 (the predecessor flow's contract — the reviewer disposes of the
@@ -266,10 +226,8 @@ export interface SubmitRevisionPlan {
 export function planSubmitRevision(
   content: string,
   opts: { summary?: string; date: string }
-): SubmitRevisionPlan | null {
-  const proposed = setAcceptanceStatusProposed(content);
-  if (proposed === null) return null;
-  const { head, body } = splitNote(proposed);
+): SubmitRevisionPlan {
+  const { head, body } = splitNote(content);
   const { body: cleaned, removed } = removeRevisionRequestCallouts(body);
   let finalBody = cleaned;
   let reportInserted = false;

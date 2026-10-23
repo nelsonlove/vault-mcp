@@ -51,7 +51,7 @@
 //  command/enumerable/MCP path reaches them.
 // ============================================================================
 
-import { acceptanceStatusOf, missingRequiredKeys, parseNote, frontmatterKeys } from "./frontmatter.js";
+import { acceptanceStatusOf, missingRequiredKeys } from "./frontmatter.js";
 import type { Baseline } from "./baseline-store.js";
 
 export interface AcceptStore {
@@ -64,6 +64,7 @@ export interface StewardshipLogRecord {
   path: string;
   ts: string;
   by: string;
+  /** Written by builds before #599 only (they stamped the accepted family); never written now, still read from old log lines. */
   stamped?: boolean;
   quarantine?: string;
   hash?: string;
@@ -167,31 +168,16 @@ export function baselineRekeyRecord(args: {
   };
 }
 
-/** The exact fields the context-aware Accept stamps into a `proposed` note. `status` is the
- * LITERAL type "accepted": the shape structurally cannot express stamping any other value, so
- * even a buggy caller of the injected `stampAccepted` dep cannot mint a different family. */
-export interface AcceptanceStampFields {
-  status: "accepted";
-  by: string; // the CONFIGURED human identity (governance config `acceptedBy`)
-  on: string; // local minutes-precision timestamp, YYYY-MM-DDTHH:mm (the vault convention)
-}
-
 export interface AcceptDeps {
   readNote(path: string): Promise<string>;
   // Link-safe write of full content (vault.process in production).
   writeNote(path: string, content: string): Promise<void>;
-  /** Write the accepted family into the note's frontmatter. In production this is the
-   * module-scope `stampAcceptedFrontmatter` in governor/wiring/wiring.ts — Obsidian's own
-   * `app.fileManager.processFrontMatter` — never exported, never a command/tool/method,
-   * reached ONLY through this dep on the gesture-gated accept path. */
-  stampAccepted(path: string, fields: AcceptanceStampFields): Promise<void>;
   store: AcceptStore;
   // Move `content` into the quarantine store; returns the quarantine file path. NEVER deletes.
   quarantine(path: string, content: string): Promise<string>;
   appendLog(record: StewardshipLogRecord): Promise<void>;
   now(): string;      // ISO timestamp (UTC) — log records + baseline acceptedAt
-  nowLocal(): string; // local minutes-precision stamp for accepted-on (formatLocalMinutes)
-  user: string;       // accepted-by identity (governance config `acceptedBy`)
+  user: string;       // the identity recorded on the baseline and the accept log (governance config `acceptedBy`)
   /** The conformance gate (#221/#164): frontmatter keys that must be present and non-empty
    * before a `proposed` note may be accepted. EMPTY (the default) ⇒ no gate. This is where
    * the legacy QuickAdd accept-macro's vault-specific checks (uid, title, description) live
@@ -199,11 +185,11 @@ export interface AcceptDeps {
   requiredFrontmatterKeys: string[];
 }
 
-export interface AcceptResult { stamped: boolean; baseline: Baseline; }
+export interface AcceptResult { baseline: Baseline; }
 export interface RevertResult { quarantine: string; restoredHash: string; }
 
 /** The conformance-gate refusal: a `proposed` note is missing required frontmatter. Thrown
- * BEFORE any write — no stamp, no baseline advance, no log record (nothing happened). */
+ * BEFORE any write — no baseline advance, no log record (nothing happened). */
 export class AcceptGateError extends Error {
   constructor(public readonly missing: string[]) {
     super(`accept refused — required frontmatter missing or empty: ${missing.join(", ")}`);
@@ -211,76 +197,18 @@ export class AcceptGateError extends Error {
   }
 }
 
-/** The stamp-fold verification failure: the note's post-stamp bytes are not the pre-stamp
- * note plus the stamp (something else wrote the note mid-accept, or the stamp did not land).
- * Thrown AFTER the stamp write but BEFORE the baseline advance — fail safe: the baseline is
- * not advanced over content the human did not review. */
-export class AcceptFoldError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "AcceptFoldError";
-  }
-}
-
-// The three keys the stamp itself writes — excluded from the fold verification's
-// frontmatter comparison (they are EXPECTED to change; a pre-stamp note may also carry
-// stale accepted-by/accepted-on from an earlier accepted→revising→proposed round-trip,
-// which the stamp legitimately replaces).
-const STAMP_KEYS = new Set(["acceptance-status", "accepted-by", "accepted-on"]);
-
-// The sorted non-stamp frontmatter KEY SET of a note — the fold verification's frontmatter
-// half. Keys only, not values: processFrontMatter round-trips the whole frontmatter through
-// Obsidian's YAML serializer, which may legitimately re-format unrelated VALUES, so a
-// value-level comparison would false-abort; a key added or removed by a foreign write is
-// the realistic injection shape and survives re-serialization.
-function nonStampKeys(content: string): string {
-  const { hasFrontmatter, frontmatterText } = parseNote(content);
-  if (!hasFrontmatter) return "";
-  return [...frontmatterKeys(frontmatterText).keys()]
-    .filter((k) => !STAMP_KEYS.has(k))
-    .sort()
-    .join("\n");
-}
-
-/** Local minutes-precision timestamp, `YYYY-MM-DDTHH:mm` — the vault's accepted-on
- * convention. Minutes, not date-only (date-only was a fixed bug — do not regress), and
- * LOCAL time deliberately (it matches what the human at the keyboard sees). */
-export function formatLocalMinutes(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
-}
-
-// ACCEPT — the ONE accept, context-aware across both lifecycles (#221/#164 convergence):
+// ACCEPT — baseline advance only. Accept never edits the note: it does not write
+// `acceptance-status`, `accepted-by` or `accepted-on` (the retired accept keys; Nelson's ruling
+// of 2026-10-20, #599). What confirms a note is a `verified` entry that only Nelson writes, and
+// this plugin never writes one.
 //
-//   acceptance-status: proposed  ⇒ conformance-gate check, then STAMP the accepted family
-//                                  (via deps.stampAccepted → processFrontMatter), then
-//                                  advance the baseline from the POST-stamp content;
-//   anything else (no status / revising / already accepted)
-//                                ⇒ advance the baseline only — the note is byte-untouched.
-//                                  `revising` is deliberately NOT stamped: it goes through
-//                                  withdraw / governance_submit_revision back to `proposed`.
+//   acceptance-status: proposed  ⇒ conformance-gate check first (refuse BEFORE any write), then
+//                                  advance the baseline;
+//   anything else                ⇒ advance the baseline.
 //
-// ORDERING (the reconcile-correctness invariant): the stamp itself changes the note, so it
-// MUST be folded into the accepted snapshot — stamp FIRST, re-read, VERIFY the fold
-// (status now accepted, post-stamp BODY byte-identical, non-stamp frontmatter KEY SET
-// unchanged), and only then advance the baseline from those post-stamp bytes. The stamp
-// therefore can never re-enter the pending queue as a fresh unreviewed change.
-// Partial-failure safety falls out of the same order:
-//   - gate refusal / stamp throw  ⇒ nothing advanced, nothing logged;
-//   - fold verification failure   ⇒ stamp may have landed but NO baseline advance — the
-//     baseline never moves over the raced-in content (fail safe);
-//   - setBaseline throw after a landed stamp ⇒ baseline unchanged; the note's status is now
-//     `accepted`, so a retry Accept takes the advance-only branch and cannot double-stamp.
-// There is by construction no state where the baseline advanced but the queue re-shows the
-// stamp as pending: any advanced baseline IS the post-stamp bytes.
-//
-// HONEST LIMIT of the fold verification: it catches a foreign body change and a foreign
-// frontmatter key add/remove landing anywhere in the read→stamp→re-read window, but NOT a
-// foreign VALUE change to a pre-existing non-stamp key in that same sub-second window —
-// processFrontMatter re-serializes every value, so value equality cannot be checked without
-// false-aborting legitimate accepts. Such a write is journaled (it went through MCP) but
-// would be folded. This narrow residual is the value-level sliver of the same race window
-// the pre-convergence accept already had; it is documented in docs/acceptance-model.md.
+// The note is byte-untouched in every case. The identity the baseline and the accept log carry
+// is `deps.user` (governance config `acceptedBy`); it labels the log, it is not written to the
+// note.
 /** Options for a single accept call. `gateOverride` skips the conformance gate for THIS call
  * only — reachable solely from the pane's gate modal ("Accept anyway"), i.e. a second explicit
  * human gesture after the gate named what is missing. It can never be supplied by an agent:
@@ -289,49 +217,24 @@ export interface AcceptOpts { gateOverride?: boolean; }
 
 export async function acceptNote(deps: AcceptDeps, path: string, opts?: AcceptOpts): Promise<AcceptResult> {
   const pre = await deps.readNote(path);
-  const status = acceptanceStatusOf(pre);
-  let content = pre;
-  let stamped = false;
 
-  if (status === "proposed") {
-    // Conformance gate — refuse BEFORE any write (no stamp AND no baseline advance), unless
-    // the human explicitly overrode it via the pane's gate modal ("Accept anyway" — a second
-    // real gesture). The refusal carries the missing keys so the modal can name them.
-    if (!opts?.gateOverride) {
-      const missing = missingRequiredKeys(pre, deps.requiredFrontmatterKeys);
-      if (missing.length > 0) throw new AcceptGateError(missing);
-    }
-
-    // STAMP FIRST (see the ordering note above), then fold the stamp into the snapshot.
-    await deps.stampAccepted(path, { status: "accepted", by: deps.user, on: deps.nowLocal() });
-    const post = await deps.readNote(path);
-    if (acceptanceStatusOf(post) !== "accepted") {
-      throw new AcceptFoldError(`accept aborted — the stamp did not land on ${path}; baseline NOT advanced`);
-    }
-    if (parseNote(post).body !== parseNote(pre).body) {
-      throw new AcceptFoldError(
-        `accept aborted — ${path} changed during the stamp (body differs); baseline NOT advanced — review again`,
-      );
-    }
-    if (nonStampKeys(post) !== nonStampKeys(pre)) {
-      throw new AcceptFoldError(
-        `accept aborted — ${path} changed during the stamp (frontmatter keys differ); baseline NOT advanced — review again`,
-      );
-    }
-    content = post;
-    stamped = true;
+  if (acceptanceStatusOf(pre) === "proposed" && !opts?.gateOverride) {
+    // Conformance gate — refuse BEFORE any write, unless the human explicitly overrode it via
+    // the pane's gate modal ("Accept anyway" — a second real gesture). The refusal carries the
+    // missing keys so the modal can name them.
+    const missing = missingRequiredKeys(pre, deps.requiredFrontmatterKeys);
+    if (missing.length > 0) throw new AcceptGateError(missing);
   }
 
-  const baseline = await deps.store.setBaseline(path, content, deps.user, deps.now());
+  const baseline = await deps.store.setBaseline(path, pre, deps.user, deps.now());
   await deps.appendLog({
     action: "accept",
     path,
     ts: deps.now(),
     by: deps.user,
-    stamped,
     hash: baseline.hash,
   });
-  return { stamped, baseline };
+  return { baseline };
 }
 
 // REVERT — restore the note to its accepted baseline and quarantine the rejected current

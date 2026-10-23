@@ -657,7 +657,6 @@ export function authorityBindings(): SurfaceBinding[] {
  * from.
  */
 export const NOT_SURFACES = [
-  { name: "stampAcceptedFrontmatter", partOf: "governance.accept" },
   { name: "buildAcceptDeps", partOf: "governance.accept" },
   { name: "appendLog", partOf: "every audited authority action" },
   { name: "saveAllowlist", partOf: "governance.set-auto-accept-class" },

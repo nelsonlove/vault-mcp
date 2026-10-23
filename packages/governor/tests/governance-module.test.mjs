@@ -206,12 +206,12 @@ describe("governance module: THE TRIPWIRE — source reachability (accept surfac
 
   // The accept-equivalent capabilities. None may be an instance method, a this.<member>, or named
   // by the published tool layer. Each exists ONLY as a module-scope function / WeakMap value
-  // reached through a gesture-gated pane handler. `stampAcceptedFrontmatter` is the #221/#164
-  // convergence's ONE production writer of the accepted family (processFrontMatter), replacing the
-  // retired pure stampAcceptance helper.
+  // reached through a gesture-gated pane handler. (The accepted-family stamp,
+  // `stampAcceptedFrontmatter`, was removed by #599; the test below pins that nothing writes
+  // those keys.)
   const ACCEPT_EQUIVALENT = [
     "performAccept", "performRevert", "performAdopt", "setClassEnabled", "reconcile",
-    "getStore", "setBaseline", "acceptNote", "revertNote", "stampAcceptedFrontmatter",
+    "getStore", "setBaseline", "acceptNote", "revertNote",
   ];
 
   // KEPT FROM THE RETIRED `structural (module + registry)` BLOCK. The other four tests in that
@@ -240,7 +240,7 @@ describe("governance module: THE TRIPWIRE — source reachability (accept surfac
       assert.ok(!referencesThisMember(wiring, name), `this.${name} must not exist (would be reachable from app)`);
     }
     // The accept-path capabilities ARE declared as module-scope functions.
-    for (const fn of ["performAccept", "performRevert", "performAdopt", "reconcile", "setClassEnabled", "stampAcceptedFrontmatter"]) {
+    for (const fn of ["performAccept", "performRevert", "performAdopt", "reconcile", "setClassEnabled"]) {
       assert.match(wiring, new RegExp(`\\n(?:async )?function ${fn}\\s*\\(`), `${fn} must be a module-scope function`);
     }
   });
@@ -399,30 +399,17 @@ describe("governance module: THE TRIPWIRE — source reachability (accept surfac
       "setClassEnabled must refuse unless handed a real trusted gesture");
   });
 
-  test("stampAcceptedFrontmatter (the ONE writer of the accepted family, #221/#164) is module-scope, unexported, gesture-path-only", () => {
-    const wiringRaw = readRaw("wiring/wiring.ts");
+  test("nothing in the governor wiring or kernel writes acceptance-status, accepted-by or accepted-on (#599)", () => {
     const wiring = code("wiring/wiring.ts");
-    // Module-scope, NEVER exported: an export would let any importer hold the accepted-family
-    // writer directly, outside the gesture perimeter.
-    assert.match(wiring, /\nasync function stampAcceptedFrontmatter\(/, "must be a module-scope function");
-    assert.ok(!/export\s+(?:async\s+)?function\s+stampAcceptedFrontmatter\b/.test(wiring), "must NOT be exported");
-    assert.ok(!/export\s+\{[^}]*\bstampAcceptedFrontmatter\b/.test(wiring), "must NOT be re-exported");
-    assert.ok(!/\bthis\.stampAcceptedFrontmatter\b/.test(wiring), "must not be an instance member");
-    // It writes via Obsidian's own processFrontMatter, and the `accepted` VALUE is assigned to
-    // acceptance-status in exactly ONE place in the whole wiring — inside this function. The
-    // other processFrontMatter status writes are the agent-legal revising/proposed transitions.
-    const acceptedAssigns = wiringRaw.match(/\bfm\[["']acceptance-status["']\]\s*=\s*(?!fields\.status)["']accepted["']/g) ?? [];
-    assert.equal(acceptedAssigns.length, 0, "no literal 'accepted' status assignment outside the typed fields.status");
-    const stampBody = /async function stampAcceptedFrontmatter\([\s\S]*?\n\}/.exec(wiringRaw);
-    assert.ok(stampBody, "stampAcceptedFrontmatter body found");
-    assert.match(stampBody[0], /processFrontMatter/, "the stamp writes via app.fileManager.processFrontMatter");
-    assert.match(stampBody[0], /fm\["acceptance-status"\] = fields\.status/, "status comes from the typed fields (literal 'accepted' type)");
-    // The ONLY caller is buildAcceptDeps' stampAccepted thunk (the acceptNote dep) — i.e. the
-    // gesture-gated performAccept path. Two references total: declaration + the one thunk.
-    const refs = wiring.match(/\bstampAcceptedFrontmatter\b/g) ?? [];
-    assert.equal(refs.length, 2, "declaration + the buildAcceptDeps thunk — no other caller may exist");
-    assert.match(wiring, /stampAccepted:\s*\(p,\s*fields\)\s*=>\s*stampAcceptedFrontmatter\(plugin,\s*p,\s*fields\)/,
-      "the one call site is acceptNote's injected stampAccepted dep");
+    assert.ok(!/\bstampAcceptedFrontmatter\b/.test(wiring), "the stamp writer must be gone");
+    assert.ok(!/\bstampAccepted\b/.test(wiring), "the stampAccepted dep must be gone");
+    assert.ok(!/\bprocessFrontMatter\b/.test(wiring), "wiring.ts must make no processFrontMatter write at all");
+    for (const rel of ["wiring/wiring.ts", "wiring/pane.ts", "kernel/accept.ts"]) {
+      const raw = readRaw(rel);
+      const writes = raw.match(/\bfm\[["'](?:acceptance-status|accepted-by|accepted-on)["']\]\s*=(?!=)/g) ?? [];
+      assert.equal(writes.length, 0, `${rel} must not assign the retired keys`);
+    }
+    assert.ok(!/\bstampAccepted\b|AcceptanceStampFields/.test(readRaw("kernel/accept.ts")), "accept.ts must carry no stamp dep");
     // The published tool layer must reference NONE of the accept path. Pre-split this loop swept
     // the host's `mcp/server.ts` + `mcp/tools-*.ts`; the provider's equivalent agent-reachable
     // source is `src/tools/*.ts` plus the `publishTools` call in main.ts that hands them over.
@@ -834,9 +821,9 @@ describe("#101 dispositions-as-data: THE TRIPWIRE — the wrap adds no reachable
     assert.match(pane, /export function confirmMenuAccept\(/, "the menu-accept confirmation must live in the pane");
     const fn = pane.match(/export function confirmMenuAccept\([\s\S]{0,900}/);
     assert.match(fn[0], /new ConfirmModal\(/, "it must reuse the gesture-gated ConfirmModal, not a bespoke dialog");
-    // It must disclose the accepted-by stamp, like the pane's own Accept tooltip (acceptEffectFor).
-    assert.match(fn[0], /acceptedBy/, "the confirmation must name the accepted-by identity it will stamp");
-    assert.match(fn[0], /accepted-by/, "the confirmation must say that accepting stamps the accepted family");
+    // It must say Accept edits nothing (#599): no stamp, no accepted-by identity.
+    assert.ok(!/acceptedBy|accepted-by/.test(fn[0]), "the confirmation must not promise a stamp");
+    assert.match(fn[0], /not edited/, "the confirmation must say the note is not edited");
   });
 
   test("pane.ts: the request-changes modal's confirm button is gesture-gated like the adopt confirm", () => {
@@ -907,13 +894,11 @@ describe("#101 dispositions-as-data: THE TRIPWIRE — the wrap adds no reachable
     assert.match(tool, /from ["']\.\.\/kernel\/revision\.js["']/, "it reaches the pure kernel revision module");
   });
 
-  test("the submit tool structurally cannot write acceptance: only setAcceptanceStatusProposed writes status", () => {
+  test("the submit tool writes no frontmatter: revision.ts has no status writer and names no accepted value (#599)", () => {
     const revision = code("kernel/revision.ts");
-    // The one status writer takes NO value parameter and hard-codes `proposed`.
-    assert.match(revision, /export function setAcceptanceStatusProposed\(content: string\)/);
-    assert.match(revision, /: proposed`/);
+    assert.ok(!/setAcceptanceStatusProposed/.test(revision), "the status writer must be gone");
+    assert.ok(!/: proposed`/.test(revision), "nothing may write a proposed status");
     assert.ok(!/accepted/.test(revision.replace(/acceptance[-_][sS]tatus/g, "")), "revision.ts must never name an accepted value");
-    // And it must not reference the sanctioned accepted-writer.
     assert.ok(!/\bstampAcceptance\b/.test(revision));
   });
 });

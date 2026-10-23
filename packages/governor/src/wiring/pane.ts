@@ -6,12 +6,10 @@
 // SECURITY: the Accept (queue detail view AND Proposed section — the ONE context-aware accept,
 // #221/#164), Revert, Adopt-baseline AND auto-accept allowlist controls below are the
 // ONLY call sites of the baseline-advance / allowlist-mutation code paths in the entire plugin;
-// since the acceptance convergence the Accept click on a `proposed` note ALSO stamps the accepted
-// family into the note's frontmatter (through the module-scope stampAcceptedFrontmatter in
-// wiring.ts, reached only via deps.accept) — so this gesture perimeter now guards a real
-// frontmatter WRITE, not just a baseline advance. The request-changes and withdraw dispositions
-// (#101) keep the SAME gesture perimeter (their
-// state transitions are agent-legal, but exercising them from this pane confers human standing).
+// since #599 the Accept click only advances the baseline (it no longer stamps the accepted
+// family into the note). The request-changes and withdraw dispositions
+// (#101) keep the SAME gesture perimeter (they write no frontmatter since #599, but exercising
+// them from this pane confers human standing).
 // They are wired with `addEventListener('click', …)` — NEVER `el.onclick = …` — so the handler
 // function is not a reachable property (`btn.onclick` stays null; renderer-JS cannot grab it to
 // forge-call). Each handler additionally gates on `isRealGesture(evt)`, which requires a genuine
@@ -78,10 +76,8 @@ export interface ReviewController {
   legacyRetired?(): boolean;
   getBaselineContent(path: string): string | null;
   readCurrent(path: string): Promise<string>;
-  // The ONE context-aware accept (#221/#164 convergence): advances the baseline, and — iff
-  // the note is acceptance-status: proposed — first stamps the accepted family via
-  // processFrontMatter, folding the stamp into the accepted snapshot. Returns whether it
-  // stamped so the Notice can say so. Wired to the module-scope performAccept in wiring.ts.
+  // The ONE accept: advances the baseline and edits nothing in the note (#599). Wired to the
+  // module-scope performAccept in wiring.ts.
   accept(path: string, opts?: AcceptOpts): Promise<AcceptResult>;
   /** The configured conformance-gate response mode (settings; "soft" default). */
   gateMode(): "soft" | "hard" | "off";
@@ -106,12 +102,12 @@ export interface ReviewController {
   // Reading the log confers nothing: no accept capability rides on it, the pane never writes it.
   readAcceptanceLog(): Promise<string | null>;
   // ── revision round-trip (#101; HUMAN dispositions, gesture-gated at their call sites) ──
-  // request-changes: acceptance-status → revising + a [!revision-request] callout below the
-  // note's H1 carrying `text`. withdraw: remove the [!revision-request] callout(s) and set
-  // acceptance-status → proposed. Both wired to module-scope functions in wiring.ts (the
+  // request-changes: a [!revision-request] callout below the note's H1 carrying `text`.
+  // withdraw: remove the [!revision-request] callout(s). Neither writes frontmatter (#599: no
+  // acceptance-status write). Both wired to module-scope functions in wiring.ts (the
   // performAdopt pattern) — never a command, method, or MCP tool; reached ONLY from the
-  // addEventListener + isRealGesture handlers below. NOT accept-equivalent (they write the
-  // agent-legal revising/proposed transitions and advance no baseline), but they confer
+  // addEventListener + isRealGesture handlers below. NOT accept-equivalent (no baseline
+  // advance), but they confer
   // standing ("a human asked for changes"), so they keep the full gesture perimeter.
   requestChanges(path: string, text: string): Promise<void>;
   withdraw(path: string): Promise<void>;
@@ -129,12 +125,6 @@ export interface ReviewController {
   mandates?: import("./mandate-wiring.js").MandateUiDeps;
   /** WP10a: the promotion surface (tuple evidence + gesture-gated promote/demote). Absent ⇒ no section. */
   promotion?: import("./promotion-wiring.js").PromotionUiDeps;
-  // The configured accepted-by identity (governance config `acceptedBy`) — display data so
-  // the Accept controls can SURFACE what will be stamped before the one click.
-  acceptedBy(): string;
-  // One note's `acceptance-status` from the metadata cache — display data for the same
-  // context-aware surfacing (proposed ⇒ "will stamp", else ⇒ "baseline only").
-  acceptanceStatus(path: string): string | null;
   // ── protected properties (#135/#224) — READ-ONLY display data ──────────────
   // The HONORED per-note auto-accept policy ("appends" | null — "all" no longer parses, WP10c), derived from the
   // blessed BASELINE frontmatter (honor-only-if-blessed) — never the raw current note. The
@@ -354,7 +344,6 @@ export function confirmAdopt(app: App): Promise<boolean> {
 export function confirmMenuAccept(
   app: App,
   items: ReadonlyArray<{ path: string; title: string }>,
-  acceptedBy: string,
 ): Promise<boolean> {
   const n = items.length;
   return new Promise((resolve) => {
@@ -363,9 +352,8 @@ export function confirmMenuAccept(
       {
         title: n === 1 ? "Accept this note?" : `Accept ${n} notes?`,
         body:
-          `Accept advances ${n === 1 ? "the note's" : "each note's"} baseline, and for a note with ` +
-          `acceptance-status: proposed ALSO stamps acceptance-status: accepted (accepted-by: ` +
-          `${acceptedBy}, accepted-on: minutes precision) into its frontmatter. Continue?`,
+          `Accept advances ${n === 1 ? "the note's" : "each note's"} baseline. ` +
+          `${n === 1 ? "The note itself is" : "The notes themselves are"} not edited. Continue?`,
         items: items.map((i) => (i.title === i.path ? i.path : `${i.title} — ${i.path}`)),
         confirmText: n === 1 ? "Accept" : `Accept ${n} notes`,
       },
@@ -399,8 +387,8 @@ class RequestChangesModal extends Modal {
     contentEl.createEl("h3", { text: "Request changes" });
     contentEl.createEl("p", {
       text:
-        `Describe the changes you want on “${this.noteTitle}”. On confirm the note's acceptance-status ` +
-        "becomes “revising” and this text is inserted into the note as a [!revision-request] callout " +
+        `Describe the changes you want on “${this.noteTitle}”. On confirm this text is ` +
+        "inserted into the note as a [!revision-request] callout " +
         "below its H1 — a revising agent reads it there, in the note body.",
     });
     const input = contentEl.createEl("textarea", {
@@ -1203,7 +1191,7 @@ export class GovernanceReviewView extends ItemView {
   // full authority-class perimeter (addEventListener-wired so .onclick stays null +
   // isRealGesture-gated; the accept.ts discipline):
   //   - Accept: the SAME context-aware accept as the queue detail view (deps.accept →
-  //     module-scope performAccept). The button's tooltip surfaces what will be stamped
+  //     module-scope performAccept). The button's tooltip says what the click does
   //     (acceptEffectFor) — still exactly one click.
   //   - Request changes…: the existing #101 disposition (modal text capture, then
   //     deps.requestChanges → performRequestChanges).
@@ -1217,17 +1205,13 @@ export class GovernanceReviewView extends ItemView {
     if (items.length === 0) return;
     const acceptDesc = dispositionById("accept")!;
     const requestDesc = dispositionById("request-changes")!;
-    const identity = deps.acceptedBy();
     const section = root.createDiv({ cls: "governance-proposed" });
     section.createDiv({ cls: "governance-proposed-title", text: `Proposed (${items.length})` });
-    // Surface the stamp up front: accepting from this section writes the accepted family
-    // into the note (the one in-app human write path), with the configured identity.
     section.createDiv({
       cls: "governance-proposed-desc",
       text:
-        "Notes proposed for acceptance with no pending write delta. Accept stamps " +
-        `acceptance-status: accepted (accepted-by: ${identity}, accepted-on: minutes precision) ` +
-        "into the note and advances its baseline.",
+        "Notes proposed for acceptance with no pending write delta. Accept advances the note's " +
+        "baseline; it does not edit the note.",
     });
     for (const item of items) {
       const row = section.createDiv({ cls: "governance-proposed-row" });
@@ -1254,18 +1238,14 @@ export class GovernanceReviewView extends ItemView {
         cls: "mod-cta governance-proposed-accept",
         text: acceptDesc.label,
       });
-      proposedAcceptBtn.title = acceptEffectFor("proposed", identity);
+      proposedAcceptBtn.title = acceptEffectFor();
       proposedAcceptBtn.addEventListener("click", async (evt) => {
         if (!isRealGesture(evt)) { noticeGestureBlocked("blocked-untrusted"); return; } // inert on forged arg or synthesized click
         proposedAcceptBtn.disabled = true;
         try {
           const res = await acceptThroughGate(this.app, deps, item.path, item.title);
           if (res === null) { proposedAcceptBtn.disabled = false; return; } // gate: open/cancel — nothing happened
-          new Notice(
-            res.stamped
-              ? `governor acceptance: accepted ${item.title} — stamped accepted-by: ${identity}`
-              : `governor acceptance: accepted ${item.title}`,
-          );
+          new Notice(`governor acceptance: accepted ${item.title}`);
           await this.rerender();
         } catch (e) {
           new Notice(`governor acceptance: accept failed — ${(e as Error).message}`);
@@ -1300,7 +1280,7 @@ export class GovernanceReviewView extends ItemView {
   // The Revising section — notes whose frontmatter says `acceptance-status: revising` (from the
   // metadata cache), each with an Open link (read-only navigation) and the withdraw disposition.
   // Withdraw is a HUMAN disposition (gesture-gated, addEventListener-wired): it removes the
-  // [!revision-request] callout(s) the pane inserted and sets acceptance-status back to proposed.
+  // [!revision-request] callout(s) the pane inserted (it writes no frontmatter).
   private renderRevising(root: HTMLElement, deps: ReviewController): void {
     let items: RevisingItem[] = [];
     try {
@@ -1489,12 +1469,9 @@ export class GovernanceReviewView extends ItemView {
       revertBtn.remove();
       actions.createDiv({ cls: "governance-legacy-retired-inline", text: LEGACY_RETIRED_INLINE });
     }
-    // Context-aware surfacing (#221/#164): the Accept tooltip says what THIS click will do —
-    // for a `proposed` note, that it stamps the accepted family with the configured identity;
-    // otherwise that it advances the baseline only. Plain display data; still one click.
-    const noteStatus = deps.acceptanceStatus(item.path);
-    const identity = deps.acceptedBy();
-    acceptBtn.title = acceptEffectFor(noteStatus, identity);
+    // The Accept tooltip says what the click does: it advances the baseline only. Plain display
+    // data; still one click.
+    acceptBtn.title = acceptEffectFor();
     const setBusy = (busy: boolean): void => {
       for (const b of btnFor.values()) b.disabled = busy;
     };
@@ -1507,11 +1484,7 @@ export class GovernanceReviewView extends ItemView {
       try {
         const res = await acceptThroughGate(this.app, deps, item.path, item.title);
         if (res === null) { setBusy(false); return; } // gate: opened-to-fix or cancelled — nothing happened
-        new Notice(
-          res.stamped
-            ? `governor acceptance: accepted ${item.title} — stamped accepted-by: ${identity}`
-            : `governor acceptance: accepted ${item.title}`,
-        );
+        new Notice(`governor acceptance: accepted ${item.title}`);
         this.selected = null;
         await this.rerender();
       } catch (e) {
@@ -1534,7 +1507,7 @@ export class GovernanceReviewView extends ItemView {
     });
     // request-changes (#101) — HUMAN disposition, gesture-gated exactly like Accept. The click
     // opens the free-text modal (whose confirm button is itself gesture-gated); only then does
-    // the state change run: acceptance-status → revising + the [!revision-request] callout below
+    // the change run: the [!revision-request] callout is inserted below
     // the note's H1 (deps.requestChanges → module-scope performRequestChanges in wiring.ts).
     requestBtn.addEventListener("click", async (evt) => {
       if (!isRealGesture(evt)) { noticeGestureBlocked("blocked-untrusted"); return; } // inert on forged arg or synthesized click

@@ -30,16 +30,6 @@
 //    - performAccept   — module-scope fn; reached only via the pane Accept button clicks
 //                        (gesture-gated; the pending detail view AND the Proposed section —
 //                        the SAME context-aware accept). Never a method/field/command/tool.
-//    - stampAcceptedFrontmatter — THE ONE PRODUCTION WRITER of the accepted family
-//                        (acceptance-status: accepted / accepted-by / accepted-on), via
-//                        Obsidian's own app.fileManager.processFrontMatter (#221/#164
-//                        convergence). Module-scope, NEVER exported, reached ONLY through
-//                        acceptNote's injected stampAccepted dep (buildAcceptDeps), i.e.
-//                        only from the gesture-gated performAccept. Never a
-//                        method/field/command/tool; the MCP transport cannot reach it —
-//                        agent transports still cannot write the accepted family (the
-//                        accept-forbidden guard in @vault-mcp/core is untouched; this is
-//                        an in-app human-gesture write path that bypasses MCP entirely).
 //    - performRevert   — module-scope fn; reached only via the pane Revert button click.
 //    - performAdopt    — module-scope fn; reached only via the pane Adopt button (gesture- AND
 //                        confirmation-gated). Never a method/field/command/tool.
@@ -48,7 +38,7 @@
 //    - reconcile       — the silent human-edit baseline advance; module-scope fn driven by the
 //                        vault "modify" event only. Never a method/field/command/tool.
 //  The #101 revision dispositions follow the same shape without being accept-equivalent
-//  (they write the agent-legal revising/proposed transitions and advance no baseline, but
+//  (they advance no baseline and, since #599, write no frontmatter, but
 //  exercising them confers human standing, so they stay gesture-only):
 //    - performRequestChanges — module-scope fn; reached only via the pane's Request-changes
 //                        button + gesture-gated modal confirm. Never a method/command/tool.
@@ -76,10 +66,8 @@ import {
   revertNote,
   silentAdvanceRecord,
   baselineRekeyRecord,
-  formatLocalMinutes,
   type AcceptDeps,
   type AcceptResult,
-  type AcceptanceStampFields,
   type LogRecord,
 } from "../kernel/accept.js";
 import { buildProposedList, type ProposedItem } from "../kernel/proposed.js";
@@ -527,29 +515,13 @@ function governedMarkdownFiles(plugin: Plugin): TFile[] {
 
 // ── accept / revert / adopt — module-scope, closure-captured only by UI handlers ──
 //
-// THE ONE PRODUCTION WRITER of the accepted family (#221/#164 acceptance convergence).
-// Writes acceptance-status: accepted + accepted-by + accepted-on into the note's frontmatter
-// via Obsidian's own app.fileManager.processFrontMatter — an in-app write that never touches
-// the MCP transport (the accept-forbidden guard on every agent transport is untouched and
-// still refuses the accepted family; this path is what the guard reserves for the human).
-// Module-scope, NEVER exported, never a command/method/tool: it is reachable ONLY through
-// acceptNote's injected `stampAccepted` dep below, i.e. only from the gesture-gated
-// performAccept. `fields.status` is the literal type "accepted" (AcceptanceStampFields), so
-// this writer structurally cannot stamp any other value.
-async function stampAcceptedFrontmatter(plugin: Plugin, path: string, fields: AcceptanceStampFields): Promise<void> {
-  const file = noteFileOf(plugin, path);
-  await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-    fm["acceptance-status"] = fields.status;
-    fm["accepted-by"] = fields.by;
-    fm["accepted-on"] = fields.on;
-  });
-}
+// Accept writes nothing into the note (#599): the stamp of the retired accepted family
+// (acceptance-status / accepted-by / accepted-on) is gone, so there is no frontmatter writer here.
 function buildAcceptDeps(plugin: Plugin): AcceptDeps {
   const acceptance = acceptanceSettings(plugin);
   return {
     readNote: (p) => readNote(plugin, p),
     writeNote: (p, c) => writeNote(plugin, p, c),
-    stampAccepted: (p, fields) => stampAcceptedFrontmatter(plugin, p, fields),
     store: {
       get: (p) => getStore(plugin).get(p),
       setBaseline: (p, c, by, at) => getStore(plugin).setBaseline(p, c, by, at),
@@ -557,29 +529,21 @@ function buildAcceptDeps(plugin: Plugin): AcceptDeps {
     quarantine: (p, c) => quarantineWrite(plugin, p, c),
     appendLog: (r) => appendLog(plugin, r),
     now: () => new Date().toISOString(),
-    nowLocal: () => formatLocalMinutes(new Date()),
     user: acceptance.acceptedBy,
     requiredFrontmatterKeys: acceptance.gateMode === "off" ? [] : acceptance.requiredFrontmatterKeys,
   };
 }
 // The ONE context-aware accept (both the pending detail view's Accept and the Proposed
-// section's Accept land here). acceptNote stamps FIRST (proposed notes only) and advances
-// the baseline from the post-stamp content, so the stamp never re-queues; see accept.ts.
+// section's Accept land here). acceptNote advances the baseline from the note's current content and edits nothing; see accept.ts.
 async function performAccept(plugin: Plugin, path: string, opts?: AcceptOpts): Promise<AcceptResult> {
-  // #228 race discipline, extended to the converged accept: the stamp is a PROGRAMMATIC
-  // write, but the human just clicked (and may have typed in this note's editor moments
-  // before). A lingering genuine-human-input record for this path would let the debounced
-  // reconcile misattribute programmatic/agent content as a human edit and silently
-  // baseline-advance it. Clear the record on BOTH sides of the write: at entry, so a
-  // pre-click typing record cannot ride a reconcile that fires MID-accept (a slow stamp +
-  // re-read can outlast the 1200ms debounce), and in `finally`, because a partially-failed
-  // accept (stamp landed, baseline advance threw) has still written.
-  // WP8: refused at ENTRY, before the frontmatter stamp — acceptNote stamps
-  // the accepted family FIRST and advances the baseline second, so letting
-  // the store guard be the only stop leaves a note permanently stamped
-  // `acceptance-status: accepted` with no baseline advance and no admission
-  // (a half-write on a human-authority surface; review finding). The typed
-  // error reaches the pane's existing accept-failure Notice paths.
+  // #228 race discipline: the human just clicked (and may have typed in this note's editor
+  // moments before). A lingering genuine-human-input record for this path would let the
+  // debounced reconcile misattribute programmatic/agent content as a human edit and silently
+  // baseline-advance it. Clear the record at entry, so a pre-click typing record cannot ride a
+  // reconcile that fires mid-accept, and in `finally`, so a partially-failed accept does not
+  // leave one behind.
+  // WP8: refused at ENTRY, before any work. The typed error reaches the pane's existing
+  // accept-failure Notice paths.
   if (legacyRetired(plugin)) throw new LegacyWriterDisabledError("accept (legacy acceptance)");
   humanInputMap(plugin).delete(path);
   try {
@@ -614,9 +578,8 @@ async function performAdopt(plugin: Plugin): Promise<number> {
 }
 
 // ── revision round-trip (#101) — module-scope, closure-captured only by UI handlers ──
-// The two NEW human dispositions. NOT accept-equivalent — `revising` and `proposed` are
-// agent-legal acceptance-status transitions (only the accepted-family is forbidden) and no
-// baseline moves — but exercising them from the pane confers human standing ("a human asked
+// The two NEW human dispositions. NOT accept-equivalent — no baseline moves and they write no
+// frontmatter (#599) — but exercising them from the pane confers human standing ("a human asked
 // for changes"), so they keep the performAdopt perimeter: module-scope functions, reached only
 // from gesture-gated pane handlers, never a command / instance method / MCP tool.
 function noteFileOf(plugin: Plugin, path: string): TFile {
@@ -626,16 +589,13 @@ function noteFileOf(plugin: Plugin, path: string): TFile {
 }
 // request-changes: insert the reviewer's text as a `[!revision-request]` callout directly below
 // the note's H1 (top of body when there is no H1 — governor/kernel/revision.ts, bound to the
-// shared core frontmatter recognizer), then set acceptance-status: revising via Obsidian's own
-// processFrontMatter. Status stays frontmatter (the Bases queue needs it); the FEEDBACK lives in
-// the note body — there is deliberately NO `requested-changes` property (2026-08-17 amendment).
+// shared core frontmatter recognizer). It does NOT write `acceptance-status` (a retired accept
+// key, #599): the FEEDBACK lives in the note body — there is deliberately NO `requested-changes`
+// property (2026-08-17 amendment).
 async function performRequestChanges(plugin: Plugin, path: string, text: string): Promise<void> {
   const file = noteFileOf(plugin, path);
   const nowIso = new Date().toISOString();
   await plugin.app.vault.process(file, (data) => insertRevisionRequest(data, text, nowIso.slice(0, 10)));
-  await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-    fm["acceptance-status"] = "revising";
-  });
   // These writes are PROGRAMMATIC, but the human just TYPED (in the modal). If the reviewed note
   // is also the active editor tab, that typing recorded a genuine-human-input timestamp for this
   // path — and the debounced reconcile would then misread our write as a human edit and SILENTLY
@@ -646,14 +606,11 @@ async function performRequestChanges(plugin: Plugin, path: string, text: string)
   await refresh(plugin);
 }
 // withdraw: remove the `[!revision-request]` callout(s) this flow inserted — nothing else in the
-// body — and set acceptance-status back to proposed.
+// body. It does not write `acceptance-status` either (#599).
 async function performWithdraw(plugin: Plugin, path: string): Promise<void> {
   const file = noteFileOf(plugin, path);
   const nowIso = new Date().toISOString();
   await plugin.app.vault.process(file, (data) => withdrawRevisionRequests(data).content);
-  await plugin.app.fileManager.processFrontMatter(file, (fm) => {
-    fm["acceptance-status"] = "proposed";
-  });
   // Same misattribution guard as performRequestChanges: our programmatic writes must not ride a
   // recent genuine-human-input record into a silent baseline advance.
   humanInputMap(plugin).delete(path);
@@ -747,8 +704,6 @@ function buildController(
     // Acceptance convergence (#221/#164): the Proposed listing + the plain display data the
     // pane uses to SURFACE what the context-aware Accept will do (identity + per-note status).
     getProposed: () => listProposed(plugin),
-    acceptedBy: () => acceptanceSettings(plugin).acceptedBy,
-    acceptanceStatus: (path) => acceptanceStatusFor(plugin, path),
     // #135/#224 read-only display data: the HONORED per-note auto-accept policy
     // (from the blessed baseline — never the raw frontmatter). Confers nothing;
     // the pane only badges it.
@@ -1519,11 +1474,7 @@ export async function wireGovernance(plugin: Plugin, deps: GovernanceWireDeps): 
     try {
       const res = await acceptThroughGate(plugin.app, menuController, path, title);
       if (res === null) return; // gate: open/cancel — nothing happened
-      new Notice(
-        res.stamped
-          ? `governor acceptance: accepted ${title} — stamped accepted-by: ${menuController.acceptedBy()}`
-          : `governor acceptance: accepted ${title}`,
-      );
+      new Notice(`governor acceptance: accepted ${title}`);
     } catch (e) {
       new Notice(`governor acceptance: accept failed — ${(e as Error).message}`);
     }
@@ -1532,7 +1483,7 @@ export async function wireGovernance(plugin: Plugin, deps: GovernanceWireDeps): 
   // then the independent per-file accepts.
   const runMenuAccept = async (targets: ReadonlyArray<{ path: string; title: string }>): Promise<void> => {
     if (targets.length === 0) return;
-    const confirmed = await confirmMenuAccept(plugin.app, targets, menuController.acceptedBy());
+    const confirmed = await confirmMenuAccept(plugin.app, targets);
     if (!confirmed) return; // cancelled — nothing written
     for (const t of targets) await acceptViaMenu(t.path, t.title);
   };
