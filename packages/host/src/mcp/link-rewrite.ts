@@ -9,10 +9,6 @@
 // writing a link's new text so that only its target changes. Obsidian-free, so
 // the rules are tested without an app.
 
-// The fence rule lives in core (`fences.ts`), shared with the patch tools'
-// heading parser (#593), so a fence means the same thing to both.
-import { LEAD, linesOf, fencedSpans } from "@vault-mcp/core";
-
 /** One link found in a note's text. Offsets are into the text it was found in. */
 export interface TextLink {
   start: number;
@@ -44,6 +40,11 @@ const MARKDOWN_ONE = new RegExp(String.raw`^(!?)\[(${TEXT})\]\((${DEST})(\s+"[^"
 /** A link path written relative to the note it is in (`./x`, `../x`). */
 export const isRelativeLinkpath = (p: string): boolean => /^\.\.?\//.test(p);
 
+/** Where a line's content starts: after indentation and any blockquote markers (`> > `). */
+const LEAD = /^[ \t]*(?:>[ \t]?)*/;
+/** The same, and also past a list marker: a fence may open on a list item's first line (`- ```js`). */
+const FENCE_LEAD = /^[ \t]*(?:>[ \t]?)*(?:(?:[-*+]|\d+[.)])[ \t]+)?/;
+
 /** Sorted, merged [start, end) spans, and an O(log n) "is i inside one". */
 function coverage(spans: Array<[number, number]>): (i: number) => boolean {
   const sorted = [...spans].sort((x, y) => x[0] - y[0]);
@@ -63,6 +64,59 @@ function coverage(spans: Array<[number, number]>): (i: number) => boolean {
     }
     return false;
   };
+}
+
+/** [start, end) of every line from `from` on. */
+function linesOf(text: string, from: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let i = from; ; ) {
+    const nl = text.indexOf("\n", i);
+    out.push([i, nl < 0 ? text.length : nl]);
+    if (nl < 0) return out;
+    i = nl + 1;
+  }
+}
+
+/**
+ * Fenced code blocks, by line: a fence opens on a line of three or more
+ * backticks or tildes (after any indentation or blockquote markers, so a fence
+ * inside a list item or a quote counts), and closes on a line holding only a
+ * run of the same character at least as long. An unclosed fence runs to the end
+ * of the note. A line's `\r` (a CRLF note) is not part of the closer: before
+ * that was read, no fence closed in a CRLF note, and the first fence hid every
+ * link after it.
+ *
+ * This is the link rewriter's own rule, and it is simpler than the patch
+ * parser's (core `note-sections.ts`, #593) on purpose. The two read code for
+ * different ends. The patch parser must not take a `#` line inside code for a
+ * heading, so it follows Obsidian's container rules closely. Here a real link
+ * that is hidden is a link left broken after a move, while a link inside code
+ * that is rewritten does no harm; so this rule hides only what it is sure of,
+ * and a change to it is measured against Obsidian's index on its own (the
+ * Fable review of #596). Known residuals, the same as before #596: an unclosed
+ * fence in a list item or a quote runs to the end of the note, where Obsidian
+ * ends it with its container; inside a `%%` comment Obsidian pairs backtick
+ * runs as inline code, where this rule reads a fence; indented code is not
+ * known, so a tab-indented "fence" hides its lines.
+ */
+function fencedSpans(text: string, from: number): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let open: { start: number; ch: string; len: number } | null = null;
+  for (const [a, b] of linesOf(text, from)) {
+    // A list marker may precede an opening fence, never a closing one.
+    const raw = text.slice(a, b);
+    const line = (raw.endsWith("\r") ? raw.slice(0, -1) : raw).replace(open ? LEAD : FENCE_LEAD, "");
+    if (!open) {
+      const m = /^(`{3,}|~{3,})/.exec(line);
+      // A backtick fence's info string may not hold a backtick (then it is inline code).
+      if (m && !(m[1][0] === "`" && line.slice(m[0].length).includes("`"))) open = { start: a, ch: m[1][0], len: m[1].length };
+    } else {
+      const m = /^(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (m && m[1][0] === open.ch && m[1].length >= open.len) { spans.push([open.start, b]); open = null; }
+    }
+  }
+  if (open) spans.push([open.start, text.length]);
+  return spans;
 }
 
 /**

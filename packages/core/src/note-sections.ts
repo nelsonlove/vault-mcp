@@ -75,10 +75,6 @@ export interface NoteOutline {
   /** For a line on which a `%%` comment closes, the column after the
    *  closing `%%` (Obsidian reads the rest as a new block); else -1. */
   commentClose: number[];
-  /** Fenced code blocks as [start, end) offsets, each from its opening
-   *  line's start to its closing line's end (or where its container ended,
-   *  or the end of the text). */
-  fences: Array<[number, number]>;
   headings: TextHeading[];
 }
 
@@ -129,7 +125,7 @@ function frontmatterEnd(text: string): number {
  * `frontmatter: false` treats the whole text as body (a caller that has cut
  * the front matter off already).
  */
-export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesInComments?: boolean } = {}): NoteOutline {
+export function outlineNote(text: string, opts: { frontmatter?: boolean } = {}): NoteOutline {
   const lines = text.split("\n");
   const lineStarts: number[] = new Array(lines.length);
   let off = 0;
@@ -157,14 +153,10 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesI
     }
   }
 
-  // Fences follow the shared rule (`fences.ts`, the one the link rewriter
-  // uses), stepped here line by line so that, as in Obsidian, a fence opens
-  // only where a block can start: never inside a `%%` comment or `$$` math,
-  // and a `%%` inside a fence is code.
+  // Fences follow the rule in `fences.ts`, stepped here line by line so that,
+  // as in Obsidian, a fence opens only where a block can start: never inside
+  // a `%%` comment or `$$` math, and a `%%` inside a fence is code.
   const fence = new FenceTracker();
-  const fences: Array<[number, number]> = [];
-  let fenceStart = -1;
-  const lineEnd = (i: number) => lineStarts[i] + lines[i].length;
 
   type Open =
     | { kind: "math"; len: number }
@@ -214,11 +206,9 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesI
     const s = bare(lines[i]);
     if (!open && fence.isOpen) {
       const st = fence.step(lines[i], lines[i + 1], { column: items.length ? items[items.length - 1] : 0 });
-      if (st.endedBefore && fenceStart >= 0) { fences.push([fenceStart, lineEnd(i - 1)]); fenceStart = -1; }
       if (st.kind !== "none") {
         hidden[i] = true;
-        if (st.kind === "open") fenceStart = lineStarts[i];
-        if (st.kind === "close") { fences.push([fenceStart, lineEnd(i)]); fenceStart = -1; prev = "boundary"; }
+        if (st.kind === "close") prev = "boundary";
         continue;
       }
       // The fence's container ended before this line: read it as usual.
@@ -235,15 +225,8 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesI
           break;
         }
         case "comment": {
-          // For the link rewriter, a fence inside a `%%` comment is still
-          // code: Obsidian indexes no link inside it. The same fence rule is
-          // stepped, and the comment closes as usual (at the next `%%`).
-          if (opts.fencesInComments) {
-            const st = fence.step(lines[i], lines[i + 1], { column: items.length ? items[items.length - 1] : 0 });
-            if (st.endedBefore && fenceStart >= 0) { fences.push([fenceStart, lineEnd(i - 1)]); fenceStart = -1; }
-            if (st.kind === "open") fenceStart = lineStarts[i];
-            if (st.kind === "close") { fences.push([fenceStart, lineEnd(i)]); fenceStart = -1; }
-          }
+          // A fence inside a comment is comment text: the comment closes at
+          // the next `%%`, and the rest of that line is a new block.
           const at = s.indexOf("%%");
           if (at >= 0) {
             open = null;
@@ -301,7 +284,6 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesI
     }
     if (fence.step(lines[i], lines[i + 1], { column }).kind === "open") {
       hidden[i] = true;
-      fenceStart = lineStarts[i];
       continue;
     }
     const atx = nested ? null : parseAtxLine(s);
@@ -370,21 +352,7 @@ export function outlineNote(text: string, opts: { frontmatter?: boolean; fencesI
     prev = "text";
   }
 
-  if (fence.isOpen && fenceStart >= 0) fences.push([fenceStart, text.length]);
-  return { lines, lineStarts, bodyLine, hidden, headingLine, commentClose, fences, headings };
-}
-
-/**
- * Fenced code blocks of `text` that start at or after `from`, as [start,
- * end) spans: the fences the heading parser finds (`outlineNote`), so the
- * link rewriter and the patch tools read code the same way, with the same
- * list and quote context (a fence in a list item may be indented by a tab or
- * four spaces under the item). Unlike the heading outline, a fence inside a
- * `%%` comment counts here, as Obsidian indexes no link in it. The front
- * matter is skipped.
- */
-export function fencedSpans(text: string, from = 0): Array<[number, number]> {
-  return outlineNote(text, { fencesInComments: true }).fences.filter(([a]) => a >= from);
+  return { lines, lineStarts, bodyLine, hidden, headingLine, commentClose, headings };
 }
 
 /** A heading's section: from just after the heading to the next heading of

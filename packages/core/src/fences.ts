@@ -1,12 +1,16 @@
 // fences.ts — where fenced code blocks sit in a note's text, by line.
 //
-// One rule, shared: the link rewriter (host `link-rewrite.ts`, which a move
-// uses to find links Obsidian indexes) and the patch tools' heading and block
-// parser (`note-sections.ts`, #593) both use it, so a fence means the same
-// thing to both. It was checked against Obsidian's live index when the link
-// rewriter was written (2026-09-29): a fence may open after indentation, after
-// blockquote markers and after a list marker (`- ```js`), and closes on a line
-// holding only a run of the same character at least as long.
+// The patch tools' heading and block parser (`note-sections.ts`, #593) steps
+// this rule line by line. It grew out of the link rewriter's rule (host
+// `link-rewrite.ts`, checked against Obsidian's live index on 2026-09-29) and
+// follows Obsidian's container rules more closely, so that a `#` line inside
+// code is never taken for a heading. The link rewriter keeps its own, simpler
+// rule: for a move a hidden real link is damage and a rewritten link inside
+// code is not, so a change to that rule is measured on its own (the Fable
+// review of #596). The basics are the same: a fence may open after
+// indentation, after blockquote markers and after a list marker (`- ```js`),
+// and closes on a line holding only a run of the same character at least as
+// long.
 
 /** Where a line's content starts: after indentation and any blockquote markers (`> > `). */
 export const LEAD = /^[ \t]*(?:>[ \t]?)*/;
@@ -78,7 +82,7 @@ export class FenceTracker {
    *  the line is in (0 outside a list): a fence then opens only within three
    *  spaces of it, as Obsidian reads one (four spaces more is indented code),
    *  and a fence opened inside the item ends with it. Without `context` a
-   *  fence opens at any indent (the link rewriter's reading). */
+   *  fence opens at any indent. */
   step(rawLine: string, nextLine?: string, context?: { column: number }): FenceStep {
     const raw = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
     let endedBefore = false;

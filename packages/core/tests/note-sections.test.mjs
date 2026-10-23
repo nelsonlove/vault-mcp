@@ -388,12 +388,6 @@ describe("review round 2: CRLF, comments, container fences, list columns", () =>
     assert.equal(resolveHeadings(text, c).source, "cache");
   });
 
-  test("the shared fence rule closes a CRLF fence (the link rewriter's spans too)", async () => {
-    const { fencedSpans } = await import("../src/note-sections.ts");
-    const text = "x\r\n```\r\ncode\r\n```\r\nafter\r\n";
-    assert.deepEqual(fencedSpans(text, 0), [[3, text.indexOf("```\r\nafter") + 3 + 1]]);
-  });
-
   test("a %% line with a % in its text opens no comment; the later lone %% does (as Obsidian reads it)", () => {
     const t1 = "## A\n%% 50% done\n## Hidden\n%%\n\n## B\nb\n";
     assert.deepEqual(names(t1), ["2:A", "2:Hidden"]);
@@ -491,15 +485,7 @@ describe("review round 3: fence closers and CRLF writes", () => {
 
 // ── review round 4 of #596 ─────────────────────────────────────────────────
 
-describe("review round 4: one fence rule with list context, and a leading BOM", () => {
-  test("fencedSpans closes a fence in a list item indented by a tab or four spaces (as Obsidian reads it)", async () => {
-    const { fencedSpans } = await import("../src/note-sections.ts");
-    const tab = "- item\n\t```\n\tcode\n\t```\n\n[[B]]\n";
-    assert.deepEqual(fencedSpans(tab, 0), [[7, tab.indexOf("\n\n[[B]]")]]);
-    const loose = "- item\n\n    ```\n    code\n    ```\n\n[[B]]\n";
-    assert.deepEqual(fencedSpans(loose, 0), [[8, loose.indexOf("\n\n[[B]]")]]);
-  });
-
+describe("review round 4: a leading BOM", () => {
   test("a heading on the first line of a note with a BOM is a heading, its offsets past the BOM", () => {
     const t = "﻿# T\n\n## A\n";
     assert.deepEqual(outlineNote(t).headings.map((h) => [h.heading, h.start, h.end]), [["T", 1, 4], ["A", 6, 10]]);

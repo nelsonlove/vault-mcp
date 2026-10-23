@@ -490,14 +490,6 @@ describe("review round 4 of #596", () => {
     assert.equal(res.structuredContent.found, true, JSON.stringify(res.structuredContent ?? res.content));
     assert.equal(store.get("E.md").split("## Log").length, 2, "no second Log heading");
   });
-
-  test("a move's link reader sees a link after a fence in a list item indented by a tab or four spaces", async () => {
-    const { parseLinks } = await import("../src/mcp/link-rewrite.ts");
-    assert.deepEqual(parseLinks("- item\n\t```\n\tcode\n\t```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
-    assert.deepEqual(parseLinks("- item\n\n    ```\n    code\n    ```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
-    // A link inside that fence is code, as Obsidian reads it.
-    assert.deepEqual(parseLinks("- item\n\t```\n\t[[A]]\n\t```\n\n[[B]]\n").map((l) => l.linkpath), ["B"]);
-  });
 });
 
 describe("the H1 replace rule on the live host (#601)", () => {
@@ -563,13 +555,35 @@ describe("obsidian_append_at_heading with a stale cache", () => {
   });
 });
 
-describe("review round 5 of #596: the move's link reader and %% comments", () => {
-  test("a fence inside a %% comment is code: its links are not read, and a $$ in it pairs with nothing", async () => {
-    const { parseLinks } = await import("../src/mcp/link-rewrite.ts");
-    // Both expected lists are what Obsidian 1.14.4 indexes for the text.
-    assert.deepEqual(parseLinks("%%\n```\n[[A]]\n\n[[B]]\n```\n%%\n[[C]]\n").map((l) => l.linkpath), ["C"]);
-    assert.deepEqual(parseLinks("%%\n```\n$$\n\n```\n%%\n[[A]]\n\n$$\nx\n$$\n").map((l) => l.linkpath), ["A"]);
+describe("the Fable review of #596: the move's link reader keeps its own fence rule", () => {
+  // Rounds 1 to 5 made the link reader share the patch parser's fence rule, and rounds 4, 5
+  // and 6 each found a link that rule hid and the old one read. The reader is back on its own
+  // rule (the one before #596), with one fix: a CRLF line's `\r` is not part of a closer.
+  // Every expected list below is what Obsidian 1.14.4's own parser indexes for the text
+  // (checked with its metadata worker, run on the string outside the repo).
+  const links = async (t) => (await import("../src/mcp/link-rewrite.ts")).parseLinks(t).map((l) => l.linkpath);
+
+  test("a fence closes in a CRLF note, so the links after it are read (before #596 none closed, and the first fence hid every link after it)", async () => {
+    assert.deepEqual(await links("x\r\n```\r\n[[A]]\r\n```\r\n[[B]]\r\n"), ["B"]);
+    assert.deepEqual(await links("> ```\r\n> [[A]]\r\n> ```\r\n> [[B]]\r\n"), ["B"]);
+    assert.deepEqual(await links("```\r\n[[A]]\r\n```  \r\n[[B]]\r\n"), ["B"]);
+    assert.deepEqual(await links("- ```\r\n  [[A]]\r\n  ```\r\n\r\nafter [[B]]\r\n"), ["B"]);
+  });
+
+  test("links the shared rule hid in rounds 4 to 6 are read again", async () => {
+    // A fence inside a %% comment, closed on a quoted line: Obsidian indexes B; the shared rule kept the fence open.
+    assert.deepEqual(await links("%%\n```\n  > ```\n%%\n[[B]]\n"), ["B"]);
+    // Indented code holding a `$$`, a list link, an unclosed fence: Obsidian indexes A; the shared rule paired the `$$`s across it.
+    assert.deepEqual(await links("---\na: 1\n---\n    1. $$\n  - [[A]]\n\t\t~~~\n      > - $$\n"), ["A"]);
+  });
+
+  test("fences in list items and in %% comments that both rules read as Obsidian does", async () => {
+    assert.deepEqual(await links("- item\n\t```\n\tcode\n\t```\n\n[[B]]\n"), ["B"]);
+    assert.deepEqual(await links("- item\n\n    ```\n    code\n    ```\n\n[[B]]\n"), ["B"]);
+    assert.deepEqual(await links("- item\n\t```\n\t[[A]]\n\t```\n\n[[B]]\n"), ["B"]);
+    assert.deepEqual(await links("%%\n```\n[[A]]\n\n[[B]]\n```\n%%\n[[C]]\n"), ["C"]);
+    assert.deepEqual(await links("%%\n```\n$$\n\n```\n%%\n[[A]]\n\n$$\nx\n$$\n"), ["A"]);
     // A link in a comment outside code is indexed.
-    assert.deepEqual(parseLinks("%%\n[[A]]\n\n[[B]]\n%%\n[[C]]\n").map((l) => l.linkpath), ["A", "B", "C"]);
+    assert.deepEqual(await links("%%\n[[A]]\n\n[[B]]\n%%\n[[C]]\n"), ["A", "B", "C"]);
   });
 });
