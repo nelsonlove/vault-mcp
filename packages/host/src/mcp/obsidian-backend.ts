@@ -48,7 +48,8 @@ import {
   validateFileContent,
   applyFileEdit,
 } from "@vault-mcp/core";
-import { outlineNote, resolveHeadings, resolveBlock, sectionIn, assertNotH1Replace } from "@vault-mcp/core";
+import { sectionIn, assertNotH1Replace, lineEndingOf } from "@vault-mcp/core";
+import { noteStructure, type MetadataSource } from "./note-structure.js";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
   VaultBackend,
@@ -516,31 +517,31 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     assertNotTruncatedRead(relPath, content);
     const file = this.app.vault.getAbstractFileByPath(relPath);
     if (!(file instanceof TFile)) throw new Error(`not found: ${relPath}`);
-    const cache = this.app.metadataCache.getFileCache(file);
     const text = await this.app.vault.read(file);
 
     let start: number;
     let end: number;
     let headingLevel = 0;
 
-    // The offsets are checked against the text just read (#593): the cache
-    // describes the text Obsidian last parsed, which after a recent write is
-    // not this one. Where the cache still holds for the text it is used as
-    // before; where it does not, the positions come from the text itself.
-    const outline = outlineNote(text);
+    // The positions are Obsidian's own reading of the text just read (#593):
+    // the cache describes the text Obsidian last parsed, which after a recent
+    // write is not this one. Where that reading cannot be had, the cache is
+    // used only when it still holds for this text; otherwise the call fails
+    // with cache_mismatch and nothing is written (note-structure.ts).
+    const struct = await noteStructure(
+      this.app.metadataCache as unknown as MetadataSource, file, text,
+      anchor.type === "block" ? anchor.value : undefined,
+    );
     if (anchor.type === "heading") {
-      const { headings } = resolveHeadings(text, cache?.headings, outline);
-      const section = sectionIn(headings, text.length, anchor.value);
+      const section = sectionIn(struct.headings, text.length, anchor.value);
       if (!section) return { found: false, anchor, op };
       start = section.start; // just after the heading line
       end = section.end;
       headingLevel = section.level;
     } else {
-      // Obsidian keys its block cache by the lowercased id.
-      const block = resolveBlock(text, anchor.value, cache?.blocks?.[anchor.value.toLowerCase()], outline);
-      if (!block) return { found: false, anchor, op };
-      start = block.start;
-      end = block.end;
+      if (!struct.block) return { found: false, anchor, op };
+      start = struct.block.start;
+      end = struct.block.end;
     }
 
     const previous = text.slice(start, end);
@@ -553,19 +554,22 @@ export class ObsidianBackend implements VaultBackend, FileBackend {
     }
     // A replace on the H1 replaces the whole note (#601).
     if (anchor.type === "heading") assertNotH1Replace(relPath, anchor.value, headingLevel, op, opts.wholeSection);
+    // The inserted text and the separators take the note's own line ending.
+    const nl = lineEndingOf(text);
+    const ins = nl === "\n" ? content : content.replace(/\r?\n/g, nl);
     let next: string;
     if (op === "replace") {
-      const body = anchor.type === "heading" ? `\n\n${content}\n` : content;
+      const body = anchor.type === "heading" ? `${nl}${nl}${ins}${nl}` : ins;
       next = text.slice(0, start) + body + text.slice(end);
     } else if (op === "prepend") {
-      const ins = anchor.type === "heading" ? `\n\n${content}` : `${content}\n`;
-      next = text.slice(0, start) + ins + text.slice(start);
+      const add = anchor.type === "heading" ? `${nl}${nl}${ins}` : `${ins}${nl}`;
+      next = text.slice(0, start) + add + text.slice(start);
     } else {
       // append: preserve any blank line before a following heading
-      const head = text.slice(0, end).replace(/\n*$/, "\n");
+      const head = text.slice(0, end).replace(/(?:\r?\n)*$/, nl);
       const tail = text.slice(end);
-      const sep = tail.length === 0 || tail.startsWith("\n") ? "\n" : "\n\n";
-      next = head + content + sep + tail;
+      const sep = tail.length === 0 || tail.startsWith("\n") || tail.startsWith("\r\n") ? nl : nl + nl;
+      next = head + ins + sep + tail;
     }
 
     // Accept-forbidden guard: a patch anchors on a heading/block and cannot

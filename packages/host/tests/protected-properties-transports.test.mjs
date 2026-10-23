@@ -228,7 +228,7 @@ describe("obsidian_append_at_heading — declared key coverage", () => {
 
   test("an ordinary body append onto a policy-carrying note SUCCEEDS (carry-forward)", async () => {
     const text = "---\nauto-accept: appends\n---\n\n## H\n\nbody\n";
-    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 4, offset: 30 } } }] };
+    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 4, offset: 30 }, end: { line: 4, offset: 34 } } }] };
     const { handler, calls } = aahHarness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "H", content: "more", create_if_missing: false });
     assert.notEqual(res.isError, true, res.content?.[0]?.text);

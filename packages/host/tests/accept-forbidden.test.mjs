@@ -255,7 +255,9 @@ describe("obsidian_manage_frontmatter set — accept-forbidden", () => {
 describe("obsidian_patch_note — an accepted note is patchable (guard is preserve-safe)", () => {
   test("patching a heading on an accepted note is ALLOWED and preserves acceptance", async () => {
     const files = { "P.md": "---\nacceptance-status: accepted\n---\n# Head\nold" };
-    const cache = { "P.md": { headings: [{ heading: "Head", level: 1, position: { start: { offset: 24 }, end: { offset: 30 } } }] } };
+    // The cache Obsidian gives this text: "# Head" at offset 36.
+    const at = files["P.md"].indexOf("# Head");
+    const cache = { "P.md": { headings: [{ heading: "Head", level: 1, position: { start: { offset: at }, end: { offset: at + 6 } } }] } };
     const { call, store } = harness({ files, cache });
     const res = await call("obsidian_patch_note", { path: "P.md", anchor_type: "heading", anchor: "Head", op: "append", content: "new line" });
     assert.notEqual(res.isError, true);

@@ -34,6 +34,9 @@ import { fakeServer } from "./fake-server.mjs";
 
 installObsidianStub();
 const { registerComplementaryTools } = await import("../src/mcp/tools-complementary.ts");
+const { structureTiming } = await import("../src/mcp/note-structure.ts");
+// This harness has no Obsidian parse, so a cache that does not hold waits this long.
+structureTiming.cacheWaitMs = 20;
 
 // ── a fake vault that records every write ─────────────────────────────────────
 
@@ -81,7 +84,7 @@ const isAcceptForbidden = (res) =>
 // ── (a) REFUSED, nothing written ──────────────────────────────────────────────
 
 describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)", () => {
-  test("existing-section insert: a cache that mis-reports offsets INSIDE the leading frontmatter is not used (#593); nothing written", async () => {
+  test("existing-section insert: a cache that mis-reports offsets INSIDE the leading frontmatter is not used (#593): cache_mismatch, nothing written", async () => {
     // Two headings, both mis-reported at offsets inside the leading
     // frontmatter. Before #593 the section-insert landed the content between
     // `foo: bar` and the closing `---`, and only this guard stopped it. Now
@@ -95,7 +98,7 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     };
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: hacker", create_if_missing: false });
-    assert.equal(res.structuredContent?.found, false, res.content[0].text);
+    assert.match(res.content[0].text, /^Error \[cache_mismatch\]/);
     assert.equal(calls.modify.length, 0, "nothing written");
   });
 
@@ -116,7 +119,8 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     // The note's leading fence is still OPEN (no closing `---`), so it currently
     // has NO frontmatter; the appended content closes it and asserts acceptance.
     const text = "---\nfoo: bar\n";
-    const cache = { headings: [{ heading: "Other", level: 2, position: { start: { line: 99, offset: 999 } } }] };
+    // The cache Obsidian gives an open fence and no heading: none.
+    const cache = { headings: [] };
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({
       path: "N.md",
@@ -128,7 +132,7 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     assert.equal(calls.append.length, 0, "nothing written");
   });
 
-  test("existing-section insert into a proposed note: a mis-offset cache is not used (#593); nothing written", async () => {
+  test("existing-section insert into a proposed note: a mis-offset cache is not used (#593): cache_mismatch, nothing written", async () => {
     // The note carries a human `acceptance-status: proposed`; before #593 a
     // mis-offset insert landed inside the fence and ADDED `accepted-by`, and
     // only this guard stopped it. Now the offsets are checked against the text.
@@ -142,7 +146,7 @@ describe("obsidian_append_at_heading — accept-forbidden guard refuses (#109)",
     const { handler, calls } = harness({ "N.md": { text, cache } });
     // Offset 4 is the start of `acceptance-status`; offset 32 the closing `---`.
     const res = await handler({ path: "N.md", heading: "H", content: "accepted-by: x", create_if_missing: false });
-    assert.equal(res.structuredContent?.found, false, res.content[0].text);
+    assert.match(res.content[0].text, /^Error \[cache_mismatch\]/);
     assert.equal(calls.modify.length, 0, "nothing written");
   });
 
@@ -164,7 +168,7 @@ describe("obsidian_append_at_heading — ordinary appends still succeed (#109)",
     const text = "---\nacceptance-status: accepted\n---\n\n## Log\n\nold entry\n";
     // Real heading offsets: "## Log" begins at offset 32.
     const logOffset = text.indexOf("## Log");
-    const cache = { headings: [{ heading: "Log", level: 2, position: { start: { line: 4, offset: logOffset } } }] };
+    const cache = { headings: [{ heading: "Log", level: 2, position: { start: { line: 4, offset: logOffset }, end: { line: 4, offset: logOffset + 6 } } }] };
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "Log", content: "new entry", create_if_missing: false });
     assert.notEqual(res.isError, true, res.content[0].text);
@@ -176,7 +180,8 @@ describe("obsidian_append_at_heading — ordinary appends still succeed (#109)",
 
   test("append-new-heading of clean content succeeds", async () => {
     const text = "---\nacceptance-status: proposed\n---\n\n## Existing\n\nbody\n";
-    const cache = { headings: [{ heading: "Existing", level: 2, position: { start: { line: 4, offset: text.indexOf("## Existing") } } }] };
+    const at = text.indexOf("## Existing");
+    const cache = { headings: [{ heading: "Existing", level: 2, position: { start: { line: 4, offset: at }, end: { line: 4, offset: at + 11 } } }] };
     const { handler, calls } = harness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "Brand New", content: "hello", create_if_missing: true });
     assert.notEqual(res.isError, true, res.content[0].text);

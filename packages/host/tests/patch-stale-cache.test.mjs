@@ -25,6 +25,9 @@ import { installObsidianStub, TFile } from "./obsidian-stub.mjs";
 installObsidianStub();
 const { ObsidianBackend } = await import("../src/mcp/obsidian-backend.ts");
 const { registerComplementaryTools } = await import("../src/mcp/tools-complementary.ts");
+const { structureTiming } = await import("../src/mcp/note-structure.ts");
+// A missing reading waits for the cache this long here, not 2 s.
+structureTiming.cacheWaitMs = 60;
 
 // ── an independent stand-in for Obsidian's metadata cache ───────────────────
 
@@ -33,12 +36,14 @@ const { registerComplementaryTools } = await import("../src/mcp/tools-complement
 function parseCache(text) {
   const headings = [];
   const blocks = {};
-  const lines = text.split("\n");
+  // Offsets end before a CRLF line's \r, as Obsidian's do.
+  const raw = text.split("\n");
+  const lines = raw.map((l) => l.replace(/\r$/, ""));
   let off = 0;
   let fence = null;
   let i = 0;
   const starts = [];
-  for (const l of lines) { starts.push(off); off += l.length + 1; }
+  for (const l of raw) { starts.push(off); off += l.length + 1; }
   if (lines[0] === "---") {
     i = 1;
     while (i < lines.length && lines[i] !== "---") i++;
@@ -75,19 +80,32 @@ function parseCache(text) {
   return { headings, blocks };
 }
 
-function fakeApp(files) {
+/**
+ * `obsidianParse` (default true) gives the metadata cache a
+ * `computeMetadataAsync` that parses a buffer the way the stored cache was
+ * made, as Obsidian's does; `parse` replaces that reading. With it false the
+ * host can only check the cache. `changedAfterWrite` (ms) re-parses a note
+ * that long after a write and fires the cache's "changed" event, as Obsidian
+ * does; without it the cache stays stale.
+ */
+function fakeApp(files, { obsidianParse = true, parse = parseCache, changedAfterWrite = null } = {}) {
   const store = new Map(Object.entries(files));
   const caches = new Map();
+  const listeners = new Set();
   const reparse = (p) => caches.set(p, parseCache(store.get(p)));
   for (const p of store.keys()) reparse(p);
+  const written = (p) => {
+    if (changedAfterWrite === null) return;
+    setTimeout(() => { reparse(p); for (const cb of listeners) cb({ path: p }); }, changedAfterWrite);
+  };
   const app = {
     vault: {
       getAbstractFileByPath: (p) => (store.has(p) ? new TFile(p, 1700) : null),
       read: async (f) => store.get(f.path),
       cachedRead: async (f) => store.get(f.path),
       // The cache is NOT refreshed on a write: that is the race under test.
-      modify: async (f, c) => { store.set(f.path, c); },
-      append: async (f, c) => { store.set(f.path, store.get(f.path) + c); },
+      modify: async (f, c) => { store.set(f.path, c); written(f.path); },
+      append: async (f, c) => { store.set(f.path, store.get(f.path) + c); written(f.path); },
       create: async (p, c) => { store.set(p, c); },
       createFolder: async () => {},
       getMarkdownFiles: () => [...store.keys()].map((p) => new TFile(p, 1700)),
@@ -95,6 +113,9 @@ function fakeApp(files) {
     metadataCache: {
       resolvedLinks: {},
       getFileCache: (f) => caches.get(f.path) ?? null,
+      on: (name, cb) => { if (name === "changed") listeners.add(cb); return cb; },
+      offref: (ref) => { listeners.delete(ref); },
+      ...(obsidianParse ? { computeMetadataAsync: async (buf) => parse(new TextDecoder().decode(buf)) } : {}),
     },
     fileManager: { processFrontMatter: async () => {} },
   };
@@ -308,7 +329,7 @@ describe("review round 1 of #596", () => {
 
   test("a fresh cache holding a list-item heading is used: append_at_heading finds it and adds no duplicate", async () => {
     const text = "# T\n\n- # Item head\n\n## Next\n";
-    const { app, store, caches } = fakeApp({ "I.md": text });
+    const { app, store, caches } = fakeApp({ "I.md": text }, { obsidianParse: false });
     const at = text.indexOf("# Item head");
     const cache = caches.get("I.md");
     cache.headings.splice(1, 0, { heading: "Item head", level: 1, position: { start: { offset: at }, end: { offset: at + "# Item head".length } } });
@@ -321,18 +342,18 @@ describe("review round 1 of #596", () => {
 });
 
 describe("review round 2 of #596 on the live host", () => {
-  test("a CRLF note on the text path: a replace above a fence keeps the section after it", async () => {
+  test("a CRLF note: a replace above a fence keeps the section after it, and writes CRLF", async () => {
     const text = "## A\r\n```\r\ncode\r\n```\r\n## B\r\ntext\r\n";
     const { app, store, caches } = fakeApp({ "C.md": text });
     caches.delete("C.md");
     const r = await new ObsidianBackend(app).patchNote("C.md", { type: "heading", value: "A" }, "replace", "new");
     assert.equal(r.found, true);
-    assert.equal(store.get("C.md"), "## A\n\nnew\n## B\r\ntext\r\n");
+    assert.equal(store.get("C.md"), "## A\r\n\r\nnew\r\n## B\r\ntext\r\n");
   });
 
   test("a fresh cache for a note whose %% line holds a % is used as it stands", async () => {
     const text = "## A\n%% 50% done\n## Hidden\n%%\n\n## B\nb\n";
-    const { app, store, caches } = fakeApp({ "P.md": text });
+    const { app, store, caches } = fakeApp({ "P.md": text }, { obsidianParse: false });
     // The cache Obsidian 1.14.4 gives: A and Hidden; B sits inside the comment the lone %% opens.
     caches.set("P.md", { headings: [
       { heading: "A", level: 2, position: { start: { offset: 0 }, end: { offset: 4 } } },
@@ -340,6 +361,69 @@ describe("review round 2 of #596 on the live host", () => {
     ], blocks: {} });
     await new ObsidianBackend(app).patchNote("P.md", { type: "heading", value: "A" }, "replace", "new");
     assert.equal(store.get("P.md"), "## A\n\nnew\n## Hidden\n%%\n\n## B\nb\n");
+  });
+});
+
+describe("review round 3 of #596: the host writes only on a reading it can check", () => {
+  test("Obsidian's own parse of the text is the truth, even where the shared parser reads it differently", async () => {
+    // The shared parser hides "## H" (it reads "%% c" as a comment opener); the
+    // reading Obsidian gives here lists it. Obsidian's reading wins.
+    const before = "## A\n\nold\n%% c\n## H\nh\n";
+    const text = "## A\n\nold, now longer\n%% c\n## H\nh\n";
+    const at = text.indexOf("## H");
+    const { app, store, caches } = fakeApp({ "D.md": text }, {
+      parse: () => ({ headings: [
+        { heading: "A", level: 2, position: { start: { offset: 0 }, end: { offset: 4 } } },
+        { heading: "H", level: 2, position: { start: { offset: at }, end: { offset: at + 4 } } },
+      ], blocks: {} }),
+    });
+    caches.set("D.md", parseCache(before)); // stale
+    await new ObsidianBackend(app).patchNote("D.md", { type: "heading", value: "A" }, "replace", "new");
+    assert.equal(store.get("D.md"), "## A\n\nnew\n## H\nh\n");
+  });
+
+  test("without Obsidian's parse, a cache that does not match the text is refused with cache_mismatch, and nothing is written", async () => {
+    const before = "# T\n\n## A\n\na\n\n## B\n\nb\n";
+    const text = "# T\n\n## A\n\na, now longer\n\n## B\n\nb\n";
+    const { app, store, caches } = fakeApp({ "M.md": text }, { obsidianParse: false });
+    caches.set("M.md", parseCache(before));
+    await assert.rejects(() => new ObsidianBackend(app).patchNote("M.md", { type: "heading", value: "B" }, "replace", "x"), (e) => e.code === "cache_mismatch" && /Retry/.test(e.message));
+    assert.equal(store.get("M.md"), text);
+  });
+
+  test("without Obsidian's parse, a stale cache is waited for: once Obsidian re-reads the note the write lands", async () => {
+    const { app, store } = fakeApp({ "W.md": "# T\n\n## A\n\na\n\n## B\n\nb\n" }, { obsidianParse: false, changedAfterWrite: 20 });
+    const b = new ObsidianBackend(app);
+    await b.patchNote("W.md", { type: "heading", value: "A" }, "replace", "a, now longer");
+    await b.patchNote("W.md", { type: "heading", value: "B" }, "replace", "b2");
+    assert.equal(store.get("W.md"), "# T\n\n## A\n\na, now longer\n## B\n\nb2\n");
+  });
+
+  test("append_at_heading with create_if_missing refuses on a mismatch instead of adding a heading Obsidian has", async () => {
+    // Obsidian's index holds "Target"; the shared parser does not see it here,
+    // and the index's offsets are stale, so no reading can be checked.
+    const text = "# T\n\nintro, now longer\n\n- # Target\n\nmore\n";
+    const { app, store, caches } = fakeApp({ "X.md": text }, { obsidianParse: false });
+    caches.set("X.md", { headings: [
+      { heading: "T", level: 1, position: { start: { offset: 0 }, end: { offset: 3 } } },
+      { heading: "Target", level: 1, position: { start: { offset: 16 }, end: { offset: 24 } } },
+    ], blocks: {} });
+    const handlers = new Map();
+    registerComplementaryTools({ registerTool(n, _m, h) { handlers.set(n, h); } }, app, { getSettings: () => ({ allowlist: [] }) });
+    const res = await handlers.get("obsidian_append_at_heading")({ path: "X.md", heading: "Target", content: "under it", create_if_missing: true }, {});
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /^Error \[cache_mismatch\]/);
+    assert.equal(store.get("X.md"), text, "nothing written, no duplicate heading");
+  });
+
+  test("a CRLF note: append and prepend write CRLF too", async () => {
+    const text = "# T\r\n\r\n## A\r\n\r\na\r\n\r\n## B\r\n\r\nb\r\n";
+    const { app, store, reparse } = fakeApp({ "R.md": text });
+    const b = new ObsidianBackend(app);
+    await b.patchNote("R.md", { type: "heading", value: "A" }, "append", "one\ntwo");
+    reparse("R.md");
+    await b.patchNote("R.md", { type: "heading", value: "B" }, "prepend", "first");
+    assert.equal(store.get("R.md"), "# T\r\n\r\n## A\r\n\r\na\r\none\r\ntwo\r\n\r\n## B\r\n\r\nfirst\r\n\r\nb\r\n");
   });
 });
 
