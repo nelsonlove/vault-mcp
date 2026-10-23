@@ -28,6 +28,8 @@
 // TRANSITION over (before, after) — preserve is allowed, introduce/change is
 // not.
 
+import { parseDocument } from "yaml";
+
 /**
  * Typed refusal for the accept-forbidden guard — rendered as `Error [accept_forbidden]`.
  *
@@ -850,10 +852,17 @@ function duplicateKey(key: string): never {
  *     indicator (`!!str verified` is `verified` to YAML), and the merge key `<<`;
  *   - under a guarded top-level key (`guardedKey`), in block and flow form,
  *     a root flow mapping included: a double-quoted value with a backslash, a
- *     value over more than one line, a block scalar (`|`, `>`), a plain value
- *     with a comment (` #`), and a plain value that opens with a YAML indicator.
+ *     value over more than one line, a block scalar (`|`, `>`), and a plain
+ *     value that opens with a YAML indicator.
  * Single-quoted scalars on one line need no rule: their one escape (`''`) is
- * decoded here exactly as YAML decodes it.
+ * decoded here exactly as YAML decodes it. A trailing comment (` #`, a tab
+ * before `#` too) is cut off as YAML cuts it, after a plain or a quoted value.
+ *
+ * Behind those rules stands one root rule (`crossCheckWithYaml`): after its own
+ * reading, the guard parses the same frontmatter with the `yaml` library
+ * (unique keys), and refuses when the two readings differ for any guarded
+ * top-level key, when one reading has a guarded key the other has not, or when
+ * YAML cannot parse a block in which the guard read a guarded key.
  */
 export class YamlDivergenceError extends AcceptForbiddenError {
   /** The reason without its trailer, for a road that re-throws it as its own refusal. */
@@ -897,7 +906,6 @@ function refuseDivergentGuardedValue(raw: string, key: string): void {
   if (t.startsWith('"') && t.includes("\\")) divergent(`a double-quoted value with a backslash escape under '${key}'`);
   if (/[\r\n]/.test(t)) divergent(`a value over more than one line under '${key}'`);
   if (t.startsWith('"') || t.startsWith("'")) return;
-  if (/(^|[ \t])#/.test(t)) divergent(`a value with a comment under '${key}'`);
   if (DIVERGENT_PLAIN_START_RE.test(t)) divergent(`a value that opens with a YAML indicator under '${key}' (${t.slice(0, 20)})`);
 }
 
@@ -1261,6 +1269,7 @@ class BlockReader {
       const kv = parseKeyLine(body);
       if (!kv) unclassifiable();
       refuseDivergentKey(kv.raw, kv.key);
+      kv.rest = stripTrailingComment(kv.rest);
       this.i = at + 1;
       // #605: the parser kept the LAST of two equal keys, so a forged block written
       // before the real one was compared as unchanged. A repeated key at the root,
@@ -1283,7 +1292,10 @@ class BlockReader {
       const body = line.slice(ind);
       const sm = SEQ_ITEM_RE.exec(body);
       if (!sm) return out;
-      const content = (sm[1] ?? "").trim();
+      const rawContent = (sm[1] ?? "").trim();
+      // `- # c` is an empty item to YAML. A comment after a scalar item is cut
+      // where the scalar is read; a `key: value` item cuts its own (parseMapping).
+      const content = rawContent.startsWith("#") ? "" : rawContent;
 
       if (content === "") {
         // `-` alone: the item's structure is on the following, more-indented lines.
@@ -1329,7 +1341,7 @@ class BlockReader {
 
       // A plain/quoted scalar item, possibly continued on more-indented lines.
       this.i = at + 1;
-      out.push(this.finishScalar(content, indent));
+      out.push(this.finishScalar(stripTrailingComment(content), indent));
     }
   }
 
@@ -1437,6 +1449,69 @@ class BlockReader {
 }
 
 /**
+ * `rest` (a value on a key or `-` line) without a trailing comment, as YAML
+ * reads it: a `#` after a space or a tab ends a plain value, and a comment
+ * after the closing quote of a quoted value is dropped. A quoted value that
+ * does not close on this line, a flow collection, or a quoted value followed
+ * by other text is returned as it was (the reader and the YAML cross-check
+ * decide those).
+ */
+function stripTrailingComment(rest: string): string {
+  if (rest.startsWith("#")) return "";
+  const q = rest[0];
+  if (q === '"' || q === "'") {
+    let i = 1;
+    for (; i < rest.length; i++) {
+      if (q === '"' && rest[i] === "\\") {
+        i++;
+        continue;
+      }
+      if (rest[i] === q) {
+        if (q === "'" && rest[i + 1] === "'") {
+          i++;
+          continue;
+        }
+        break;
+      }
+    }
+    if (i >= rest.length) return rest; // not closed on this line
+    const after = rest.slice(i + 1);
+    if (after.trim() === "" || /^[ \t]+#/.test(after)) return rest.slice(0, i + 1);
+    return rest;
+  }
+  if (q === "[" || q === "{") return rest;
+  const m = /[ \t]#/.exec(rest);
+  return m ? rest.slice(0, m.index).trimEnd() : rest;
+}
+
+/**
+ * The root rule (see YamlDivergenceError): the guard's reading `g` of `block`
+ * must agree with the `yaml` library's reading on every guarded top-level key.
+ * A block YAML cannot parse is refused only when the guard read a guarded key
+ * in it (YAML's reader would see no properties at all, the record included).
+ */
+function crossCheckWithYaml(block: string, g: Record<string, unknown>): void {
+  const guarded = Object.keys(g).filter(guardedKey);
+  let y: unknown;
+  try {
+    const doc = parseDocument(block, { uniqueKeys: true, prettyErrors: false });
+    if (doc.errors.length > 0) throw doc.errors[0];
+    y = doc.toJS();
+  } catch {
+    if (guarded.length > 0) divergent(`a block YAML cannot parse, with the guarded key '${guarded[0]}' in it`);
+    return;
+  }
+  const yo: Record<string, unknown> = y && typeof y === "object" && !Array.isArray(y) ? (y as Record<string, unknown>) : {};
+  const keys = new Set([...guarded, ...Object.keys(yo).filter(guardedKey)]);
+  for (const k of keys) {
+    const inG = Object.prototype.hasOwnProperty.call(g, k);
+    const inY = Object.prototype.hasOwnProperty.call(yo, k);
+    if (!inG || !inY) divergent(`the guarded key '${k}', which only ${inG ? "this guard's reader" : "YAML"} finds`);
+    if (!fmEqual(g[k], yo[k])) divergent(`a value under '${k}' that YAML reads differently`);
+  }
+}
+
+/**
  * Parse the leading `---\n…\n---` frontmatter fence of `markdown` into a plain
  * object suitable for `acceptTransitionReason` / `acceptForbiddenReason`.
  *
@@ -1479,6 +1554,7 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
       return {};
     }
     if (!v || typeof v !== "object") unclassifiable();
+    crossCheckWithYaml(block, v as Record<string, unknown>);
     return v as Record<string, unknown>;
   }
 
@@ -1486,5 +1562,6 @@ export function parseGuardFrontmatter(markdown: string): Record<string, unknown>
   // A dedent below column 0 is impossible, so anything left unconsumed means
   // the reader lost its place rather than finished.
   if (reader.peek() >= 0) unclassifiable();
+  crossCheckWithYaml(block, out);
   return out;
 }
