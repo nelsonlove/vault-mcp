@@ -7,7 +7,7 @@
 // obsidian_repoint_link (repoint broken wikilinks) and obsidian_rename_heading
 // (rename a heading and heal every link to it, #424) — along with their helpers.
 
-import { UnsafeNameError } from "@vault-mcp/core";
+import { UnsafeNameError, assertLinkRewriteAllowed } from "@vault-mcp/core";
 import { assertMoveName } from "./name-checks.js";
 import { moveWithLinks, TextCache, type LinkCheck, type MoveWithLinksOptions } from "./move-with-links.js";
 import { recordTest, type RecordRules } from "./records.js";
@@ -101,7 +101,7 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
     {
       title: "Move/rename multiple notes",
       description:
-        "Move or rename several notes in one call. Items are processed sequentially. Each note is renamed at the file level (no wait for Obsidian's index) and vault-mcp rewrites every link to it itself, then checks for damage: each item's `link_check` reports any link still naming the old path, any note reaching the note fewer times than before, any note it could not rewrite, and `ok`. Links inside records (a note the operator's record identifier marks, `record: true` by default, or one under a record folder: a folder in the plugin's record-folder list, or one whose name matches its archive pattern; both indicators are plugin settings, each with its own switch) are never rewritten, and a moved record keeps its own links as written (a marked record stays one wherever it moves; a note that is a record only by its folder is living once moved out); each link left that no longer reaches its target is listed in `records_left` (at most 100 notes; `records_left_total` counts all), which is not damage. `links_ok` is false if any item found damage. A runtime-failed item (missing source, existing destination) is reported in `errors` and does not fail the call, but if every item fails the call is flagged as an error. Statically invalid batches are rejected up front with no moves performed: a non-.md path, an item whose from and to are identical, a destination whose NEW name or folder holds a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]) (typed `unsafe_name`; the note's own name and the folders it is already in may be kept; [ ] are allowed only in the name of a note under an existing archive folder (one the plugin's archive pattern names) that no other note links to, never in a folder name), or a path appearing twice as a source, twice as a destination, or as both (swaps/chains) — compared after normalization.",
+        "Move or rename several notes in one call. Items are processed sequentially. Each note is renamed at the file level (no wait for Obsidian's index) and vault-mcp rewrites every link to it itself, then checks for damage: each item's `link_check` reports any link still naming the old path, any note reaching the note fewer times than before, any note it could not rewrite, and `ok`. A note whose rewrite the written-content guard refuses (a link inside a `verified` entry, an acceptance key or a declared protected property, which no agent may change) is left unchanged and listed in `failed` with the guard's reason, and the rest of the move lands. Links inside records (a note the operator's record identifier marks, `record: true` by default, or one under a record folder: a folder in the plugin's record-folder list, or one whose name matches its archive pattern; both indicators are plugin settings, each with its own switch) are never rewritten, and a moved record keeps its own links as written (a marked record stays one wherever it moves; a note that is a record only by its folder is living once moved out); each link left that no longer reaches its target is listed in `records_left` (at most 100 notes; `records_left_total` counts all), which is not damage. `links_ok` is false if any item found damage. A runtime-failed item (missing source, existing destination) is reported in `errors` and does not fail the call, but if every item fails the call is flagged as an error. Statically invalid batches are rejected up front with no moves performed: a non-.md path, an item whose from and to are identical, a destination whose NEW name or folder holds a character Obsidian Sync refuses (\\ : * ? \" < > |) or one that breaks links (# ^ [ ]) (typed `unsafe_name`; the note's own name and the folders it is already in may be kept; [ ] are allowed only in the name of a note under an existing archive folder (one the plugin's archive pattern names) that no other note links to, never in a folder name), or a path appearing twice as a source, twice as a destination, or as both (swaps/chains) — compared after normalization.",
       inputSchema: {
         moves: z
           .array(
@@ -159,7 +159,7 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
     {
       title: "Repoint a link",
       description:
-        "Rewrite every wikilink whose target text matches `link_name` to point at `target_path` instead, across every note you can see. Case-insensitive on the link text; aliases ([[x|alias]]) and subpaths ([[x#heading]]) are preserved. This is the tool for fixing BROKEN links: Obsidian's rename-based backlink rewrite (obsidian_move_note/obsidian_move_notes) only touches links that already resolve to a file, so a dangling [[x]] that points at no note can only be repointed by this text-level scan. While a path allowlist is configured the scan is CONTAINED BY IT — notes outside it are neither read, rewritten, nor named, so the repair is partial and `scoped_to_allowlist: true` says so. Set dry_run=true to report how many links/notes would change without writing anything.",
+        "Rewrite every wikilink whose target text matches `link_name` to point at `target_path` instead, across every note you can see. Case-insensitive on the link text; aliases ([[x|alias]]) and subpaths ([[x#heading]]) are preserved. This is the tool for fixing BROKEN links: Obsidian's rename-based backlink rewrite (obsidian_move_note/obsidian_move_notes) only touches links that already resolve to a file, so a dangling [[x]] that points at no note can only be repointed by this text-level scan. While a path allowlist is configured the scan is CONTAINED BY IT — notes outside it are neither read, rewritten, nor named, so the repair is partial and `scoped_to_allowlist: true` says so. A note whose rewrite the written-content guard refuses (a link inside a `verified` entry, an acceptance key or a declared protected property, which no agent may change) is left unchanged and listed in `skipped` with the guard's reason; the other notes are still repointed. Set dry_run=true to report how many links/notes would change without writing anything.",
       inputSchema: {
         link_name: z
           .string()
@@ -193,6 +193,8 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
         let filesChanged = 0;
         let linksChanged = 0;
         const files: string[] = [];
+        // Notes left unchanged because the written-content guard refused the rewrite (#614).
+        const skipped: Array<{ path: string; reason: string }> = [];
 
         // ── allowlist containment ────────────────────────────────────────────
         // This is the one tool whose blast radius is not in its arguments: it
@@ -229,17 +231,29 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
           }
           const opts = { dropEchoAlias: drop_echo_alias, allowTarget };
           // Peek from cache first so unmatched files are never rewritten (no mtime churn).
-          const preview = repointLinksInText(await app.vault.cachedRead(file), link_name, newTarget, opts);
+          const cached = await app.vault.cachedRead(file);
+          const preview = repointLinksInText(cached, link_name, newTarget, opts);
           if (preview.count === 0) continue;
 
           let count = preview.count;
-          if (!dry_run) {
-            // Re-run under the write lock so the reported count reflects what was written.
-            await app.vault.process(file, (data) => {
-              const r = repointLinksInText(data, link_name, newTarget, opts);
-              count = r.count;
-              return r.text;
-            });
+          // The written-content guard, as for any write of a note (#614): a link in a `verified` entry, an
+          // acceptance key or a declared protected property is never rewritten by an agent. A refused note is
+          // left unchanged and reported in `skipped` with the guard's reason; the other notes are still repointed.
+          try {
+            if (dry_run) assertLinkRewriteAllowed(cached, preview.text);
+            else {
+              // Re-run under the write lock so the reported count reflects what was written.
+              await app.vault.process(file, (data) => {
+                const r = repointLinksInText(data, link_name, newTarget, opts);
+                if (r.count > 0) assertLinkRewriteAllowed(data, r.text);
+                count = r.count;
+                return r.text;
+              });
+            }
+          } catch (e) {
+            if ((e as { code?: unknown }).code !== "accept_forbidden") throw e;
+            skipped.push({ path: file.path, reason: `accept_forbidden: ${(e as Error).message}` });
+            continue;
           }
           if (count === 0) continue;
 
@@ -257,6 +271,7 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
           linksChanged,
           filesChanged,
           files,
+          skipped,
           // Present either way, so a caller never has to infer containment from
           // the absence of a flag: `true` means notes outside the allowlist were
           // skipped and this repair is partial.
@@ -270,7 +285,7 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
     {
       title: "Rename a heading",
       description:
-        "USE THIS TOOL TO RENAME A HEADING — not obsidian_patch_note, obsidian_write_note or any other text edit. Those change the heading text but leave every link to it ([[Note#Old heading]], ![[Note#Old heading]], [[#Old heading]]) pointing at a heading that no longer exists, and nothing reports the breakage. This tool renames one heading in a note and rewrites every link to it across the notes you can see — wikilinks, embeds and markdown links, same-note [[#Heading]] links and heading chains ([[Note#A#B]]) — the headless equivalent of Obsidian's 'Rename this heading' command, which needs an editor cursor and a dialog. `heading` is the current heading text exactly as written (no leading #); links are matched the way Obsidian matches them, ignoring case and punctuation, so [[Note#Step 1 setup]] reaches '## Step 1: setup'. A heading that is not found is refused, and so is one that another heading in the note shares its links with, a new name that would share links with another heading, and a new name that contains [ ] | # ^ or %%. ATX (## Text) and setext (Text over ===) headings are both handled. Each link is rewritten at the position Obsidian's metadata cache records, after checking the text there still matches; a note that changed since is reported under `skipped`, never rewritten blind. Links inside record notes are not rewritten (records are historical) and are reported under `skipped`, as are frontmatter links. While a path allowlist is configured the scan is CONTAINED BY IT — notes outside it are neither read, rewritten nor named, and `scoped_to_allowlist: true` says so. Set dry_run=true to report what would change without writing.",
+        "USE THIS TOOL TO RENAME A HEADING — not obsidian_patch_note, obsidian_write_note or any other text edit. Those change the heading text but leave every link to it ([[Note#Old heading]], ![[Note#Old heading]], [[#Old heading]]) pointing at a heading that no longer exists, and nothing reports the breakage. This tool renames one heading in a note and rewrites every link to it across the notes you can see — wikilinks, embeds and markdown links, same-note [[#Heading]] links and heading chains ([[Note#A#B]]) — the headless equivalent of Obsidian's 'Rename this heading' command, which needs an editor cursor and a dialog. `heading` is the current heading text exactly as written (no leading #); links are matched the way Obsidian matches them, ignoring case and punctuation, so [[Note#Step 1 setup]] reaches '## Step 1: setup'. A heading that is not found is refused, and so is one that another heading in the note shares its links with, a new name that would share links with another heading, and a new name that contains [ ] | # ^ or %%. ATX (## Text) and setext (Text over ===) headings are both handled. Each link is rewritten at the position Obsidian's metadata cache records, after checking the text there still matches; a note that changed since is reported under `skipped`, never rewritten blind. Links inside record notes are not rewritten (records are historical) and are reported under `skipped`, as are frontmatter links, and a note whose rewrite the written-content guard refuses (with the guard's reason). While a path allowlist is configured the scan is CONTAINED BY IT — notes outside it are neither read, rewritten nor named, and `scoped_to_allowlist: true` says so. Set dry_run=true to report what would change without writing.",
       inputSchema: {
         path: z.string().min(1).describe("Vault-relative path of the note that holds the heading, ending in .md."),
         heading: z.string().min(1).describe("The heading's current text, exactly as written, without the leading #s."),
@@ -368,7 +383,22 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
         for (const p of order) {
           const list = edits.get(p)!;
           const links = list.length - (p === file.path ? 1 : 0);
-          if (!dry_run) {
+          if (dry_run) {
+            // The written-content guard decides a dry run too, so it reports what a real run would refuse (#614).
+            const f = app.vault.getAbstractFileByPath(p);
+            if (f instanceof TFile) {
+              const data = await app.vault.cachedRead(f);
+              const next = applyEdits(data, list);
+              try {
+                if (next !== null && next !== data) assertLinkRewriteAllowed(data, next);
+              } catch (e) {
+                if ((e as { code?: unknown }).code !== "accept_forbidden") throw e;
+                if (p === file.path) throw e;
+                skipped.push({ path: p, reason: `accept_forbidden: ${(e as Error).message}; ${links} link(s) not rewritten` });
+                continue;
+              }
+            }
+          } else {
             const f = app.vault.getAbstractFileByPath(p);
             let stale = !(f instanceof TFile);
             if (!stale) {
@@ -376,6 +406,9 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
                 await app.vault.process(f as TFile, (data) => {
                   const next = applyEdits(data, list);
                   if (next === null) { stale = true; return data; }
+                  // The written-content guard, as for any write of a note (#614). A refusal throws before
+                  // anything is written: the note is left unchanged and reported in `skipped`.
+                  if (next !== data) assertLinkRewriteAllowed(data, next);
                   return next;
                 });
               } catch (e) {
@@ -384,7 +417,9 @@ export function registerVaultWriteTools(server: McpServer, app: App, ctx: VaultW
                 // report this one and go on, so the result names every file
                 // that changed and every link left behind.
                 if (p === file.path) throw e;
-                skipped.push({ path: p, reason: `write failed (${e instanceof Error ? e.message : String(e)}); ${links} link(s) not rewritten — retry to heal them` });
+                const refused = (e as { code?: unknown }).code === "accept_forbidden";
+                const msg = e instanceof Error ? e.message : String(e);
+                skipped.push({ path: p, reason: refused ? `accept_forbidden: ${msg}; ${links} link(s) not rewritten` : `write failed (${msg}); ${links} link(s) not rewritten — retry to heal them` });
                 continue;
               }
             }

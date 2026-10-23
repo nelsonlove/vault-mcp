@@ -893,3 +893,76 @@ describe("the bracket rule takes its archives from the operator's pattern (#482)
     }
   });
 });
+
+// ── #614: the written-content guard on every link rewrite of a move ───────────
+//
+// A move rewrites links in notes it was not asked to edit, frontmatter strings
+// included. Each rewrite now passes the same written-content guard as a write of
+// the note: a link inside a `verified` entry, an acceptance key or a declared
+// protected property is never rewritten; the note is left unchanged and named in
+// `failed` with the guard's reason, and the rest of the move lands.
+describe("#614 a move's link rewrites pass the written-content guard", () => {
+  const VERIFIED = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\n    note: \"see [[Old]]\"\n---\nBody [[Old]]\n";
+  const ORDINARY = "---\nrelated: \"[[Old]]\"\n---\nBody [[Old]]\n";
+  const BODY = "Body [[Old]]\n";
+  const ACCEPT_KEY = "---\nacceptance-status: \"[[Old]]\"\n---\nBody [[Old]]\n";
+  // A rewrite to a name with an apostrophe breaks the single-quoted value, so YAML can no longer read the block that holds `verified`.
+  const DIVERGE = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\nrelated: '[[Old]]'\n---\n";
+  const vault = () => ({ "A/Old.md": "x\n", "S/V.md": VERIFIED, "S/O.md": ORDINARY, "S/B.md": BODY, "S/K.md": ACCEPT_KEY });
+  const failedFor = (check, p) => check.failed.find((f) => f.path === p);
+
+  test("moveWithLinks: a verified entry's link is not rewritten and is reported; an ordinary key and the body are rewritten", async () => {
+    const { app, text } = fakeApp(vault());
+    const check = await moveWithLinks(app, app.vault.getAbstractFileByPath("A/Old.md"), "B/New.md");
+    assert.equal(text.get("S/V.md"), VERIFIED, "the note with the verified link is left exactly as it was");
+    assert.match(failedFor(check, "S/V.md").reason, /^accept_forbidden: .*verification field 'verified'/);
+    assert.equal(text.get("S/O.md"), "---\nrelated: \"[[New]]\"\n---\nBody [[New]]\n");
+    assert.equal(text.get("S/B.md"), "Body [[New]]\n");
+    assert.equal(text.get("S/K.md"), ACCEPT_KEY, "a link in an acceptance key is never rewritten");
+    assert.match(failedFor(check, "S/K.md").reason, /^accept_forbidden: a link rewrite would change the guarded frontmatter key 'acceptance-status'/);
+    assert.deepEqual(check.files_rewritten.sort(), ["S/B.md", "S/O.md"]);
+    assert.equal(check.ok, false, "a link left behind is reported, never hidden");
+    assert.equal(text.has("B/New.md"), true, "the move itself lands");
+  });
+
+  test("moveWithLinks: a rewrite that YAML would read differently in a block holding a guarded key is refused", async () => {
+    const { app, text } = fakeApp({ "A/Old.md": "x\n", "S/D.md": DIVERGE, "S/B.md": BODY });
+    const check = await moveWithLinks(app, app.vault.getAbstractFileByPath("A/Old.md"), "A/It's.md");
+    assert.equal(text.get("S/D.md"), DIVERGE);
+    assert.match(failedFor(check, "S/D.md").reason, /^accept_forbidden: .*cannot read as YAML does/);
+    assert.equal(text.get("S/B.md"), "Body [[It's]]\n");
+  });
+
+  test("moveWithLinks: the moved note's own relative link inside its verified entry is not rewritten", async () => {
+    const own = "---\nverified:\n  - by: \"human:someone\"\n    at: 2026-01-02\n    note: \"[o](../Other.md)\"\n---\n";
+    const { app, text } = fakeApp({ "A/Old.md": own, "Other.md": "x\n" });
+    const check = await moveWithLinks(app, app.vault.getAbstractFileByPath("A/Old.md"), "A/Deep/Old.md");
+    assert.equal(text.get("A/Deep/Old.md"), own);
+    assert.match(failedFor(check, "A/Deep/Old.md").reason, /^accept_forbidden: /);
+  });
+
+  test("obsidian_move_notes and obsidian_move_note (ObsidianBackend) report the refused note and rewrite the rest", async () => {
+    const { registerVaultWriteTools } = await import("../src/mcp/tools-vault-write.ts");
+    const { ObsidianBackend } = await import("../src/mcp/obsidian-backend.ts");
+    {
+      const { app, text } = fakeApp(vault());
+      let handler;
+      registerVaultWriteTools({ registerTool: (name, _def, h) => { if (name === "obsidian_move_notes") handler = h; } }, app, {});
+      const res = await handler({ moves: [{ from: "A/Old.md", to: "B/New.md" }], overwrite: false });
+      const check = res.structuredContent.moved[0].link_check;
+      assert.equal(text.get("S/V.md"), VERIFIED);
+      assert.match(failedFor(check, "S/V.md").reason, /^accept_forbidden: /);
+      assert.equal(text.get("S/O.md"), "---\nrelated: \"[[New]]\"\n---\nBody [[New]]\n");
+      assert.equal(text.get("S/B.md"), "Body [[New]]\n");
+      assert.equal(res.structuredContent.links_ok, false);
+    }
+    {
+      const { app, text } = fakeApp(vault());
+      const r = await new ObsidianBackend(app).moveNote("A/Old.md", "B/New.md", { update_backlinks: true, overwrite: false });
+      assert.equal(text.get("S/V.md"), VERIFIED);
+      assert.match(failedFor(r.link_check, "S/V.md").reason, /^accept_forbidden: /);
+      assert.equal(text.get("S/O.md"), "---\nrelated: \"[[New]]\"\n---\nBody [[New]]\n");
+      assert.equal(text.get("S/B.md"), "Body [[New]]\n");
+    }
+  });
+});
