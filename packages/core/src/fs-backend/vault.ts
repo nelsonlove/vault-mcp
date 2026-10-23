@@ -12,6 +12,7 @@ import type {
 } from "../vault-backend.js";
 import {
   AcceptForbiddenError,
+  assertGuardedKeysUnchanged,
   acceptTransitionReason,
   acceptTransitionNeedsBefore,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
@@ -930,7 +931,7 @@ class VaultImpl {
       /** Callback that resolves a ref to a path via the index. */
       resolve_ref: (ref: string) => string | undefined;
     }
-  ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number }> {
+  ): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; backlinks_skipped?: Array<{ path: string; reason: string }> }> {
     const absFrom = this.resolveInVault(fromRel);
     const absTo = this.resolveInVault(toRel);
     if (!toRel.toLowerCase().endsWith(".md")) {
@@ -965,6 +966,7 @@ class VaultImpl {
 
     let backlinksUpdated = 0;
     let backlinksFilesTouched = 0;
+    let backlinksSkipped: Array<{ path: string; reason: string }> = [];
     if (options.update_backlinks) {
       const result = await rewriteBacklinks(
         this,
@@ -975,6 +977,7 @@ class VaultImpl {
       );
       backlinksUpdated = result.refs_rewritten;
       backlinksFilesTouched = result.files_touched;
+      backlinksSkipped = result.skipped;
     }
 
     return {
@@ -982,6 +985,8 @@ class VaultImpl {
       to: toRel,
       backlinks_updated: backlinksUpdated,
       backlinks_files_touched: backlinksFilesTouched,
+      // Only when a note was left unchanged, so an ordinary move's result is as before.
+      ...(backlinksSkipped.length > 0 ? { backlinks_skipped: backlinksSkipped } : {}),
     };
   }
 
@@ -1105,9 +1110,10 @@ async function rewriteBacklinks(
   toRel: string,
   backlinksProvider: (path: string) => string[],
   resolveRef: (ref: string) => string | undefined
-): Promise<{ refs_rewritten: number; files_touched: number }> {
+): Promise<{ refs_rewritten: number; files_touched: number; skipped: Array<{ path: string; reason: string }> }> {
+  const skipped: Array<{ path: string; reason: string }> = [];
   const sources = backlinksProvider(fromRel);
-  if (sources.length === 0) return { refs_rewritten: 0, files_touched: 0 };
+  if (sources.length === 0) return { refs_rewritten: 0, files_touched: 0, skipped };
 
   const fromPathNoExt = fromRel.replace(/\.md$/i, "");
   const toBasename = path.basename(toRel, ".md");
@@ -1131,6 +1137,7 @@ async function rewriteBacklinks(
     }
 
     let changed = false;
+    let rewrites = 0;
     const next = text.replace(WIKILINK_TOKEN_RE, (match, target: string, suffix: string) => {
       const trimmed = target.trim();
       // Only rewrite if this ref currently resolves to the from-note.
@@ -1143,7 +1150,7 @@ async function rewriteBacklinks(
       else if (trimmed === fromPathNoExt) newTarget = toPathNoExt;
       else newTarget = toBasename;
       changed = true;
-      totalRewrites++;
+      rewrites++;
       return `[[${newTarget}${suffix || ""}]]`;
     });
 
@@ -1156,12 +1163,26 @@ async function rewriteBacklinks(
       // itself to carry a line break plus the assertion — but the other
       // three content-write paths on this backend are all guarded, and this
       // one should not be the exception.
-      await vault.guardWrittenContent(src, next);
+      //
+      // A refusal leaves this note unchanged and is reported in `skipped` with
+      // the guard's reason (#614): a link in a `verified` entry, an acceptance
+      // key or a declared protected property is never rewritten by an agent.
+      // The move itself has already landed, so the other notes are still
+      // rewritten rather than the call failing half-done.
+      try {
+        await vault.guardWrittenContent(src, next);
+        assertGuardedKeysUnchanged(text, next);
+      } catch (e) {
+        if (!(e instanceof AcceptForbiddenError)) throw e;
+        skipped.push({ path: src, reason: `accept_forbidden: ${e.message}` });
+        continue;
+      }
       await fs.writeFile(absSrc, next, "utf8");
+      totalRewrites += rewrites;
       filesTouched++;
     }
   }
-  return { refs_rewritten: totalRewrites, files_touched: filesTouched };
+  return { refs_rewritten: totalRewrites, files_touched: filesTouched, skipped };
 }
 
 // ── Module-level singleton (process.env.VAULT_PATH) ──────────────────────────
@@ -1285,7 +1306,7 @@ export async function moveNote(
     backlinks_provider: (path: string) => string[];
     resolve_ref: (ref: string) => string | undefined;
   }
-): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number }> {
+): Promise<{ from: string; to: string; backlinks_updated: number; backlinks_files_touched: number; backlinks_skipped?: Array<{ path: string; reason: string }> }> {
   return _impl.moveNote(fromRel, toRel, options);
 }
 

@@ -584,6 +584,8 @@ function makeHandler(
           if (r.backlinks_files_touched !== null) resp.backlinks_files_touched = r.backlinks_files_touched;
           // The live host checks its own backlink rewrite for damage and says what it found.
           if (r.link_check !== undefined) resp.link_check = r.link_check;
+          // A note the written-content guard refused is left unchanged and named, with the reason (#614).
+          if (r.backlinks_skipped !== undefined) resp.backlinks_skipped = r.backlinks_skipped;
           return ok(status(resp));
         } catch (e) {
           return fail(e);

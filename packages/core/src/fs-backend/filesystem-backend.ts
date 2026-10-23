@@ -193,6 +193,7 @@ export class FilesystemBackend implements VaultBackend, FileBackend, TextReplace
     to: string;
     backlinks_updated: number;
     backlinks_files_touched: number;
+    backlinks_skipped?: Array<{ path: string; reason: string }>;
   }> {
     return this.vault.moveNote(fromRel, toRel, {
       update_backlinks: options.update_backlinks,

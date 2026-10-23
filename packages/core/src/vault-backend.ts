@@ -315,6 +315,8 @@ export interface VaultBackend {
     backlinks_files_touched: number | null;
     /** Live host only: what the damage check after its own backlink rewrite found. */
     link_check?: unknown;
+    /** Filesystem backend: notes whose backlink rewrite the written-content guard refused, left unchanged (#614). */
+    backlinks_skipped?: Array<{ path: string; reason: string }>;
   }>;
 
   /**
