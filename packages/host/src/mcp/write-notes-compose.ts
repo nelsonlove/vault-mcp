@@ -47,6 +47,7 @@ import {
   acceptTransitionReason,
   acceptForbiddenReason,
   duplicateFrontmatterKeyReason,
+  yamlDivergenceReason,
   isVerifiedKey,
   isBlankVerification,
   frontmatterOf,
@@ -244,6 +245,9 @@ export function composeNote(args: ComposeArgs): ComposeResult {
   if (Object.keys(structuredFm).length === 0) {
     const dup = duplicateFrontmatterKeyReason(args.body);
     if (dup) throw new AcceptForbiddenError(dup);
+    // The same for a key or a guarded value the guard's reader cannot read as YAML does.
+    const div = yamlDivergenceReason(args.body);
+    if (div) throw new AcceptForbiddenError(div);
   }
   const resultingFm =
     Object.keys(structuredFm).length > 0
