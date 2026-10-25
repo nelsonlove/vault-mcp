@@ -153,7 +153,7 @@ export class FilesystemBackend implements VaultBackend, FileBackend, TextReplace
     anchor: PatchAnchor,
     op: PatchOp,
     content: string,
-    opts: { rangeRuleStandsAside?: boolean } = {},
+    opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     return this.vault.patchNote(relPath, anchor, op, content, opts);
   }

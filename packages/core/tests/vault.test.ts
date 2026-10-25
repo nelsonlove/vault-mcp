@@ -243,8 +243,10 @@ describe("accept-forbidden guard — module-level singleton functions (issue #10
       // varies: a closer leftover like `-` is body, so it joins the anchored
       // block and the insertion goes ahead of it. Asserting the position would
       // pin an unrelated decision.)
-      assert.ok(after.includes("inserted\n"), `insertion missing: ${JSON.stringify(after)}`);
-      assert.equal(after.replace("inserted\n", ""), input, "a body byte was lost or moved across the fence boundary");
+      // A CRLF note takes its inserted line with CRLF too (#596 round 3).
+      const inserted = name === "CRLF" ? "inserted\r\n" : "inserted\n";
+      assert.ok(after.includes(inserted), `insertion missing: ${JSON.stringify(after)}`);
+      assert.equal(after.replace(inserted, ""), input, "a body byte was lost or moved across the fence boundary");
     });
   }
 });

@@ -272,8 +272,9 @@ export interface VaultBackend {
     anchor: PatchAnchor,
     op: PatchOp,
     content: string,
-    /** #443: the transport proved a whole read of this note at its current rev, so a replace past the read limit is allowed. */
-    opts?: { rangeRuleStandsAside?: boolean },
+    /** #443: the transport proved a whole read of this note at its current rev, so a replace past the read limit is allowed.
+     *  #601: `wholeSection` lets a replace on a level-1 heading through (else refused with `h1_replace`). */
+    opts?: { rangeRuleStandsAside?: boolean; wholeSection?: boolean },
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }>;
 
   // ── Write: full note ops ───────────────────────────────────────────────────

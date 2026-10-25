@@ -52,6 +52,8 @@ import {
   applyFileEdit,
   planReplaceText,
 } from "@vault-mcp/core";
+import { sectionIn, assertNotH1Replace, lineEndingOf } from "@vault-mcp/core";
+import { noteStructure, writeIfUnchanged, type MetadataSource, type WriteTarget } from "./note-structure.js";
 import { AcceptForbiddenError, acceptTransitionReason } from "./write-notes-compose.js";
 import type {
   VaultBackend,
@@ -514,34 +516,38 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
     anchor: PatchAnchor,
     op: PatchOp,
     content: string,
-    opts: { rangeRuleStandsAside?: boolean } = {},
+    opts: { rangeRuleStandsAside?: boolean; wholeSection?: boolean } = {},
   ): Promise<{ found: boolean; anchor: PatchAnchor; op: PatchOp; previous?: string }> {
     if (!relPath.endsWith(".md")) throw new Error("path must end in .md");
     // A cut read handed back as the fragment is refused first (#441).
     assertNotTruncatedRead(relPath, content);
     const file = this.app.vault.getAbstractFileByPath(relPath);
     if (!(file instanceof TFile)) throw new Error(`not found: ${relPath}`);
-    const cache = this.app.metadataCache.getFileCache(file);
     const text = await this.app.vault.read(file);
 
     let start: number;
     let end: number;
+    let headingLevel = 0;
 
+    // The positions are Obsidian's own reading of the text just read (#593):
+    // the cache describes the text Obsidian last parsed, which after a recent
+    // write is not this one. Where that reading cannot be had, the cache is
+    // used only when it still holds for this text; otherwise the call fails
+    // with cache_mismatch and nothing is written (note-structure.ts).
+    const struct = await noteStructure(
+      this.app.metadataCache as unknown as MetadataSource, file, text,
+      anchor.type === "block" ? anchor.value : undefined,
+    );
     if (anchor.type === "heading") {
-      const headings = cache?.headings ?? [];
-      const idx = headings.findIndex((h) => h.heading === anchor.value);
-      if (idx < 0) return { found: false, anchor, op };
-      const h = headings[idx];
-      start = h.position.end.offset; // just after the heading line
-      end = text.length;
-      for (let j = idx + 1; j < headings.length; j++) {
-        if (headings[j].level <= h.level) { end = headings[j].position.start.offset; break; }
-      }
+      const section = sectionIn(struct.headings, text.length, anchor.value);
+      if (!section) return { found: false, anchor, op };
+      start = section.start; // just after the heading line
+      end = section.end;
+      headingLevel = section.level;
     } else {
-      const block = cache?.blocks?.[anchor.value];
-      if (!block) return { found: false, anchor, op };
-      start = block.position.start.offset;
-      end = block.position.end.offset;
+      if (!struct.block) return { found: false, anchor, op };
+      start = struct.block.start;
+      end = struct.block.end;
     }
 
     const previous = text.slice(start, end);
@@ -552,19 +558,24 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
     if (op === "replace" && !opts.rangeRuleStandsAside) {
       assertPatchRangeRead(relPath, text.length, end, CHARACTER_LIMIT);
     }
+    // A replace on the H1 replaces the whole note (#601).
+    if (anchor.type === "heading") assertNotH1Replace(relPath, anchor.value, headingLevel, op, opts.wholeSection);
+    // The inserted text and the separators take the note's own line ending.
+    const nl = lineEndingOf(text);
+    const ins = nl === "\n" ? content : content.replace(/\r?\n/g, nl);
     let next: string;
     if (op === "replace") {
-      const body = anchor.type === "heading" ? `\n\n${content}\n` : content;
+      const body = anchor.type === "heading" ? `${nl}${nl}${ins}${nl}` : ins;
       next = text.slice(0, start) + body + text.slice(end);
     } else if (op === "prepend") {
-      const ins = anchor.type === "heading" ? `\n\n${content}` : `${content}\n`;
-      next = text.slice(0, start) + ins + text.slice(start);
+      const add = anchor.type === "heading" ? `${nl}${nl}${ins}` : `${ins}${nl}`;
+      next = text.slice(0, start) + add + text.slice(start);
     } else {
       // append: preserve any blank line before a following heading
-      const head = text.slice(0, end).replace(/\n*$/, "\n");
+      const head = text.slice(0, end).replace(/(?:\r?\n)*$/, nl);
       const tail = text.slice(end);
-      const sep = tail.length === 0 || tail.startsWith("\n") ? "\n" : "\n\n";
-      next = head + content + sep + tail;
+      const sep = tail.length === 0 || tail.startsWith("\n") || tail.startsWith("\r\n") ? nl : nl + nl;
+      next = head + ins + sep + tail;
     }
 
     // Accept-forbidden guard: a patch anchors on a heading/block and cannot
@@ -572,7 +583,9 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
     // the note that would land regardless — so the resulting frontmatter is
     // checked against the current one, and a preserved value passes untouched.
     this.guardResultingFrontmatter(this.fmOf(text), this.fmOf(next) ?? {});
-    await this.app.vault.modify(file, next);
+    // Written only if the note still holds the text the patch was placed on:
+    // an edit that landed while the place was found is never overwritten.
+    await writeIfUnchanged(this.app.vault as unknown as WriteTarget, file, text, next);
     return { found: true, anchor, op, previous };
   }
 

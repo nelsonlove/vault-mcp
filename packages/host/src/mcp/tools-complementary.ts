@@ -8,10 +8,13 @@ import {
   acceptTransitionNeedsBefore,
   executeQuickAddChoice,
   parseGuardFrontmatter,
+  sectionIn,
+  lineEndingOf,
   stripLeadingFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
 } from "@vault-mcp/core";
 import { ok, fail, codedError } from "./helpers.js";
+import { noteStructure, writeIfUnchanged, type MetadataSource, type WriteTarget } from "./note-structure.js";
 import { visiblePaths } from "../guard.js";
 import type { ServerCtx } from "./tools-core.js";
 import { quickAddChoicesFrom, runCommandRefusal, runCommandSnapshotRefusal, vaultTextReader } from "./cli-policy.js";
@@ -169,40 +172,39 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
           return ok({ path: p, found: false, inserted: true, created_note: true });
         }
 
-        const cache = app.metadataCache.getFileCache(file);
-        const headings = cache?.headings ?? [];
-        const idx = headings.findIndex((h) => h.heading === heading);
+        // The section is placed on Obsidian's own reading of the text just
+        // read (#593, note-structure.ts): never on a stale cache, and never on
+        // a guess. When no reading can be checked the call fails with
+        // cache_mismatch, so a heading Obsidian has is never added twice.
+        const text = await app.vault.read(file);
+        const { headings } = await noteStructure(app.metadataCache as unknown as MetadataSource, file, text);
+        const section = sectionIn(headings, text.length, heading);
+        const nl = lineEndingOf(text);
+        const ins = nl === "\n" ? content : content.replace(/\r?\n/g, nl);
 
-        if (idx < 0) {
+        if (!section) {
           if (!create_if_missing) {
             return ok({ path: p, found: false, inserted: false });
           }
           // Append heading + content to file
-          const before = await app.vault.read(file);
-          const appended = `\n## ${heading}\n\n${content}\n`;
-          guardAppendResult(before, before + appended);
-          await app.vault.append(file, appended);
+          const appended = `${nl}## ${heading}${nl}${nl}${ins}${nl}`;
+          guardAppendResult(text, text + appended);
+          // Only if the note still holds the text the heading was looked for in.
+          await writeIfUnchanged(app.vault as unknown as WriteTarget, file, text, text + appended);
           return ok({ path: p, found: false, inserted: true, created_heading: true });
         }
 
-        const text = await app.vault.read(file);
-        const h = headings[idx];
-        let sectionEnd = text.length;
-        for (let j = idx + 1; j < headings.length; j++) {
-          if (headings[j].level <= h.level) {
-            sectionEnd = headings[j].position.start.offset;
-            break;
-          }
-        }
+        const sectionEnd = section.end;
 
         // Append at the end of the section body, preserving trailing newline before next heading
-        const head = text.slice(0, sectionEnd).replace(/\n*$/, "\n");
+        const head = text.slice(0, sectionEnd).replace(/(?:\r?\n)*$/, nl);
         const tail = text.slice(sectionEnd);
-        const sep = tail.length === 0 || tail.startsWith("\n") ? "\n" : "\n\n";
-        const next = head + content + sep + tail;
+        const sep = tail.length === 0 || tail.startsWith("\n") || tail.startsWith("\r\n") ? nl : nl + nl;
+        const next = head + ins + sep + tail;
 
         guardAppendResult(text, next);
-        await app.vault.modify(file, next);
+        // Written only if the note still holds the text it was placed on.
+        await writeIfUnchanged(app.vault as unknown as WriteTarget, file, text, next);
         return ok({ path: p, found: true, inserted: true });
       } catch (e) { return fail(e); }
     }

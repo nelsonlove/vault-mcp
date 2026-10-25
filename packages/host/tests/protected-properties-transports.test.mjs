@@ -211,16 +211,15 @@ describe("obsidian_append_at_heading — declared key coverage", () => {
     return { handler: server.tools.get("obsidian_append_at_heading").handler, calls };
   }
 
-  test("a write landing inside the leading fence that introduces auto-accept is refused; nothing written", async () => {
-    const text = "---\nfoo: bar\n---\n\nbody\n";
-    const cache = {
-      headings: [
-        { heading: "H", level: 2, position: { start: { line: 1, offset: 4 } } },
-        { heading: "Next", level: 2, position: { start: { line: 2, offset: 13 } } },
-      ],
-    };
+  test("a write that closes an open leading fence and introduces auto-accept is refused; nothing written", async () => {
+    // A cache that mis-reports offsets inside the fence is no longer used
+    // (#593), so the guard is reached the way a real write reaches it: the
+    // fence is still open, and appending under `## H` closes it.
+    const text = "---\nfoo: bar\n## H\n";
+    const at = text.indexOf("## H");
+    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 2, offset: at }, end: { line: 2, offset: at + 4 } } }] };
     const { handler, calls } = aahHarness({ "N.md": { text, cache } });
-    const res = await handler({ path: "N.md", heading: "H", content: "auto-accept: all", create_if_missing: false });
+    const res = await handler({ path: "N.md", heading: "H", content: "auto-accept: all\n---", create_if_missing: false });
     assert.equal(res.isError, true);
     assert.match(res.content[0].text, /\[accept_forbidden\]/);
     assert.match(res.content[0].text, /protected property/);
@@ -229,7 +228,7 @@ describe("obsidian_append_at_heading — declared key coverage", () => {
 
   test("an ordinary body append onto a policy-carrying note SUCCEEDS (carry-forward)", async () => {
     const text = "---\nauto-accept: appends\n---\n\n## H\n\nbody\n";
-    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 4, offset: 30 } } }] };
+    const cache = { headings: [{ heading: "H", level: 2, position: { start: { line: 4, offset: 30 }, end: { line: 4, offset: 34 } } }] };
     const { handler, calls } = aahHarness({ "N.md": { text, cache } });
     const res = await handler({ path: "N.md", heading: "H", content: "more", create_if_missing: false });
     assert.notEqual(res.isError, true, res.content?.[0]?.text);

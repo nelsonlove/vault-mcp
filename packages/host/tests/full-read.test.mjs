@@ -190,7 +190,8 @@ describe("a whole read is the proof a whole-note overwrite needs", () => {
     assert.equal(refused.isError, true);
     assert.match(errText(refused), /^Error \[truncated_read\]/);
     const read = (await server.call("obsidian_read_note", { path: "Big.md", full: true })).structuredContent;
-    const ok = await server.call("obsidian_patch_note", { path: "Big.md", anchor_type: "heading", anchor: "Big", op: "replace", content: "whole rewrite", if_rev: read.rev, idempotency_key: key() });
+    // `whole_section`: the H1's section is the whole note, replaced on purpose (#601).
+    const ok = await server.call("obsidian_patch_note", { path: "Big.md", anchor_type: "heading", anchor: "Big", op: "replace", content: "whole rewrite", whole_section: true, if_rev: read.rev, idempotency_key: key() });
     assert.equal(ok.isError, undefined, errText(ok));
     assert.match(store.get("Big.md"), /# Big\n\nwhole rewrite\n$/);
   });

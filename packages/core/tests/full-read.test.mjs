@@ -177,7 +177,8 @@ describe("the whole-note rules stand aside on a proven whole read only", () => {
   test("the replace rule: patchNote with rangeRuleStandsAside lands a replace past the limit; without, refuses", async () => {
     const { backend, vaultRoot } = await fixture();
     await assert.rejects(backend.patchNote("Big.md", { type: "heading", value: "Big" }, "replace", "whole rewrite"), { code: "truncated_read" });
-    const r = await backend.patchNote("Big.md", { type: "heading", value: "Big" }, "replace", "whole rewrite", { rangeRuleStandsAside: true });
+    // `wholeSection`: the H1's section is the whole note, replaced on purpose (#601).
+    const r = await backend.patchNote("Big.md", { type: "heading", value: "Big" }, "replace", "whole rewrite", { rangeRuleStandsAside: true, wholeSection: true });
     assert.equal(r.found, true);
     const disk = await readFile(join(vaultRoot, "Big.md"), "utf8");
     assert.match(disk, /^# Big\n[\s\S]*whole rewrite/);
