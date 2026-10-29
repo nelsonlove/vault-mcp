@@ -86,11 +86,11 @@ Non-`ok`/`error` outcomes: **`"conflict"`** (a failed `if_rev` precondition — 
 returned).
 
 **`"refused"`** is written only while the `refusalLog` setting is on (#618; see
-[settings](settings.md#refusal-log)): one line per refused write call, with `code`, `codeFamily`,
-`ts`, `op`, `target`, `actor`, `durationMs`, `queueWaitMs` and `addressedAs`, and no `argsDigest`,
-`error` or `intent`. A call refused before the queue (which is otherwise not journaled) gets one;
-a call refused at dequeue gets one in place of its `error` or `conflict` record. Off, the journal
-is unchanged.
+[settings](settings.md#refusal-log)), for a write call refused before the queue: `refusal`,
+`codeFamily`, `ts`, `op`, `target` (paths capped at 120 characters), `actor`, and no `argsDigest`,
+`error`, `intent` or key; at most 20 a minute per session and code, then one `suppressed: <count>`
+line. A call refused at dequeue keeps its own record (`error`, `conflict`) as it is, and gains only
+`refusal` and `codeFamily` when its code means "refused, nothing written". Off, the journal is unchanged.
 
 ## `if_rev` — optimistic concurrency
 
