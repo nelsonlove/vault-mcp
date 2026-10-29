@@ -47,6 +47,14 @@
  *   cross-process lock worth trusting, and the FS_ALLOW_WRITES gate (fs-mode.ts)
  *   exists precisely because that residual gap remains.
  *
+ * - **The refusal log (#618), when VAULT_MCP_REFUSAL_LOG is on.** A call
+ *   refused before this kernel (the gate, the path, the write scope, the
+ *   cut-read check, the schema, the profile, a tool's own check) is journaled
+ *   here by `journalRefusal`, called from fs-mode.ts; one refused at dequeue
+ *   (the long-note rule, a tool's own `no_match`) takes the `refused` shape in
+ *   place of its `error` record. A refused record keeps no argument value.
+ *   Off, nothing changes.
+ *
  * - **No record immutability (#264).** The plugin kernel refuses non-append
  *   mutation of `record: true` notes at its dequeue closure
  *   (packages/host/src/kernel/record-guard.ts); FS mode has no metadata
@@ -69,13 +77,15 @@
  */
 
 import { appendFile, mkdir, stat } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 
 // ── Journal record shape ──────────────────────────────────────────────────────
 
-export type FsJournalOutcome = "ok" | "error";
+/** `refused` only while the refusal log is on (#618): see the header. */
+export type FsJournalOutcome = "ok" | "error" | "refused";
 
 /**
  * Who did it. Mirrors the plugin's JournalActor: `transport` is a constant
@@ -101,9 +111,14 @@ export interface FsJournalRecord {
   op: string;
   target: FsJournalTarget;
   actor: FsJournalActor;
-  argsDigest: Record<string, unknown>;
+  /** Absent only on a `refused` record, which keeps no argument value. */
+  argsDigest?: Record<string, unknown>;
   outcome: FsJournalOutcome;
   error?: string;
+  /** On a `refused` record: the error code. */
+  code?: string;
+  /** On a `refused` record: the guard stage the code belongs to (core's refusalFamily). */
+  codeFamily?: string;
   /** Handler execution only — measured from dequeue, never includes queue wait. */
   durationMs: number;
   /** Enqueue→dequeue: how long the operation waited behind other writes. */
@@ -291,6 +306,17 @@ export class FsWriteJournal {
   }
 }
 
+// ── The refusal log's per-call mark (#618) ───────────────────────────────────
+
+/**
+ * One tool call's mark, set by fs-mode.ts around a mutating handler while the
+ * refusal log is on: `journaled` turns true when the call reaches
+ * `runMutation`, which journals it whatever its outcome. A refusal that comes
+ * back with the mark still false was refused before the kernel, and fs-mode.ts
+ * journals it with `journalRefusal`. Off, no mark is set and nothing reads it.
+ */
+export const refusalCall = new AsyncLocalStorage<{ journaled: boolean }>();
+
 // ── The kernel ────────────────────────────────────────────────────────────────
 
 export interface FsWriteKernelOpts {
@@ -309,6 +335,23 @@ export interface FsWriteKernelOpts {
   journalIo?: FsJournalIo;
   /** mtime probe seam for tests. Defaults to fs.stat. */
   statMtimeMs?: (absPath: string) => Promise<number>;
+  /** The refusal log (#618): its switch and core's codes. Omitted ⇒ off. See FsRefusalPolicy. */
+  refusal?: FsRefusalPolicy;
+}
+
+/**
+ * The refusal log's switch and rules (#618), handed in by fs-mode.ts
+ * (`refusalPolicy`) rather than imported here: this module imports nothing
+ * from @vault-mcp/core, whose vault functions bind VAULT_PATH when it is first
+ * loaded, so a test that loads this module first must not pin the vault root.
+ */
+export interface FsRefusalPolicy {
+  /** Read per call; a throw reads as off. */
+  on: () => boolean;
+  /** The refusal code of a thrown value, or undefined when it is not a refusal (core's refusalCodeOfThrown). */
+  codeOfThrown: (error: unknown) => string | undefined;
+  /** A code's family (core's refusalFamily). */
+  family: (code: string) => string;
 }
 
 export class FsWriteKernel {
@@ -321,13 +364,43 @@ export class FsWriteKernel {
   private readonly resolvePath?: (relPath: string) => string;
   private readonly now: () => Date;
   private readonly statMtimeMs: (absPath: string) => Promise<number>;
+  private readonly refusal: FsRefusalPolicy | undefined;
 
   constructor(opts: FsWriteKernelOpts) {
+    this.refusal = opts.refusal;
     this.identity = opts.identity;
     this.resolvePath = opts.resolvePath;
     this.now = opts.now ?? (() => new Date());
     this.journal = new FsWriteJournal(opts.journalDir, this.now, opts.journalIo);
     this.statMtimeMs = opts.statMtimeMs ?? (async (abs) => (await stat(abs)).mtimeMs);
+  }
+
+  /** The refusal log's switch, read safely: a throwing read is off. */
+  refusalLogOn(): boolean {
+    try {
+      return this.refusal?.on() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private actor(): FsJournalActor {
+    return { transport: "mcp", connection: this.connection, server: { mode: "fs-fallback", ...this.identity } };
+  }
+
+  /** The one shape of a `refused` record: no argument value, no error text. */
+  private refusedRecord(ts: string, op: string, target: FsJournalTarget, code: string, durationMs: number, queueWaitMs: number): FsJournalRecord {
+    return { ts, op, target, actor: this.actor(), outcome: "refused", code, codeFamily: this.refusal?.family(code) ?? "tool", durationMs, queueWaitMs };
+  }
+
+  /**
+   * Journal a call refused BEFORE this kernel took it (#618), when the refusal
+   * log is on and the code is a refusal. Not queued: nothing is waited for.
+   * Never rejects.
+   */
+  journalRefusal(op: string, target: FsJournalTarget, code: string): Promise<void> {
+    if (!this.refusalLogOn() || this.refusal?.codeOfThrown({ code }) === undefined) return Promise.resolve();
+    return this.journal.append(this.refusedRecord(this.now().toISOString(), op, target, code, 0, 0));
   }
 
   /** mtime (ms) of a vault-relative path, or undefined (missing file, no resolver). */
@@ -358,20 +431,28 @@ export class FsWriteKernel {
     fn: () => Promise<T> | T,
   ): Promise<T> {
     const enqueuedAt = this.now().getTime();
+    // From here this call is journaled, so the refusal log's outer check must not journal it again.
+    const mark = refusalCall.getStore();
+    if (mark) mark.journaled = true;
     return this.queue.run(async () => {
       const startedAt = this.now().getTime();
       const revBefore = await this.revOf(target.path);
       let outcome: FsJournalOutcome = "ok";
       let error: string | undefined;
+      let refusedCode: string | undefined;
       try {
         return await fn();
       } catch (e) {
         outcome = "error";
         error = e instanceof Error ? e.message : String(e);
+        // The refusal log (#618): a refusal at dequeue takes the refused shape in place of this error record.
+        if (this.refusalLogOn()) refusedCode = this.refusal?.codeOfThrown(e);
         throw e;
       } finally {
         const revAfter = await this.revOf(target.path);
-        const record: FsJournalRecord = {
+        const record: FsJournalRecord = refusedCode !== undefined
+          ? this.refusedRecord(new Date(startedAt).toISOString(), op, target, refusedCode, this.now().getTime() - startedAt, startedAt - enqueuedAt)
+          : {
           ts: new Date(startedAt).toISOString(),
           op,
           target,

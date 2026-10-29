@@ -29,7 +29,7 @@ package does not, and must not, depend on `packages/host`). Journal location:
 `$VAULT_MCP_STATE_DIR`; override with `$VAULT_MCP_FS_JOURNAL_DIR`) — beside the
 server's socket state, never inside the vault tree. Record shape matches the
 plugin's `JournalRecord` field-for-field where meaningful (`ts`, `op`, `target`,
-`actor`, `argsDigest`, `outcome: ok|error`, `error`, `durationMs`,
+`actor`, `argsDigest`, `outcome: ok|error` (and `refused`, below), `error`, `durationMs`,
 `queueWaitMs`, `revBefore`/`revAfter`), with `actor.server.mode:
 "fs-fallback"` so the two streams stay jointly greppable; journal failures are
 logged and swallowed, never failing the vault op; note bodies never land.
@@ -43,6 +43,8 @@ or a second server process. A deployment opts in explicitly via
 `isFsWritesEnabled`/`FsWritesDisabledError`), and `GET /health` reports the
 current setting as `fsWritesEnabled`. A malformed or escaping path is refused in `mutate` before the FS kernel, typed `invalid_path` by `resolveInVault` over the op's `target` paths, unjournaled (#444); it runs before the op's own argument checks, so a bad path on `obsidian_delete_note` is reported before a missing `confirm`, and a bad path before a missing `.md`. Two refusals carry `Error [truncated_read]` on this transport (#441, #443): a `content` carrying the read trailer (a cut read handed back) is refused in `mutate` before the FS kernel, unjournaled; a whole-note overwrite of a note longer than the read limit is refused at dequeue, journaled, because its only proof here is the note's mtime and that must be compared where the write happens (`noteLength` resolves the path through `resolveInVault`, so a path outside the vault is never stat'ed for it). The road through the second: `obsidian_read_note` with `full: true` serves the note whole on this transport too, but no whole-note overwrite is let through here: its writes carry no `if_rev`, so nothing could tie a proof of a whole read to the caller (a per-process memory would let one client's whole read prove another client's overwrite); #446 — show the token on reads, accept it as the write's `if_rev` — is that road. The rule runs at dequeue (the length as the write meets it; a write queued ahead can push a note past the limit), journaled, with no proof standing it aside here; the cost in the critical section is a stat per overwrite, a read only above the limit in bytes. No read on this transport shows a `rev` (no `rev` hook is wired). Reads are never gated, never queued, and
 never journaled.
+
+The refusal log (#618): with `VAULT_MCP_REFUSAL_LOG` on (`isRefusalLogEnabled`, read per call; default off), every refused MUTATING call is one `outcome: "refused"` record in the FS write journal, with `code` and `codeFamily` (core's `refusal-log.ts`) and no argument value (no `argsDigest`, no `error`). `wireRefusalLog` in `fs-mode.ts` wraps the SDK's `validateToolInput` (`input_validation`) and every mutating handler; the handler runs inside `refusalCall` (an AsyncLocalStorage mark in `fs-write-kernel.ts`) that `FsWriteKernel.runMutation` sets when it takes the call, so a refusal that comes back unmarked (the gate, `invalid_path`, the write scope, the cut read, the profile, a tool's own check) is journaled by `journalRefusal`, and one the kernel took is written by the kernel in the refused shape in place of its `error` record (the long-note rule, `no_match`). Off, the handler is called directly and nothing is marked. Tests: `src/__tests__/refusal-log.test.ts`.
 
 ## Auth (dual + per-user allowlist)
 
