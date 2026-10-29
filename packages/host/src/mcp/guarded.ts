@@ -45,6 +45,7 @@ import {
   type SchemeRegistry,
 } from "../kernel/scheme/registry.js";
 import { OperationRefusedError, type OperationExecutor } from "../kernel/operations/executor.js";
+import { refusalCodeOf } from "@vault-mcp/core";
 import { extendInput, inputShapeOf, CHARACTER_LIMIT, REPLACE_TEXT_TOOL, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, NO_DIRECT_WRITES, type WholeReads } from "@vault-mcp/core";
 
 /** Guard/queue-level failure envelope: matches the `Error [code]: message` shape guardCall already emits. */
@@ -81,7 +82,7 @@ const MAX_REF = 120;
  * `plugin:dataview`, `command:editor:toggle-bold`, … — the label is the key
  * with any `_id`/`Id` suffix dropped, so no per-tool knowledge is encoded.
  */
-function refOf(args: Record<string, unknown>): string | undefined {
+export function refOf(args: Record<string, unknown>): string | undefined {
   for (const key of REF_KEYS) {
     const value = args?.[key];
     if (typeof value !== "string" || !value) continue;
@@ -521,7 +522,21 @@ export function makeGuarded(opts: GuardedOpts) {
     // other call keeps its old path (some embeds pass no actor at all).
     const callActor = def?.annotations?.readOnlyHint === false && opts.kernel ? opts.actor() : undefined;
     const callSession = callActor?.session ?? null;
-    if (!opts.executor) return runGuarded(opts, def, handler, name, args, extra, () => {}, undefined, callActor);
+    // The refusal log (#618): a mutation refused before it reached the kernel
+    // (`call.queued` still false) gets one `refused` line here; one refused at
+    // or after the queue is journaled by the kernel itself. Off: nothing.
+    const call: RefusalTrack = { queued: false };
+    const logRefusal = <T>(result: T): T => {
+      if (callActor && opts.kernel && !call.queued && opts.kernel.refusalLogOn()) {
+        const code = refusalCodeOf(result);
+        if (code !== undefined) {
+          const target = (call.args ?? args ?? {}) as Record<string, unknown>;
+          opts.kernel.journalRefusal({ op: toolName, args: target, actor: callActor, ref: refOf(target), addressedAs: call.addressedAs }, code);
+        }
+      }
+      return result;
+    };
+    if (!opts.executor) return logRefusal(await runGuarded(opts, def, handler, name, args, extra, () => {}, undefined, callActor, call));
     try {
       const { result } = await opts.executor.run(
         {
@@ -539,12 +554,12 @@ export function makeGuarded(opts: GuardedOpts) {
           // Built from the same capture, they cannot differ; if they ever do,
           // refuse rather than record one write under two sessions.
           if (callSession !== null && ctx.sessionId !== callSession) {
-            return Promise.resolve(codedError(
+            return Promise.resolve(logRefusal(codedError(
               "session_mismatch",
               `this call's operation names session ${ctx.sessionId} but its journal actor names ${callSession}; refused. ${NO_DIRECT_WRITES}`
-            ));
+            )));
           }
-          return runGuarded(opts, def, handler, name, args, extra, mark, ctx.setSources, callActor);
+          return runGuarded(opts, def, handler, name, args, extra, mark, ctx.setSources, callActor, call).then(logRefusal);
         }
       );
       return result;
@@ -553,10 +568,22 @@ export function makeGuarded(opts: GuardedOpts) {
       // and reaches the client in the same `Error [code]: message` envelope the
       // allowlist and the kernel already use — rather than as an exception the
       // transport would render as an unexplained failure.
-      if (e instanceof OperationRefusedError) return codedError(e.code, e.message);
+      if (e instanceof OperationRefusedError) return logRefusal(codedError(e.code, e.message));
       throw e;
     }
   };
+}
+
+/**
+ * One call's progress, for the refusal log (#618): `queued` turns true just
+ * before the kernel takes the call (from there the kernel journals it, refusal
+ * or not); `args` and `addressedAs` are the resolved forms, once known, so a
+ * refused line names the path the caller's address resolved to.
+ */
+interface RefusalTrack {
+  queued: boolean;
+  args?: Record<string, unknown>;
+  addressedAs?: Array<{ ref: string; path: string }>;
 }
 
 /**
@@ -568,7 +595,7 @@ export function makeGuarded(opts: GuardedOpts) {
  * no-op when no executor is present.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: string | undefined, args: any, extra: any, mark: (phase: "queued" | "attempted") => void, setSources: (paths: string[]) => void = () => {}, callActor?: JournalActor) {
+async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: string | undefined, args: any, extra: any, mark: (phase: "queued" | "attempted") => void, setSources: (paths: string[]) => void = () => {}, callActor?: JournalActor, call: RefusalTrack = { queued: false }) {
   // READS never enter the queue, so they are not session-liveness-checked:
   // the WP5 deliverable names dequeue and admission time, and both are
   // mutation phases. The visible consequence — an expired session can read
@@ -581,6 +608,11 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   const resolved = resolveAndGuard(args ?? {}, isMutating, opts);
   if ("blocked" in resolved) return codedError(resolved.blocked.code, resolved.blocked.message);
   const callArgs = resolved.args;
+  call.args = callArgs;
+  call.addressedAs = [
+    ...resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path })),
+    ...resolved.schemeResolved,
+  ];
   // Provenance is recorded from the RESOLVED arguments, never the raw ones. A
   // caller may address a note as `uid:019f…` or `jd:06.11`; attributing a
   // captured payload to that literal string would record a source that is not
@@ -696,6 +728,8 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // actor, the operation record names its session, and the dequeue check
   // below judges that session, not whatever is current then.
   const enqueueActor = callActor ?? opts.actor();
+  // From here the kernel journals the call, whatever its outcome.
+  call.queued = true;
   try {
     return withSyncWarning(await opts.kernel.runMutation(
       {

@@ -177,6 +177,16 @@ interface VaultMcpSettings {
    */
   enforceRecordImmutability: boolean;
   /**
+   * The refusal log (#618): journal every refused write call as one line with
+   * `outcome: "refused"`, its error `code` and its `codeFamily`, whatever
+   * stage refused it (the schema, the profile, the allowlist, the write scope,
+   * the protection, the Sync guard, the record guard, a rev conflict, the
+   * accept guard, a tool's own refusal). The line keeps no argument value, so
+   * no note text reaches it. DEFAULT OFF: off, the journal is what it was
+   * before. Read live per call.
+   */
+  refusalLog: boolean;
+  /**
    * Capture the exact bytes the host returns from a native read, so a reviewer can replay what an agent was actually shown.
    *
    * DEFAULT OFF, and it stays off until a human turns it on. Capturing note bodies writes vault content to `~/.claude/vault-mcp/observations/<vault>/` — outside the vault, outside Sync — and that is a privacy decision a plugin must not make on somebody's behalf by shipping it enabled.
@@ -330,6 +340,7 @@ const DEFAULT_SETTINGS: VaultMcpSettings = {
   modules: {},
   cliPolicy: { deny: [], allowOpaque: [], neverOpaque: [], opaqueWildcards: [], opaqueSnapshot: {} },
   enforceRecordImmutability: true,
+  refusalLog: false,
   devToolRunner: true,
   captureObservations: false,
   captureMaxBytes: 50 * 1024 * 1024,
@@ -488,6 +499,8 @@ export default class VaultMcpPlugin extends Plugin {
     // property normalization below, where a dropped malformed entry can only
     // mean more denied, never less).
     this.settings.enforceRecordImmutability = this.settings.enforceRecordImmutability !== false;
+    // Explicit opt-in, like capture: anything but a literal `true` is off.
+    this.settings.refusalLog = this.settings.refusalLog === true;
     // Explicit opt-in: anything other than a literal `true` reads as off, so a corrupt or partial settings file can never turn capture on by accident.
     this.settings.captureObservations = this.settings.captureObservations === true;
     if (typeof this.settings.captureMaxBytes !== "number" || this.settings.captureMaxBytes <= 0) {
@@ -869,6 +882,8 @@ export default class VaultMcpPlugin extends Plugin {
       new LockStore(),
       uidIndex,
     );
+    // The refusal log (#618), live per call: the setting, never a copy.
+    kernel.refusalLog = () => this.settings.refusalLog === true;
     // #435: a reload must not leave this instance's queue running. Obsidian
     // calls registered callbacks at unload; closing refuses every write still
     // waiting ("not run; safe to retry"). The write already running cannot be

@@ -863,6 +863,21 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         })
       );
 
+    // The refusal log (#618). Default OFF; a counting aid, not a guard.
+    this.lock(new Setting(containerEl), "refusalLog")
+      .setName("Journal refused calls")
+      .setDesc(
+        "Off by default. When on, every write call that a guard or a tool refuses is written to the write journal as one line " +
+          "with outcome refused, its error code and its code family, so you can count how often each guard refuses. " +
+          "The line keeps no argument values: no note text, no frontmatter values, no intent. Takes effect immediately."
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.refusalLog === true).onChange(async (value) => {
+          this.plugin.settings.refusalLog = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
     // How a note declares itself a record — the operator's convention, not the
     // plugin's (#397). Same three knobs TaskNotes gives its task identifier.
     // Its own on/off switch (#482).

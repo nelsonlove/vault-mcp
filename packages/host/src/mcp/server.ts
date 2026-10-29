@@ -27,7 +27,8 @@ import { createSyncGuard, normalizeSyncGuard, readSyncSnapshot } from "../kernel
 import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
-import { makeGuarded, resolveGuardedPath, withKernelArgs } from "./guarded.js";
+import { makeGuarded, resolveGuardedPath, withKernelArgs, refOf } from "./guarded.js";
+import { INPUT_VALIDATION_CODE, refusalCodeOf } from "@vault-mcp/core";
 import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, isProfileName, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
@@ -113,6 +114,43 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // host's tools.
   const server = new McpServer(serverInfo(ctx.pluginVersion, ctx.vaultName));
   const connectionId = `${CONN_EPOCH}-${++connSeq}`;
+
+  // ── the refusal log (#618), for refusals OUTSIDE the guard ────────────────
+  //
+  // The guard and the kernel journal what they refuse (guarded.ts, kernel/index.ts).
+  // Four refusals come before the guard sees the call: the SDK's input
+  // validation (the strict write schemas), Code Mode's own schema check, the
+  // profile's call-time check and the headless gate, plus an obsidian_write_notes
+  // item refused before its guarded write. Each is one `refused` line, for a
+  // MUTATING tool only, and only while the setting is on: off, none of this does
+  // anything but the cheap check. Read calls are not journaled, refused or not.
+  const refusalLogOn = (def: any): boolean => def?.annotations?.readOnlyHint === false && !!ctx.kernel?.refusalLogOn();
+  const journalRefused = (name: string, args: unknown, code: string): void => {
+    const target = (args && typeof args === "object" ? args : {}) as Record<string, unknown>;
+    ctx.kernel?.journalRefusal({ op: name, args: target, actor: actor(), ref: refOf(target) }, code);
+  };
+  const journalIfRefused = (name: string, def: any, args: unknown, result: unknown): void => {
+    if (!refusalLogOn(def)) return;
+    const code = refusalCodeOf(result);
+    if (code !== undefined) journalRefused(name, args, code);
+  };
+  {
+    // The SDK refuses a call that fails the tool's input schema before any
+    // handler runs. Its own method is wrapped per server, so the refusal is
+    // seen and passed on unchanged.
+    const sdk = server as any;
+    const validate = typeof sdk.validateToolInput === "function" ? sdk.validateToolInput.bind(server) : null;
+    if (validate) {
+      sdk.validateToolInput = async (tool: any, args: unknown, toolName: string) => {
+        try {
+          return await validate(tool, args, toolName);
+        } catch (e) {
+          if (refusalLogOn(tool)) journalRefused(toolName, args, INPUT_VALIDATION_CODE);
+          throw e;
+        }
+      };
+    }
+  }
 
   // Wrap registerTool so every tool handler is guarded before registration.
   // This monkeypatch fires for ALL registerTool calls that follow, including the
@@ -201,7 +239,10 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
           const mutating = def?.annotations?.readOnlyHint === false;
           const gated = (args: unknown, extra: unknown) => {
             const refused = profileCallRefusal(profile, name, mutating, args, (p) => app.vault.getAbstractFileByPath(p) !== null);
-            return refused ? codedError(refused.code, refused.message) : handler(args, extra);
+            if (!refused) return handler(args, extra);
+            const envelope = codedError(refused.code, refused.message);
+            journalIfRefused(name, def, args, envelope);
+            return envelope;
           };
           return sdkRegister(name, def, scanner ? scanner.wrap(gated, { snippets: SNIPPET_TOOLS.has(name) }) : gated);
         };
@@ -489,14 +530,19 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // HEADLESS (headless.ts): the call-time refusal sits OUTSIDE the guard, so a headless call is refused
   // before protection, the Sync guard, the queue and the journal see it (#540 review).
   const headlessMode = () => normalizeHostSettings(ctx.host?.()).headless;
-  const headlessGate = (name: string, h: any) =>
+  const headlessGate = (name: string, def: any, h: any) =>
     APP_ONLY_TOOLS.has(name) || APP_ONLY_ARGS.has(name)
-      ? (args: unknown, extra: unknown) => (appOnlyCall(name, args) && isHeadless(app, headlessMode()) ? headlessRefusal(name) : h(args, extra))
+      ? (args: unknown, extra: unknown) => {
+          if (!(appOnlyCall(name, args) && isHeadless(app, headlessMode()))) return h(args, extra);
+          const envelope = headlessRefusal(name);
+          journalIfRefused(name, def, args, envelope);
+          return envelope;
+        }
       : h;
-  const capture = makeCaptureRegister(registry, (def: any, handler: any, name: string) => headlessGate(name, guarded(def, handler, name)));
+  const capture = makeCaptureRegister(registry, (def: any, handler: any, name: string) => headlessGate(name, def, guarded(def, handler, name)));
   const register = opts.codeMode
     ? capture
-    : (name: string, def: any, handler: any) => origRegister(name, def, headlessGate(name, guarded(def, handler, name)));
+    : (name: string, def: any, handler: any) => origRegister(name, def, headlessGate(name, def, guarded(def, handler, name)));
   // withKernelArgs runs on the way in, so `if_rev` / `idempotency_key` are
   // declared on every mutating tool's schema — in both modes, and for external
   // tools too — without any registrar knowing they exist. Undeclared arguments
@@ -803,6 +849,8 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // Not registered in Code Mode: that surface is the three meta-tools only, and
   // a session there reaches single writes via obsidian_call_tool.
   if (!opts.codeMode) {
+    // The tool name a refused item's journal line carries (the refusal log, #618).
+    const WRITE_NOTES_OP = "obsidian_write_notes";
     const RW = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
     const guardedWrite = guarded(
       { title: "write one note", inputSchema: {}, annotations: RW },
@@ -825,6 +873,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
       parseYaml,
       mintUid: (createdMs) => uuidv7(createdMs),
       formatTs: formatLocalTimestamp,
+      onRefused: (path, code) => {
+        if (ctx.kernel?.refusalLogOn()) journalRefused(WRITE_NOTES_OP, { path }, code);
+      },
     });
   }
 
@@ -839,7 +890,9 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     // deliberately LEFT INSTALLED: any post-build registration still lands in
     // the registry, guarded — the "every registerTool call is guarded" locked
     // invariant holds in both modes for the server's whole lifetime.
-    registerCodeModeTools(server, registry, origRegister);
+    registerCodeModeTools(server, registry, origRegister, (name, def, args) => {
+      if (refusalLogOn(def)) journalRefused(name, args, INPUT_VALIDATION_CODE);
+    });
   }
   // Hand the captured registry to the caller AFTER every registrar above has
   // run, so a registry-only consumer (the dev tool-runner) sees the complete

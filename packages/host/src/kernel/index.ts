@@ -34,12 +34,14 @@ import {
   type JournalActor,
   type JournalEffects,
   type JournalOutcome,
+  type JournalRecord,
   type JournalTarget,
 } from "./journal.js";
 import { argsHashOf, fingerprintArgs, IdempotencyMismatchError, IdempotencyStore, type IdempotencySettlement } from "./idempotency.js";
 import { holderOf, lockNoticeText, LockStore, expiresInSeconds, type Lock, type LockNotice } from "./locks.js";
 import { recordImmutableRefusal } from "./record-guard.js";
 import type { UidIndex } from "./uid-index.js";
+import { refusalCodeOf, refusalCodeOfThrown, refusalFamily } from "@vault-mcp/core";
 
 export { WriteQueue, WriteTimeoutError, WRITE_TIMEOUT_MS } from "./write-queue.js";
 export type { LateSettlement } from "./write-queue.js";
@@ -271,6 +273,20 @@ export interface MutationContext {
   effectsOf?: (result: unknown) => JournalEffects | undefined;
 }
 
+/**
+ * A call refused before it reached the write queue, for the refusal log
+ * (#618): what the record says about it. `args` only feeds the target (the
+ * paths it names, through the same walker as every other record); no
+ * argument value is recorded.
+ */
+export interface RefusalContext {
+  op: string;
+  args: Record<string, unknown>;
+  actor: JournalActor;
+  ref?: string;
+  addressedAs?: Array<{ ref: string; path: string }>;
+}
+
 // A batch move can name 100 paths; the journal records the shape, not the payload.
 const MAX_JOURNALED_PATHS = 20;
 const MAX_JOURNALED_ERROR = 500;
@@ -374,6 +390,76 @@ export class Kernel {
   ) {}
 
   /**
+   * The refusal log (#618): whether each refused call gets one `refused`
+   * journal line. OFF unless the host wires it to its `refusalLog` setting
+   * (main.ts), read live per call; off, every record is what it was before.
+   */
+  refusalLog: () => boolean = () => false;
+
+  /** The switch, read safely: a throwing settings read is off, never a failed call. */
+  refusalLogOn(): boolean {
+    try {
+      return this.refusalLog() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Journal a call refused BEFORE the queue (the strict schema, the profile,
+   * the allowlist, the write scope, the protection, the Sync guard, …), when
+   * the refusal log is on. A no-op when it is off, when the code is not a
+   * refusal, or with no journal. Never throws.
+   */
+  journalRefusal(rc: RefusalContext, code: string): void {
+    if (!this.journal || !this.refusalLogOn()) return;
+    if (refusalCodeOfThrown({ code }) === undefined) return;
+    try {
+      void this.journal.append(
+        this.refusedRecord(
+          { ts: new Date().toISOString(), op: rc.op, target: this.withUid(this.resolveTarget(rc.args, rc.ref)), actor: rc.actor, durationMs: 0, queueWaitMs: 0, addressedAs: rc.addressedAs },
+          code
+        )
+      );
+    } catch (e) {
+      console.error("[vault-mcp] refusal journal failed", e);
+    }
+  }
+
+  /**
+   * The one shape of a `refused` record, for both stages: the stamp, the
+   * operation, the target, the actor (and its session), the timings, the
+   * address forms, the code and its family. Nothing from the arguments beyond
+   * the paths: no argsDigest, no error text (a message may quote the note), no
+   * intent, no idempotency key.
+   */
+  private refusedRecord(
+    base: {
+      ts: string;
+      op: string;
+      target: JournalTarget;
+      actor: JournalActor;
+      durationMs: number;
+      queueWaitMs: number;
+      addressedAs?: Array<{ ref: string; path: string }>;
+    },
+    code: string
+  ): JournalRecord {
+    return {
+      ts: base.ts,
+      op: base.op,
+      target: base.target,
+      actor: base.actor,
+      outcome: "refused",
+      code,
+      codeFamily: refusalFamily(code),
+      durationMs: base.durationMs,
+      queueWaitMs: base.queueWaitMs,
+      ...(base.addressedAs !== undefined && base.addressedAs.length > 0 ? { addressedAs: base.addressedAs.slice(0, MAX_JOURNALED_PATHS) } : {}),
+    };
+  }
+
+  /**
    * Run one mutating operation: serialized behind every other mutating
    * operation on this plugin instance, and journaled exactly once.
    *
@@ -422,7 +508,16 @@ export class Kernel {
           claim.firstIfRev,
           mc.ifRev
         );
-        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message });
+        if (this.journal && this.refusalLogOn()) {
+          void this.journal.append(
+            this.refusedRecord(
+              { ts: new Date().toISOString(), op: mc.op, target: this.withUid(this.resolveTarget(mc.args, mc.ref)), actor: mc.actor, durationMs: 0, queueWaitMs: 0, addressedAs: mc.addressedAs },
+              mismatch.code
+            )
+          );
+        } else {
+          this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message });
+        }
         throw mismatch;
       }
       if (claim.kind === "replay") {
@@ -593,12 +688,24 @@ export class Kernel {
       // never said what it touched, and the record must not guess.
       const effects = settled !== undefined ? safeEffects(mc, settled.value) : undefined;
       ts = new Date().toISOString();
+      // The refusal log (#618): a call a guard or the tool refused at dequeue
+      // (a conflict, a record, a tool's own `Error [code]`) is journaled in the
+      // `refused` shape in place of its `error` / `conflict` record, so it is
+      // still one line. Off, or not a refusal: the record below, as before.
+      const refusedCode =
+        outcome === "ok" || !this.journal || !this.refusalLogOn()
+          ? undefined
+          : settled !== undefined
+            ? refusalCodeOf(settled.value)
+            : refusalCodeOfThrown(thrown?.error);
       // Fire-and-forget: WriteJournal.append never rejects, and the operation's
       // result must not wait on (or be affected by) the audit write. Appended
       // BEFORE the key is settled, so this record always precedes the `deduped`
       // records of the waiters that name it (the journal chains appends in call
       // order, and waiters only wake a microtask later).
-      void this.journal?.append({
+      if (refusedCode !== undefined) {
+        void this.journal?.append(this.refusedRecord({ ts, op: mc.op, target, actor: mc.actor, durationMs, queueWaitMs, addressedAs: mc.addressedAs }, refusedCode));
+      } else void this.journal?.append({
         ts,
         op: mc.op,
         target,
