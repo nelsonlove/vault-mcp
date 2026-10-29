@@ -41,7 +41,8 @@ import { argsHashOf, fingerprintArgs, IdempotencyMismatchError, IdempotencyStore
 import { holderOf, lockNoticeText, LockStore, expiresInSeconds, type Lock, type LockNotice } from "./locks.js";
 import { recordImmutableRefusal } from "./record-guard.js";
 import type { UidIndex } from "./uid-index.js";
-import { isDequeueRefusal, refusalCodeOf, refusalCodeOfThrown, refusalFamily, refusalPath, RefusalRateLimiter } from "@vault-mcp/core";
+import type { RefusalSummary } from "@vault-mcp/core";
+import { isDequeueRefusal, isReadBranch, refusalCodeOf, refusalCodeOfThrown, refusalFamily, refusalPath, RefusalRateLimiter } from "@vault-mcp/core";
 
 export { WriteQueue, WriteTimeoutError, WRITE_TIMEOUT_MS } from "./write-queue.js";
 export type { LateSettlement } from "./write-queue.js";
@@ -401,8 +402,14 @@ export class Kernel {
   refusalLimiter: RefusalRateLimiter = new RefusalRateLimiter();
 
   /** The code that marks a DEQUEUE record, or undefined: the log is on and the code is on core's DEQUEUE_REFUSALS. */
-  private dequeueRefusal(code: string | undefined): { refusal: string; codeFamily: string } | Record<string, never> {
+  /** The `suppressed` line of a window that ended: built from the window's summary only. */
+  private readonly flushSuppressed = (s: RefusalSummary, count: number): void => {
+    void this.journal?.append({ ts: new Date().toISOString(), op: s.op, target: {}, actor: s.actor as JournalActor, outcome: "refused", refusal: s.refusal, codeFamily: s.codeFamily, suppressed: count, durationMs: 0, queueWaitMs: 0 });
+  };
+
+  private dequeueRefusal(code: string | undefined, mc?: MutationContext): { refusal: string; codeFamily: string } | Record<string, never> {
     if (!isDequeueRefusal(code) || !this.journal || !this.refusalLogOn()) return {};
+    if (mc && isReadBranch(mc.op, mc.args)) return {};
     return { refusal: code, codeFamily: refusalFamily(code) };
   }
 
@@ -425,12 +432,12 @@ export class Kernel {
     const journal = this.journal;
     if (!journal || !this.refusalLogOn()) return;
     if (refusalCodeOfThrown({ code }) === undefined) return;
+    // A write tool's read branch (a frontmatter get) is a read: a refused read is not marked.
+    if (isReadBranch(rc.op, rc.args)) return;
     try {
       const key = `${rc.actor.session ?? rc.actor.connection}|${code}`;
-      const flush = (count: number) => {
-        void journal.append({ ts: new Date().toISOString(), op: rc.op, target: {}, actor: rc.actor, outcome: "refused", refusal: code, codeFamily: refusalFamily(code), suppressed: count, durationMs: 0, queueWaitMs: 0 });
-      };
-      if (!this.refusalLimiter.admit(key, flush)) return;
+      // The window keeps this summary only, never rc.args (#619 review 2).
+      if (!this.refusalLimiter.admit(key, { op: rc.op, actor: rc.actor, refusal: code, codeFamily: refusalFamily(code) }, this.flushSuppressed)) return;
       const target = this.capTarget(this.withUid(this.resolveTarget(rc.args, rc.ref)));
       void journal.append({
         ts: new Date().toISOString(),
@@ -513,7 +520,7 @@ export class Kernel {
           claim.firstIfRev,
           mc.ifRev
         );
-        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message, ...this.dequeueRefusal(mismatch.code) });
+        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message, ...this.dequeueRefusal(mismatch.code, mc) });
         throw mismatch;
       }
       if (claim.kind === "replay") {
@@ -692,7 +699,7 @@ export class Kernel {
       const refusal =
         outcome === "ok"
           ? {}
-          : this.dequeueRefusal(settled !== undefined ? refusalCodeOf(settled.value) : refusalCodeOfThrown(thrown?.error));
+          : this.dequeueRefusal(settled !== undefined ? refusalCodeOf(settled.value) : refusalCodeOfThrown(thrown?.error), mc);
       // Fire-and-forget: WriteJournal.append never rejects, and the operation's
       // result must not wait on (or be affected by) the audit write. Appended
       // BEFORE the key is settled, so this record always precedes the `deduped`
