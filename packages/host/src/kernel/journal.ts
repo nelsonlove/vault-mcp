@@ -33,13 +33,12 @@ import type { ServerIdentity } from "./install-id.js";
  * returned the original call's result without executing anything, and
  * `dedupeOf` names the `ts` of the record it replays.
  *
- * `refused` is written only while the `refusalLog` setting is on (#618): a
- * guard or a tool refused the call and nothing was written. The record carries
- * `code` and `codeFamily` and no argument value (no `argsDigest`, `error` or
- * `intent`). A refusal at dequeue that is journaled anyway (a conflict, a
- * record guard, a tool's own refusal) takes this shape in place of its
- * `error` / `conflict` record, so each refused call is still one line. Off,
- * those stay `error` / `conflict` as before and nothing else is written.
+ * `refused` is written only while the `refusalLog` setting is on (#618), for
+ * a call refused BEFORE the queue (nothing ran, no key was taken): `refusal`
+ * and `codeFamily`, capped paths, and no argument value (no `argsDigest`,
+ * `error` or `intent`). A call refused at dequeue keeps its own record
+ * (`error` / `conflict`) unchanged and gains only `refusal` and `codeFamily`,
+ * for a code on core's DEQUEUE_REFUSALS. Off, nothing is added.
  */
 export type JournalOutcome = "ok" | "error" | "late-ok" | "late-error" | "conflict" | "deduped" | "refused";
 
@@ -122,10 +121,12 @@ export interface JournalRecord {
   argsDigest?: Record<string, unknown>;
   outcome: JournalOutcome;
   error?: string;
-  /** On a `refused` record: the error code, e.g. `rev_conflict`. */
-  code?: string;
-  /** On a `refused` record: the guard stage the code belongs to, e.g. `rev` (core's refusalFamily). */
+  /** The refusal log (#618): the refusal's error code, e.g. `rev_conflict`, on a `refused` record or a dequeue record it marks. */
+  refusal?: string;
+  /** With `refusal`: the guard stage the code belongs to, e.g. `rev` (core's refusalFamily). */
   codeFamily?: string;
+  /** On a `refused` record only: how many more refusals of this code and session the cap left out of the window that just ended. */
+  suppressed?: number;
   /** Handler execution only — measured from dequeue, so it never includes queue wait. */
   durationMs: number;
   /** Enqueue→dequeue: how long the operation waited behind other writes. */

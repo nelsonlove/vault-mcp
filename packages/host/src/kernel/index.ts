@@ -41,7 +41,7 @@ import { argsHashOf, fingerprintArgs, IdempotencyMismatchError, IdempotencyStore
 import { holderOf, lockNoticeText, LockStore, expiresInSeconds, type Lock, type LockNotice } from "./locks.js";
 import { recordImmutableRefusal } from "./record-guard.js";
 import type { UidIndex } from "./uid-index.js";
-import { refusalCodeOf, refusalCodeOfThrown, refusalFamily } from "@vault-mcp/core";
+import { isDequeueRefusal, refusalCodeOf, refusalCodeOfThrown, refusalFamily, refusalPath, RefusalRateLimiter } from "@vault-mcp/core";
 
 export { WriteQueue, WriteTimeoutError, WRITE_TIMEOUT_MS } from "./write-queue.js";
 export type { LateSettlement } from "./write-queue.js";
@@ -390,11 +390,21 @@ export class Kernel {
   ) {}
 
   /**
-   * The refusal log (#618): whether each refused call gets one `refused`
-   * journal line. OFF unless the host wires it to its `refusalLog` setting
-   * (main.ts), read live per call; off, every record is what it was before.
+   * The refusal log (#618): whether refused calls are marked in the journal
+   * (see core's refusal-log.ts for the two kinds of mark). OFF unless the host
+   * wires it to its `refusalLog` setting (main.ts), read live per call; off,
+   * every record is what it was before and no line is added.
    */
   refusalLog: () => boolean = () => false;
+
+  /** The cap on NEW refused lines, per session and code (core's RefusalRateLimiter). Replaceable in tests. */
+  refusalLimiter: RefusalRateLimiter = new RefusalRateLimiter();
+
+  /** The code that marks a DEQUEUE record, or undefined: the log is on and the code is on core's DEQUEUE_REFUSALS. */
+  private dequeueRefusal(code: string | undefined): { refusal: string; codeFamily: string } | Record<string, never> {
+    if (!isDequeueRefusal(code) || !this.journal || !this.refusalLogOn()) return {};
+    return { refusal: code, codeFamily: refusalFamily(code) };
+  }
 
   /** The switch, read safely: a throwing settings read is off, never a failed call. */
   refusalLogOn(): boolean {
@@ -412,50 +422,45 @@ export class Kernel {
    * refusal, or with no journal. Never throws.
    */
   journalRefusal(rc: RefusalContext, code: string): void {
-    if (!this.journal || !this.refusalLogOn()) return;
+    const journal = this.journal;
+    if (!journal || !this.refusalLogOn()) return;
     if (refusalCodeOfThrown({ code }) === undefined) return;
     try {
-      void this.journal.append(
-        this.refusedRecord(
-          { ts: new Date().toISOString(), op: rc.op, target: this.withUid(this.resolveTarget(rc.args, rc.ref)), actor: rc.actor, durationMs: 0, queueWaitMs: 0, addressedAs: rc.addressedAs },
-          code
-        )
-      );
+      const key = `${rc.actor.session ?? rc.actor.connection}|${code}`;
+      const flush = (count: number) => {
+        void journal.append({ ts: new Date().toISOString(), op: rc.op, target: {}, actor: rc.actor, outcome: "refused", refusal: code, codeFamily: refusalFamily(code), suppressed: count, durationMs: 0, queueWaitMs: 0 });
+      };
+      if (!this.refusalLimiter.admit(key, flush)) return;
+      const target = this.capTarget(this.withUid(this.resolveTarget(rc.args, rc.ref)));
+      void journal.append({
+        ts: new Date().toISOString(),
+        op: rc.op,
+        target,
+        actor: rc.actor,
+        outcome: "refused",
+        refusal: code,
+        codeFamily: refusalFamily(code),
+        durationMs: 0,
+        queueWaitMs: 0,
+        ...(rc.addressedAs !== undefined && rc.addressedAs.length > 0
+          ? { addressedAs: rc.addressedAs.slice(0, MAX_JOURNALED_PATHS).map((a) => ({ ref: refusalPath(a.ref), path: refusalPath(a.path) })) }
+          : {}),
+      });
     } catch (e) {
       console.error("[vault-mcp] refusal journal failed", e);
     }
   }
 
   /**
-   * The one shape of a `refused` record, for both stages: the stamp, the
-   * operation, the target, the actor (and its session), the timings, the
-   * address forms, the code and its family. Nothing from the arguments beyond
-   * the paths: no argsDigest, no error text (a message may quote the note), no
-   * intent, no idempotency key.
+   * A refused call's target with every path capped (core's refusalPath): its
+   * args were never checked, so a value under a path key may hold anything.
    */
-  private refusedRecord(
-    base: {
-      ts: string;
-      op: string;
-      target: JournalTarget;
-      actor: JournalActor;
-      durationMs: number;
-      queueWaitMs: number;
-      addressedAs?: Array<{ ref: string; path: string }>;
-    },
-    code: string
-  ): JournalRecord {
+  private capTarget(t: JournalTarget): JournalTarget {
     return {
-      ts: base.ts,
-      op: base.op,
-      target: base.target,
-      actor: base.actor,
-      outcome: "refused",
-      code,
-      codeFamily: refusalFamily(code),
-      durationMs: base.durationMs,
-      queueWaitMs: base.queueWaitMs,
-      ...(base.addressedAs !== undefined && base.addressedAs.length > 0 ? { addressedAs: base.addressedAs.slice(0, MAX_JOURNALED_PATHS) } : {}),
+      ...t,
+      ...(t.path !== undefined ? { path: refusalPath(t.path) } : {}),
+      ...(t.paths !== undefined ? { paths: t.paths.map(refusalPath) } : {}),
+      ...(t.ref !== undefined ? { ref: refusalPath(t.ref) } : {}),
     };
   }
 
@@ -508,16 +513,7 @@ export class Kernel {
           claim.firstIfRev,
           mc.ifRev
         );
-        if (this.journal && this.refusalLogOn()) {
-          void this.journal.append(
-            this.refusedRecord(
-              { ts: new Date().toISOString(), op: mc.op, target: this.withUid(this.resolveTarget(mc.args, mc.ref)), actor: mc.actor, durationMs: 0, queueWaitMs: 0, addressedAs: mc.addressedAs },
-              mismatch.code
-            )
-          );
-        } else {
-          this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message });
-        }
+        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message, ...this.dequeueRefusal(mismatch.code) });
         throw mismatch;
       }
       if (claim.kind === "replay") {
@@ -688,24 +684,21 @@ export class Kernel {
       // never said what it touched, and the record must not guess.
       const effects = settled !== undefined ? safeEffects(mc, settled.value) : undefined;
       ts = new Date().toISOString();
-      // The refusal log (#618): a call a guard or the tool refused at dequeue
-      // (a conflict, a record, a tool's own `Error [code]`) is journaled in the
-      // `refused` shape in place of its `error` / `conflict` record, so it is
-      // still one line. Off, or not a refusal: the record below, as before.
-      const refusedCode =
-        outcome === "ok" || !this.journal || !this.refusalLogOn()
-          ? undefined
-          : settled !== undefined
-            ? refusalCodeOf(settled.value)
-            : refusalCodeOfThrown(thrown?.error);
+      // The refusal log (#618): a call refused at dequeue keeps its record
+      // exactly as it is (key, argsHash, returned, revs, effects), and gains
+      // only `refusal` and `codeFamily`, and only for a code on core's
+      // DEQUEUE_REFUSALS ("refused, nothing written"). Any other code, a
+      // failure after a write above all, gains nothing. Off: nothing.
+      const refusal =
+        outcome === "ok"
+          ? {}
+          : this.dequeueRefusal(settled !== undefined ? refusalCodeOf(settled.value) : refusalCodeOfThrown(thrown?.error));
       // Fire-and-forget: WriteJournal.append never rejects, and the operation's
       // result must not wait on (or be affected by) the audit write. Appended
       // BEFORE the key is settled, so this record always precedes the `deduped`
       // records of the waiters that name it (the journal chains appends in call
       // order, and waiters only wake a microtask later).
-      if (refusedCode !== undefined) {
-        void this.journal?.append(this.refusedRecord({ ts, op: mc.op, target, actor: mc.actor, durationMs, queueWaitMs, addressedAs: mc.addressedAs }, refusedCode));
-      } else void this.journal?.append({
+      void this.journal?.append({
         ts,
         op: mc.op,
         target,
@@ -721,6 +714,7 @@ export class Kernel {
         ...(effects !== undefined ? { effects } : {}),
         ...this.preconditionFields(mc),
         ...(mc.idempotencyKey !== undefined && settled !== undefined ? { returned: true } : {}),
+        ...refusal,
       });
       // Release the key: waiters adopt this outcome verbatim, and only now does
       // the store decide the key's future. A RETURNED envelope (success or a
@@ -770,7 +764,7 @@ export class Kernel {
     mc: MutationContext,
     argsDigest: Record<string, unknown>,
     outcome: JournalOutcome,
-    extra: { error?: string; dedupeOf?: string } = {}
+    extra: { error?: string; dedupeOf?: string; refusal?: string; codeFamily?: string } = {}
   ): void {
     void this.journal?.append({
       ts: new Date().toISOString(),
@@ -792,6 +786,7 @@ export class Kernel {
         ? { addressedAs: mc.addressedAs.slice(0, MAX_JOURNALED_PATHS) }
         : {}),
       ...(mc.syncWarning !== undefined ? { syncWarning: mc.syncWarning.slice(0, MAX_JOURNALED_ERROR) } : {}),
+      ...(extra.refusal !== undefined ? { refusal: extra.refusal, codeFamily: extra.codeFamily } : {}),
     });
   }
 

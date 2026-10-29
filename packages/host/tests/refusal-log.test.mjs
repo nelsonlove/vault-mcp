@@ -1,7 +1,9 @@
 /**
- * The refusal log (#618): with the `refusalLog` setting on, every refused write call is one journal
- * line with `outcome: "refused"`, its `code` and `codeFamily`, and no argument value. Off, the journal
- * is what it was before. Built through the REAL server wiring (buildMcpServer, the guard, the kernel)
+ * The refusal log (#618): with the `refusalLog` setting on, a write call refused before the queue is
+ * one new journal line (`outcome: "refused"`, `refusal`, `codeFamily`, capped paths, no argument
+ * value, capped per session and code); one refused at dequeue keeps its own record unchanged and gains
+ * only `refusal` and `codeFamily`, for a code known to mean "refused, nothing written". Off, the
+ * journal is what it was before. Built through the REAL server wiring (buildMcpServer, the guard, the kernel)
  * over an MCP client, plus the guard alone for the stages a fake vault cannot reach (the Sync guard).
  * The notes, paths and markers are made up.
  */
@@ -14,9 +16,10 @@ const { TFile, TFolder } = await import("obsidian");
 const { buildMcpServer } = await import("../src/mcp/server.ts");
 const { makeGuarded } = await import("../src/mcp/guarded.ts");
 const { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore } = await import("../src/kernel/index.ts");
+const { seedFromJournal } = await import("../src/kernel/idempotency.ts");
 const { checkOverride, overridePaths } = await import("../src/local-settings.ts");
 const VaultMcpPlugin = (await import("../src/main.ts")).default;
-const { setDeclaredProtectedProperties, DEFAULT_PROTECTED_PROPERTIES, truncationTrailer, CHARACTER_LIMIT, refusalFamily, refusalCodeOf, refusalCodeOfThrown } = await import("@vault-mcp/core");
+const { setDeclaredProtectedProperties, DEFAULT_PROTECTED_PROPERTIES, truncationTrailer, CHARACTER_LIMIT, refusalFamily, refusalCodeOf, refusalCodeOfThrown, RefusalRateLimiter, REFUSAL_LOG_MAX_PER_WINDOW, REFUSAL_LOG_WINDOW_MS } = await import("@vault-mcp/core");
 const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 
@@ -116,12 +119,12 @@ const LONG = "---\ntitle: Long\n---\n" + "x".repeat(CHARACTER_LIMIT + 10) + "\n"
 const VAULT = { "Notes/Plan.md": NOTE, "Notes/Rec.md": NOTE, "Notes/Long.md": LONG, "Other/O.md": NOTE };
 
 /** The keys a refused line may carry: what the journal keeps for a write, minus every argument value. */
-const REFUSED_KEYS = new Set(["ts", "op", "target", "actor", "outcome", "code", "codeFamily", "durationMs", "queueWaitMs", "addressedAs"]);
+const REFUSED_KEYS = new Set(["ts", "op", "target", "actor", "outcome", "refusal", "codeFamily", "durationMs", "queueWaitMs", "addressedAs"]);
 
 function assertRefusedShape(line) {
   assert.equal(line.outcome, "refused");
-  assert.equal(typeof line.code, "string");
-  assert.equal(line.codeFamily, refusalFamily(line.code));
+  assert.equal(typeof line.refusal, "string");
+  assert.equal(line.codeFamily, refusalFamily(line.refusal));
   for (const k of Object.keys(line)) assert.ok(REFUSED_KEYS.has(k), `a refused line carries '${k}'`);
   assert.equal(line.actor.transport, "mcp");
 }
@@ -148,7 +151,7 @@ const STAGES = [
   { name: "read-limit proof at dequeue (a whole overwrite of a long note)", tool: "obsidian_write_note", args: (h) => ({ path: "Notes/Long.md", content: MARK, overwrite: true, if_rev: h.mtime("Notes/Long.md"), intent: MARK }), expect: "truncated_read", stage: "dequeue" },
 ];
 
-describe("refusalLog on: one refused line per refused call, at every stage", () => {
+describe("refusalLog on: one mark per refused call, at every stage", () => {
   for (const s of STAGES) {
     test(s.name, async () => {
       const h = await harness(VAULT, { on: true, settings: s.settings, records: s.records, opts: s.opts, leaves: s.leaves });
@@ -156,21 +159,35 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
       const text = errText(r);
       if (s.expect === "input_validation") assert.match(text, /Input validation error|Unrecognized key/i, text);
       else assert.match(text, new RegExp(`Error \\[${s.expect}\\]`), text);
-      const refused = (await h.lines()).filter((l) => l.outcome === "refused");
-      assert.equal(refused.length, 1, JSON.stringify(await h.lines()));
-      assertRefusedShape(refused[0]);
-      assert.equal(refused[0].code, s.expect);
-      assert.equal(refused[0].op, s.tool);
-      // Nothing else was journaled for the call: the refused line replaces, never adds.
-      assert.equal((await h.lines()).length, 1);
-      const raw = await h.raw();
-      assert.ok(!raw.includes(MARK), `the content marker reached the journal: ${raw}`);
-      assert.ok(!raw.includes(TOKEN), `a token reached the journal: ${raw}`);
+      const lines = await h.lines();
+      // One line for the call either way: a new refused line, or the dequeue record with its mark.
+      assert.equal(lines.length, 1, JSON.stringify(lines));
+      const [line] = lines;
+      assert.equal(line.refusal, s.expect);
+      assert.equal(line.codeFamily, refusalFamily(s.expect));
+      assert.equal(line.op, s.tool);
+      if (line.outcome === "refused") {
+        assert.notEqual(s.stage, "dequeue", "a dequeue refusal keeps its own record");
+        assertRefusedShape(line);
+        const raw = await h.raw();
+        assert.ok(!raw.includes(MARK), `the content marker reached the journal: ${raw}`);
+        assert.ok(!raw.includes(TOKEN), `a token reached the journal: ${raw}`);
+      } else {
+        assert.notEqual(s.stage, "pre");
+        // The dequeue record is exactly what the log off writes, plus the two mark fields.
+        const off = await harness(VAULT, { on: false, settings: s.settings, records: s.records, opts: s.opts, leaves: s.leaves });
+        await off.call(s.tool, s.args(off));
+        const [plain] = await off.lines();
+        assert.deepEqual(Object.keys(line).sort(), [...Object.keys(plain), "refusal", "codeFamily"].sort());
+        assert.equal(line.outcome, plain.outcome);
+        assert.deepEqual(line.argsDigest, plain.argsDigest);
+        await off.close();
+      }
       await h.close();
     });
   }
 
-  test("an idempotency mismatch is one refused line, with no argument value", async () => {
+  test("an idempotency mismatch keeps its error record and gains the mark", async () => {
     const h = await harness(VAULT);
     const k = key();
     const first = await h.call("obsidian_append_note", { path: "Notes/Plan.md", content: "one", idempotency_key: k });
@@ -178,11 +195,10 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     const r = await h.call("obsidian_append_note", { path: "Notes/Plan.md", content: MARK, idempotency_key: k, intent: MARK });
     assert.match(errText(r), /Error \[idempotency_mismatch\]/);
     const lines = await h.lines();
-    assert.deepEqual(lines.map((l) => l.outcome), ["ok", "refused"]);
-    assertRefusedShape(lines[1]);
-    assert.equal(lines[1].code, "idempotency_mismatch");
+    assert.deepEqual(lines.map((l) => l.outcome), ["ok", "error"]);
+    assert.equal(lines[1].refusal, "idempotency_mismatch");
     assert.equal(lines[1].codeFamily, "idempotency");
-    assert.ok(!(await h.raw()).includes(MARK));
+    assert.equal(lines[1].idempotencyKey, k, "the record keeps its key");
     await h.close();
   });
 
@@ -205,7 +221,7 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     });
     assert.ok(r.isError, errText(r));
     const refused = (await h.lines()).filter((l) => l.outcome === "refused");
-    assert.deepEqual(refused.map((l) => l.code).sort(), ["accept_forbidden", "out_of_allowlist"]);
+    assert.deepEqual(refused.map((l) => l.refusal).sort(), ["accept_forbidden", "out_of_allowlist"]);
     for (const l of refused) { assertRefusedShape(l); assert.equal(l.op, "obsidian_write_notes"); }
     assert.ok(!(await h.raw()).includes(MARK));
     await h.close();
@@ -217,7 +233,7 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     assert.ok(r.isError, JSON.stringify(r));
     const refused = (await h.lines()).filter((l) => l.outcome === "refused");
     assert.equal(refused.length, 1);
-    assert.equal(refused[0].code, "input_validation");
+    assert.equal(refused[0].refusal, "input_validation");
     assert.equal(refused[0].op, "obsidian_append_note");
     assert.ok(!(await h.raw()).includes(MARK));
     await h.close();
@@ -230,7 +246,7 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     const lines = await h.lines();
     assert.equal(lines.length, 1);
     assert.equal(lines[0].outcome, "ok");
-    assert.equal(lines[0].code, undefined);
+    assert.equal(lines[0].refusal, undefined);
     await h.close();
   });
 
@@ -250,7 +266,10 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     assert.match(errText(one), /Error \[no_match\]/);
     assert.match(errText(two), /Error \[no_match\]/);
     const lines = await h.lines();
-    assert.deepEqual(lines.map((l) => l.outcome), ["refused", "deduped"]);
+    assert.deepEqual(lines.map((l) => l.outcome), ["error", "deduped"]);
+    assert.equal(lines[0].refusal, "no_match");
+    assert.equal(lines[0].returned, true, "the refused record keeps what seeding needs");
+    assert.equal(lines[1].refusal, undefined, "a replay is not a second refusal");
     await h.close();
   });
 
@@ -263,7 +282,7 @@ describe("refusalLog on: one refused line per refused call, at every stage", () 
     await h.call("obsidian_append_note", { path: "Notes/Plan.md", content: "x" });
     const lines = await h.lines();
     assert.equal(lines.length, 1);
-    assert.equal(lines[0].code, "protection_required");
+    assert.equal(lines[0].refusal, "protection_required");
     await h.close();
   });
 });
@@ -276,7 +295,7 @@ describe("refusalLog off: the journal is what it was before", () => {
       const lines = await h.lines();
       for (const l of lines) {
         assert.notEqual(l.outcome, "refused");
-        assert.equal(l.code, undefined);
+        assert.equal(l.refusal, undefined);
         assert.equal(l.codeFamily, undefined);
       }
       if (s.stage === "pre") assert.equal(lines.length, 0, JSON.stringify(lines));
@@ -322,7 +341,7 @@ describe("the guard alone: the Sync guard", () => {
       if (!on) { assert.equal(lines.length, 0); return; }
       assert.equal(lines.length, 1);
       assertRefusedShape(lines[0]);
-      assert.equal(lines[0].code, "sync_behind");
+      assert.equal(lines[0].refusal, "sync_behind");
       assert.equal(lines[0].codeFamily, "sync");
       assert.deepEqual(lines[0].target, { path: "A.md", paths: ["A.md", "B.md"] });
       assert.equal(lines[0].actor.session, "s-1");
@@ -388,3 +407,137 @@ describe("the setting: default off, and the machine-local settings override read
     assert.notEqual(state.disk.refusalLog, true, "the machine-local value never reaches data.json");
   });
 });
+
+// ── #619 review 1 ─────────────────────────────────────────────────────────────
+
+/** A kernel over an in-memory journal; `records()` reads the keyed lines a reload would seed from. */
+function memKernel(on, store = new IdempotencyStore()) {
+  const files = new Map();
+  const adapter = { async exists(p) { return files.has(p); }, async mkdir() {}, async write(p, d) { files.set(p, d); }, async append(p, d) { files.set(p, (files.get(p) ?? "") + d); } };
+  const kernel = new Kernel(new WriteQueue(5000), new WriteJournal(adapter, "j", () => new Date()), null, store, new LockStore());
+  kernel.refusalLog = () => on;
+  const lines = async () => { await new Promise((r) => setTimeout(r, 20)); return [...files.values()].join("").split("\n").filter(Boolean).map((l) => JSON.parse(l)); };
+  return { kernel, lines };
+}
+
+/** A keyed call whose first run wrote, then returned `Error [code]`; a full restart (a fresh store seeded from the journal); the same call again. */
+async function restartScenario(on, code) {
+  let writes = 0;
+  const run = async () => { writes++; return { isError: true, content: [{ type: "text", text: `Error [${code}]: part of it was written` }] }; };
+  const mc = { op: "vaultmcp_example_tool", args: { path: "Inbox/a.md" }, actor: { transport: "mcp", connection: "c" }, idempotencyKey: `k-${code}` };
+  const first = memKernel(on);
+  await first.kernel.runMutation({ ...mc }, run);
+  const lines = await first.lines();
+  const store = new IdempotencyStore();
+  const seeded = seedFromJournal(store, lines.filter((l) => l.idempotencyKey !== undefined), Date.now());
+  const second = memKernel(on, store);
+  const replay = await second.kernel.runMutation({ ...mc }, run);
+  return { writes, seeded, lines, replay };
+}
+
+describe("a failure after a write is never marked a refusal, and replays after a restart (review 1, serious)", () => {
+  const POST_WRITE = ["dispose_partially_applied", "promote_partial", "reload_failed", "unload_failed", "dispose_failed", "create_failed"];
+  for (const code of POST_WRITE) {
+    for (const on of [false, true]) {
+      test(`${code}, log ${on ? "on" : "off"}: the record is kept whole and a same-key retry after a restart runs nothing`, async () => {
+        const r = await restartScenario(on, code);
+        assert.equal(r.writes, 1, "the write ran twice");
+        assert.equal(r.seeded, 1);
+        assert.match(r.replay.content[0].text, /^Already done/);
+        assert.equal(r.lines.length, 1);
+        const [rec] = r.lines;
+        assert.equal(rec.outcome, "error");
+        assert.equal(rec.refusal, undefined, "a call that wrote is never marked refused");
+        assert.equal(rec.idempotencyKey, `k-${code}`);
+        assert.equal(typeof rec.argsHash, "string");
+        assert.equal(rec.returned, true);
+        assert.ok(rec.argsDigest);
+      });
+    }
+  }
+
+  test("a guard or tool refusal at dequeue: on and off seed and replay the same after a restart; on adds only the mark", async () => {
+    const off = await restartScenario(false, "no_match");
+    const on = await restartScenario(true, "no_match");
+    assert.equal(off.writes, on.writes);
+    assert.equal(off.seeded, on.seeded);
+    assert.equal(off.replay.content[0].text.replace(/at \S+/, ""), on.replay.content[0].text.replace(/at \S+/, ""));
+    const strip = ({ ts, durationMs, queueWaitMs, refusal, codeFamily, ...rest }) => rest;
+    assert.deepEqual(strip(on.lines[0]), strip(off.lines[0]));
+    assert.equal(on.lines[0].refusal, "no_match");
+    assert.equal(on.lines[0].codeFamily, "tool");
+    assert.equal(off.lines[0].refusal, undefined);
+  });
+
+  test("a thrown guard refusal at dequeue (rev_conflict) keeps its conflict record and gains the mark", async () => {
+    const files = new Map();
+    const adapter = { async exists(p) { return files.has(p); }, async mkdir() {}, async write(p, d) { files.set(p, d); }, async append(p, d) { files.set(p, (files.get(p) ?? "") + d); } };
+    const k = new Kernel(new WriteQueue(5000), new WriteJournal(adapter, "j", () => new Date()), { uid: () => undefined, rev: () => 5 }, new IdempotencyStore(), new LockStore());
+    k.refusalLog = () => true;
+    await assert.rejects(k.runMutation({ op: "obsidian_replace_text", args: { path: "A.md" }, actor: { transport: "mcp", connection: "c" }, ifRev: 4, idempotencyKey: "k-rc" }, async () => ({ content: [] })), { code: "rev_conflict" });
+    await new Promise((r) => setTimeout(r, 20));
+    const [rec] = [...files.values()].join("").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert.equal(rec.outcome, "conflict");
+    assert.equal(rec.refusal, "rev_conflict");
+    assert.equal(rec.codeFamily, "rev");
+    assert.equal(rec.revBefore, 5);
+    assert.equal(rec.ifRev, 4);
+    assert.equal(rec.idempotencyKey, "k-rc");
+  });
+});
+
+describe("a path on a new refused line is capped (review 1, minor)", () => {
+  test("a body passed as `path` to a strict write tool never reaches the journal", async () => {
+    const h = await harness(VAULT);
+    const body = `${MARK} ${"y".repeat(5000)}`;
+    const r = await h.call("obsidian_append_note", { path: body, content: "x", idempotency_key: key(), bogus: 1 });
+    assert.match(errText(r), /Input validation error|Unrecognized key/i);
+    const [line] = await h.lines();
+    assert.equal(line.refusal, "input_validation");
+    assert.equal(line.target.path, `<${body.length} chars>`);
+    assert.ok(!(await h.raw()).includes(MARK));
+    await h.close();
+  });
+});
+
+describe("new refused lines are capped per session and code (review 1, minor)", () => {
+  test(`at most ${REFUSAL_LOG_MAX_PER_WINDOW} a minute; the rest are one 'suppressed' line when the window ends`, async () => {
+    let now = 1_000_000;
+    let pending = null;
+    const { kernel, lines } = memKernel(true);
+    kernel.refusalLimiter = new RefusalRateLimiter({ now: () => now, schedule: (fn) => { pending = fn; } });
+    const actor = { transport: "mcp", connection: "c", session: "s-1" };
+    for (let i = 0; i < REFUSAL_LOG_MAX_PER_WINDOW + 7; i++) kernel.journalRefusal({ op: "obsidian_append_note", args: { path: "A.md" }, actor }, "protection_required");
+    // Another code and another session have their own windows.
+    kernel.journalRefusal({ op: "obsidian_append_note", args: { path: "A.md" }, actor }, "write_scope");
+    kernel.journalRefusal({ op: "obsidian_append_note", args: { path: "A.md" }, actor: { ...actor, session: "s-2" } }, "protection_required");
+    let got = await lines();
+    assert.equal(got.filter((l) => l.refusal === "protection_required" && l.actor.session === "s-1").length, REFUSAL_LOG_MAX_PER_WINDOW);
+    assert.equal(got.length, REFUSAL_LOG_MAX_PER_WINDOW + 2);
+    assert.ok(pending, "the window's end is scheduled");
+    now += REFUSAL_LOG_WINDOW_MS;
+    pending();
+    got = await lines();
+    const sup = got.filter((l) => l.suppressed !== undefined);
+    assert.equal(sup.length, 1);
+    assert.equal(sup[0].suppressed, 7);
+    assert.equal(sup[0].refusal, "protection_required");
+    assert.equal(sup[0].outcome, "refused");
+    // A new window writes again.
+    kernel.journalRefusal({ op: "obsidian_append_note", args: { path: "A.md" }, actor }, "protection_required");
+    assert.equal((await lines()).length, REFUSAL_LOG_MAX_PER_WINDOW + 4);
+  });
+
+  test("a suppressed count is written when the next refusal opens a new window, if the timer has not run", () => {
+    let now = 0;
+    const flushed = [];
+    const lim = new RefusalRateLimiter({ max: 1, windowMs: 10, now: () => now, schedule: () => {} });
+    assert.equal(lim.admit("k", (n) => flushed.push(n)), true);
+    assert.equal(lim.admit("k", (n) => flushed.push(n)), false);
+    assert.equal(lim.admit("k", (n) => flushed.push(n)), false);
+    now = 10;
+    assert.equal(lim.admit("k", (n) => flushed.push(n)), true);
+    assert.deepEqual(flushed, [2]);
+  });
+});
+
