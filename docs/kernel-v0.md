@@ -85,6 +85,13 @@ Non-`ok`/`error` outcomes: **`"conflict"`** (a failed `if_rev` precondition — 
 (an idempotency replay, with `dedupeOf` naming the `ts` of the record whose result was
 returned).
 
+**`"refused"`** is written only while the `refusalLog` setting is on (#618; see
+[settings](settings.md#refusal-log)): one line per refused write call, with `code`, `codeFamily`,
+`ts`, `op`, `target`, `actor`, `durationMs`, `queueWaitMs` and `addressedAs`, and no `argsDigest`,
+`error` or `intent`. A call refused before the queue (which is otherwise not journaled) gets one;
+a call refused at dequeue gets one in place of its `error` or `conflict` record. Off, the journal
+is unchanged.
+
 ## `if_rev` — optimistic concurrency
 
 `obsidian_read_note` / `obsidian_read_notes` return the note's current **`rev`** (its mtime in

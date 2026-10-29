@@ -309,6 +309,19 @@ The acceptance family is a non-configurable floor. Configuration may extend it, 
 | Risk | The protective check may fail open if metadata is unavailable; side-effect rewrites remain outside its addressed-path boundary |
 | Recovery | Keep backups; disable only for a reviewed exceptional operation |
 
+### Refusal log
+
+| Field | Value |
+|---|---|
+| Key | `refusalLog` |
+| Default | Off |
+| Effect | Each write call that is refused is written to the write journal as one line with `"outcome": "refused"`, its error `code` (for example `rev_conflict`) and its `codeFamily`, the guard stage that refused it (for example `rev`). It covers these stages: the strict input schema (`input_validation`, family `schema`), the connection profile, read-only mode and the allowlist, the write scope, `uid:` and scheme address resolution, the required `if_rev` and `idempotency_key`, the cut-read and long-note rules (`truncated_read`), the Sync guard, the headless gate, the record guard, an `if_rev` conflict, an idempotency mismatch, the accept guard and the protected properties, and a tool's own refusal (`no_match`, `cache_mismatch`, `h1_replace`, and the rest; family `tool`). A refusal at dequeue that the journal recorded before (as `error` or `conflict`) is written in the refused shape in its place, so each refused call is one line. The line holds the stamp, the tool, the target path or address, the actor (with its session), the timings, the code and the family. It holds no argument value: no `argsDigest`, no error text, no `intent`, no idempotency key, so no note text, frontmatter value or token in an argument reaches it. A replay of a key (`deduped`) is not a new refusal and stays `deduped`. Read calls are not journaled, refused or not. A failure that is not a refusal (`write_timeout`, `partial`, an uncoded error) stays `error` |
+| Takes effect | Immediately |
+| Risk | More journal lines while it is on, one per refused write call. A refused call whose key replays a refusal across a full Obsidian restart is run again instead of replayed (a refused line keeps no key to seed from); it wrote nothing the first time, so the second run does not write twice |
+| Recovery | Turn it off; the lines already written stay in the journal |
+
+The filesystem server reads the same switch from the environment variable `VAULT_MCP_REFUSAL_LOG` (`true`, `1`, `yes` or `on`; unset is off) and writes the lines to its own write journal. The setting can be put in the machine-local settings override, so one machine logs refusals and the synced `data.json` stays off.
+
 ### Record identifier
 
 | Field | Value |
