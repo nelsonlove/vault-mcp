@@ -521,7 +521,7 @@ For a host with no Obsidian window, such as vaultd's headless plugin host. The b
 | Field | Value |
 |---|---|
 | Key | `host.autoRegisterClaude` |
-| Default | On |
+| Default | Off on a fresh install. An install whose saved settings predate the key keeps On; the plugin writes the key once at its next load, so the value stays. A saved value, On or Off, is kept |
 | Effect | On: at load the plugin runs `claude mcp` to add itself to Claude Code when it finds the `claude` CLI. Off, or headless declared (Headless on, or Auto with `VAULT_MCP_HEADLESS=1`), or `VAULT_MCP_NO_AUTOREGISTER=1`: it starts no `claude` process at load. The Connect to Claude Code command still works where it exists |
 | Takes effect | When the plugin next loads |
 | Risk | Off on a new Mac: Claude Code is not connected until someone runs the command |
