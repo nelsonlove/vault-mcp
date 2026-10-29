@@ -455,3 +455,5 @@ export { schemeFindings } from "./scheme/findings.js";
 export { intendedRealPath, sameFile, isInside } from "./path-identity.js";
 export { envAliased, envAliasNames } from "./env-alias.js";
 export { mapPaths, collectPaths, visiblePaths } from "./guard-paths.js";
+// The refusal log (#618): what counts as a refused call, and its code family, for both servers' journals.
+export { INPUT_VALIDATION_CODE, refusalFamily, refusalCodeOf, refusalCodeOfThrown } from "./refusal-log.js";
