@@ -456,4 +456,5 @@ export { intendedRealPath, sameFile, isInside } from "./path-identity.js";
 export { envAliased, envAliasNames } from "./env-alias.js";
 export { mapPaths, collectPaths, visiblePaths } from "./guard-paths.js";
 // The refusal log (#618): what counts as a refused call, and its code family, for both servers' journals.
-export { INPUT_VALIDATION_CODE, DEQUEUE_REFUSALS, isDequeueRefusal, refusalFamily, refusalCodeOf, refusalCodeOfThrown, RefusalRateLimiter, refusalPath, REFUSAL_PATH_MAX, REFUSAL_LOG_MAX_PER_WINDOW, REFUSAL_LOG_WINDOW_MS } from "./refusal-log.js";
+export { INPUT_VALIDATION_CODE, DEQUEUE_REFUSALS, isDequeueRefusal, refusalFamily, refusalCodeOf, refusalCodeOfThrown, RefusalRateLimiter, isReadBranch, refusalPath, REFUSAL_PATH_MAX, REFUSAL_LOG_MAX_PER_WINDOW, REFUSAL_LOG_WINDOW_MS } from "./refusal-log.js";
+export type { RefusalSummary } from "./refusal-log.js";

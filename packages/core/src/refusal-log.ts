@@ -13,7 +13,8 @@
 //   and `codeFamily`, with the stamp, the tool, the actor (and its session),
 //   the target path (each capped like the journal's digest) and no argument
 //   value: no `argsDigest`, no `error` text, no `intent`. A loop of such calls
-//   is capped per session and code (RefusalRateLimiter).
+//   is capped per session and code (per connection and code where there is
+//   no session, as on the filesystem server) by RefusalRateLimiter.
 // - A call refused AT OR AFTER dequeue already has its record. That record is
 //   never replaced or reshaped: it keeps everything it has today (its key,
 //   argsHash, returned, revs, effects), and gains only `refusal` and
@@ -78,6 +79,23 @@ export const DEQUEUE_REFUSALS: ReadonlySet<string> = new Set([
   "session_revoked",
   "plugin_unloaded",
 ]);
+
+/**
+ * Calls a write tool makes that are reads: the tool is registered as a write
+ * (its annotations say so), but this argument value takes its read branch.
+ * A refused read is not marked, on either server.
+ */
+const READ_BRANCHES: Readonly<Record<string, { arg: string; values: readonly string[] }>> = {
+  obsidian_manage_frontmatter: { arg: "op", values: ["get"] },
+};
+
+/** Whether this call of a write tool takes the tool's read branch (READ_BRANCHES): its refusal is not marked. */
+export function isReadBranch(tool: string, args: unknown): boolean {
+  const b = READ_BRANCHES[tool];
+  if (!b || args === null || typeof args !== "object") return false;
+  const v = (args as Record<string, unknown>)[b.arg];
+  return typeof v === "string" && b.values.includes(v);
+}
 
 /** Whether a code met at or after dequeue marks its record as a refusal (DEQUEUE_REFUSALS). */
 export function isDequeueRefusal(code: string | undefined): code is string {
@@ -170,19 +188,32 @@ export function refusalPath(p: string): string {
 
 // ── the cap on refused lines ─────────────────────────────────────────────────
 
-/** At most this many refused lines per session and code in one window; the rest are counted. */
+/** At most this many refused lines per key (session or connection, and code) in one window; the rest are counted. */
 export const REFUSAL_LOG_MAX_PER_WINDOW = 20;
 /** The window, in milliseconds: one minute. */
 export const REFUSAL_LOG_WINDOW_MS = 60_000;
 /** The most (session, code) windows held at once; past it the oldest windows are flushed and dropped. */
 const MAX_WINDOWS = 1000;
 
+/**
+ * What a `suppressed` line needs, and all a window keeps: the tool, the actor,
+ * the code and its family. Never the call's arguments, which may hold a note
+ * body (#619 review 2).
+ */
+export interface RefusalSummary {
+  op: string;
+  actor: unknown;
+  refusal: string;
+  codeFamily: string;
+}
+
 interface RefusalWindow {
   start: number;
   written: number;
   suppressed: number;
   scheduled: boolean;
-  flush: (count: number) => void;
+  summary: RefusalSummary;
+  flush: (summary: RefusalSummary, count: number) => void;
 }
 
 /**
@@ -191,8 +222,11 @@ interface RefusalWindow {
  * connection when there is none, and the code): the first
  * REFUSAL_LOG_MAX_PER_WINDOW in a REFUSAL_LOG_WINDOW_MS window are written; the
  * rest are counted, and when the window ends the count is written as one line
- * (`suppressed: <count>`) through the flush the first suppressed call gave.
- * In memory; a reload starts fresh. The clock and the timer are injectable.
+ * (`suppressed: <count>`) with the summary and the flush of the call that
+ * OPENED the window (a later call with the same key changes neither). A window
+ * keeps that summary only, never a call's arguments. `flushAll` writes every
+ * pending count at once, for a clean shutdown. In memory; a reload starts
+ * fresh. The clock and the timer are injectable.
  */
 export class RefusalRateLimiter {
   private readonly windows = new Map<string, RefusalWindow>();
@@ -214,10 +248,12 @@ export class RefusalRateLimiter {
   }
 
   /**
-   * Whether to write this refused line. False ⇒ it is counted, and `flush`
-   * (the line a window's count is written as) runs once when the window ends.
+   * Whether to write this refused line. False ⇒ it is counted, and the
+   * window's `flush(summary, count)` (the line its count is written as) runs
+   * once when the window ends. `summary` and `flush` are kept only from the
+   * call that opens a window.
    */
-  admit(key: string, flush: (count: number) => void): boolean {
+  admit(key: string, summary: RefusalSummary, flush: (summary: RefusalSummary, count: number) => void): boolean {
     const now = this.now();
     let w = this.windows.get(key);
     if (w && now - w.start >= this.windowMs) {
@@ -229,7 +265,7 @@ export class RefusalRateLimiter {
         const [oldestKey, oldest] = this.windows.entries().next().value as [string, RefusalWindow];
         this.close(oldestKey, oldest);
       }
-      this.windows.set(key, { start: now, written: 1, suppressed: 0, scheduled: false, flush });
+      this.windows.set(key, { start: now, written: 1, suppressed: 0, scheduled: false, summary: { op: summary.op, actor: summary.actor, refusal: summary.refusal, codeFamily: summary.codeFamily }, flush });
       return true;
     }
     if (w.written < this.max) {
@@ -237,7 +273,6 @@ export class RefusalRateLimiter {
       return true;
     }
     w.suppressed++;
-    w.flush = flush;
     if (!w.scheduled) {
       w.scheduled = true;
       const win = w;
@@ -248,13 +283,18 @@ export class RefusalRateLimiter {
     return false;
   }
 
+  /** Write every pending count now and drop every window: a clean shutdown must not lose a count. */
+  flushAll(): void {
+    for (const [key, w] of [...this.windows.entries()]) this.close(key, w);
+  }
+
   private close(key: string, w: RefusalWindow): void {
     this.windows.delete(key);
     if (w.suppressed > 0) {
       const n = w.suppressed;
       w.suppressed = 0;
       try {
-        w.flush(n);
+        w.flush(w.summary, n);
       } catch {
         /* a journal failure never fails a call */
       }
