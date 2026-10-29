@@ -1,8 +1,9 @@
 /**
  * The refusal log (#618) on the file-system server, over a real MCP client against a temp vault:
- * with VAULT_MCP_REFUSAL_LOG on, every refused write call is one line in the FS write journal with
- * `outcome: "refused"`, its `code` and `codeFamily`, and no argument value. Off, the journal is what
- * it was before. The notes, paths and markers are made up.
+ * with VAULT_MCP_REFUSAL_LOG on, a write call refused before the FS write kernel is one new line
+ * (`outcome: "refused"`, `refusal`, `codeFamily`, capped paths, no argument value, capped per code);
+ * one refused at dequeue keeps its `error` record and gains only `refusal` and `codeFamily`. Off, the
+ * journal is what it was before. The notes, paths and markers are made up.
  */
 
 import { test, describe, before, after, beforeEach } from "node:test";
@@ -50,13 +51,13 @@ beforeEach(async () => {
 });
 
 type Res = { isError?: boolean; content: Array<{ text: string }>; thrown?: string };
-type Rec = { op: string; outcome: string; code?: string; codeFamily?: string; argsDigest?: Record<string, unknown>; target?: { path?: string; paths?: string[] }; actor: { transport: string } };
+type Rec = { op: string; outcome: string; refusal?: string; codeFamily?: string; suppressed?: number; argsDigest?: Record<string, unknown>; target?: { path?: string; paths?: string[] }; actor: { transport: string } };
 
 /** One server with its own journal directory, so each test reads only its own lines. */
-async function harness(opts: { on?: boolean; allowWrites?: boolean; profile?: string } = {}) {
+async function harness(opts: { on?: boolean; allowWrites?: boolean; profile?: string; limiter?: { admit: (key: string, flush: (count: number) => void) => boolean } } = {}) {
   const dir = path.join(journalRoot, `j${++journalN}`);
   const on = opts.on ?? true;
-  const kernel: FsWriteKernel = new Kernel({ journalDir: dir, identity: { vault: "test", version: "0" }, refusal: fsMode.refusalPolicy(() => on) });
+  const kernel: FsWriteKernel = new Kernel({ journalDir: dir, identity: { vault: "test", version: "0" }, refusal: fsMode.refusalPolicy(() => on, opts.limiter as never) });
   const server = fsMode.buildFsServer({ indexStatus: false, allowWrites: opts.allowWrites ?? true, kernel, ...(opts.profile !== undefined ? { profile: opts.profile } : {}) });
   const [a, b] = InMemoryTransport.createLinkedPair();
   await server.connect(b);
@@ -83,7 +84,7 @@ async function harness(opts: { on?: boolean; allowWrites?: boolean; profile?: st
 }
 
 const text = (r: Res) => r.thrown ?? (r.isError ? r.content[0].text : "");
-const REFUSED_KEYS = new Set(["ts", "op", "target", "actor", "outcome", "code", "codeFamily", "durationMs", "queueWaitMs"]);
+const REFUSED_KEYS = new Set(["ts", "op", "target", "actor", "outcome", "refusal", "codeFamily", "durationMs", "queueWaitMs"]);
 
 interface Stage {
   name: string;
@@ -126,15 +127,21 @@ describe("VAULT_MCP_REFUSAL_LOG on: one refused line per refused call, at every 
         const lines = await h.lines();
         assert.equal(lines.length, 1, JSON.stringify(lines));
         const [line] = lines;
-        assert.equal(line.outcome, "refused");
-        assert.equal(line.code, s.expect);
+        assert.equal(line.refusal, s.expect);
         assert.equal(line.codeFamily, core.refusalFamily(s.expect));
         assert.equal(line.op, s.tool);
         assert.equal(line.actor.transport, "mcp");
-        for (const k of Object.keys(line)) assert.ok(REFUSED_KEYS.has(k), `a refused line carries '${k}'`);
-        const raw = await h.raw();
-        assert.ok(!raw.includes(MARK), `the content marker reached the journal: ${raw}`);
-        assert.ok(!raw.includes(TOKEN), `a token reached the journal: ${raw}`);
+        if (s.stage === "pre") {
+          assert.equal(line.outcome, "refused");
+          for (const k of Object.keys(line)) assert.ok(REFUSED_KEYS.has(k), `a refused line carries '${k}'`);
+          const raw = await h.raw();
+          assert.ok(!raw.includes(MARK), `the content marker reached the journal: ${raw}`);
+          assert.ok(!raw.includes(TOKEN), `a token reached the journal: ${raw}`);
+        } else {
+          // The dequeue record is kept as it is, with only the mark added.
+          assert.equal(line.outcome, "error");
+          assert.ok(line.argsDigest, "the record keeps its digest");
+        }
         await h.close();
       }),
     );
@@ -155,7 +162,7 @@ describe("VAULT_MCP_REFUSAL_LOG on: one refused line per refused call, at every 
     const lines = await h.lines();
     assert.equal(lines.length, 1);
     assert.equal(lines[0].outcome, "ok");
-    assert.equal(lines[0].code, undefined);
+    assert.equal(lines[0].refusal, undefined);
     await h.close();
   });
 
@@ -166,7 +173,7 @@ describe("VAULT_MCP_REFUSAL_LOG on: one refused line per refused call, at every 
     await h.call("obsidian_replace_text", args);
     assert.equal((await h.lines()).length, 1);
     await h.call("obsidian_replace_text", args);
-    assert.deepEqual((await h.lines()).map((l) => l.outcome), ["refused", "refused"]);
+    assert.deepEqual((await h.lines()).map((l) => [l.outcome, l.refusal]), [["error", "no_match"], ["error", "no_match"]]);
     await h.close();
   });
 
@@ -187,7 +194,7 @@ describe("VAULT_MCP_REFUSAL_LOG off: the journal is what it was before", () => {
         const lines = await h.lines();
         for (const l of lines) {
           assert.notEqual(l.outcome, "refused");
-          assert.equal(l.code, undefined);
+          assert.equal(l.refusal, undefined);
         }
         if (s.stage === "pre") assert.equal(lines.length, 0, JSON.stringify(lines));
         else {
@@ -213,3 +220,49 @@ describe("VAULT_MCP_REFUSAL_LOG off: the journal is what it was before", () => {
     assert.equal(k.refusalLogOn(), false);
   });
 });
+
+describe("review 1 of #619", () => {
+  test("a coded failure after a write is never marked refused at dequeue (serious)", async () => {
+    for (const code of ["dispose_partially_applied", "promote_partial", "reload_failed", "dispose_failed", "create_failed"]) {
+      const dir = path.join(journalRoot, `post-${code}`);
+      const k = new Kernel({ journalDir: dir, identity: { vault: "test", version: "0" }, refusal: fsMode.refusalPolicy(() => true) });
+      await assert.rejects(k.runMutation("obsidian_write_note", { path: "Notes/P.md" }, { path: "Notes/P.md", content: "x" }, async () => {
+        throw Object.assign(new Error(`Error [${code}]: part of it was written`), { code });
+      }));
+      const [rec] = (await readFile(path.join(dir, (await readdir(dir))[0]), "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l) as Rec);
+      assert.equal(rec.outcome, "error", code);
+      assert.equal(rec.refusal, undefined, code);
+      assert.ok(rec.argsDigest, code);
+    }
+  });
+
+  test("a path on a new refused line is capped (minor)", async () => {
+    const h = await harness();
+    const body = `${MARK} ${"y".repeat(5000)}`;
+    await h.call("obsidian_append_note", { path: body, content: "x", bogus: 1 });
+    const [line] = await h.lines();
+    assert.equal(line.refusal, "input_validation");
+    assert.equal(line.target?.path, `<${body.length} chars>`);
+    assert.ok(!(await h.raw()).includes(MARK));
+    await h.close();
+  });
+
+  test("new refused lines are capped per code, with one 'suppressed' line when the window ends (minor)", async () => {
+    let now = 5_000_000;
+    let pending: (() => void) | null = null;
+    const limiter = new core.RefusalRateLimiter({ now: () => now, schedule: (fn) => { pending = fn; } });
+    const h = await harness({ allowWrites: false, limiter });
+    for (let i = 0; i < core.REFUSAL_LOG_MAX_PER_WINDOW + 3; i++) await h.call("obsidian_append_note", { path: "Notes/Plan.md", content: "x" });
+    assert.equal((await h.lines()).length, core.REFUSAL_LOG_MAX_PER_WINDOW);
+    now += core.REFUSAL_LOG_WINDOW_MS;
+    assert.ok(pending);
+    (pending as () => void)();
+    await new Promise((r) => setTimeout(r, 20));
+    const sup = (await h.lines()).filter((l) => l.suppressed !== undefined);
+    assert.equal(sup.length, 1);
+    assert.equal(sup[0].suppressed, 3);
+    assert.equal(sup[0].refusal, "fs_writes_disabled");
+    await h.close();
+  });
+});
+

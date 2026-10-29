@@ -50,9 +50,11 @@
  * - **The refusal log (#618), when VAULT_MCP_REFUSAL_LOG is on.** A call
  *   refused before this kernel (the gate, the path, the write scope, the
  *   cut-read check, the schema, the profile, a tool's own check) is journaled
- *   here by `journalRefusal`, called from fs-mode.ts; one refused at dequeue
- *   (the long-note rule, a tool's own `no_match`) takes the `refused` shape in
- *   place of its `error` record. A refused record keeps no argument value.
+ *   here by `journalRefusal`, called from fs-mode.ts: a `refused` record with
+ *   capped paths and no argument value, under a per-code cap. One refused at
+ *   dequeue (the long-note rule, a tool's own `no_match`) keeps its `error`
+ *   record unchanged and gains only `refusal` and `codeFamily`, for a code on
+ *   core's DEQUEUE_REFUSALS; any other code gains nothing.
  *   Off, nothing changes.
  *
  * - **No record immutability (#264).** The plugin kernel refuses non-append
@@ -115,9 +117,11 @@ export interface FsJournalRecord {
   argsDigest?: Record<string, unknown>;
   outcome: FsJournalOutcome;
   error?: string;
-  /** On a `refused` record: the error code. */
-  code?: string;
-  /** On a `refused` record: the guard stage the code belongs to (core's refusalFamily). */
+  /** The refusal's error code, on a `refused` record or an `error` record it marks. */
+  refusal?: string;
+  /** On a `refused` record only: how many more refusals of this code the cap left out of the window that just ended. */
+  suppressed?: number;
+  /** With `refusal`: the guard stage the code belongs to (core's refusalFamily). */
   codeFamily?: string;
   /** Handler execution only — measured from dequeue, never includes queue wait. */
   durationMs: number;
@@ -352,6 +356,12 @@ export interface FsRefusalPolicy {
   codeOfThrown: (error: unknown) => string | undefined;
   /** A code's family (core's refusalFamily). */
   family: (code: string) => string;
+  /** Whether a code met at dequeue marks its record (core's isDequeueRefusal). */
+  atDequeue: (code: string | undefined) => boolean;
+  /** A path as a new refused line records it (core's refusalPath). */
+  path: (p: string) => string;
+  /** The cap on new refused lines (a core RefusalRateLimiter): `admit(key, flush)`. */
+  limiter: { admit: (key: string, flush: (count: number) => void) => boolean };
 }
 
 export class FsWriteKernel {
@@ -388,10 +398,6 @@ export class FsWriteKernel {
     return { transport: "mcp", connection: this.connection, server: { mode: "fs-fallback", ...this.identity } };
   }
 
-  /** The one shape of a `refused` record: no argument value, no error text. */
-  private refusedRecord(ts: string, op: string, target: FsJournalTarget, code: string, durationMs: number, queueWaitMs: number): FsJournalRecord {
-    return { ts, op, target, actor: this.actor(), outcome: "refused", code, codeFamily: this.refusal?.family(code) ?? "tool", durationMs, queueWaitMs };
-  }
 
   /**
    * Journal a call refused BEFORE this kernel took it (#618), when the refusal
@@ -399,8 +405,18 @@ export class FsWriteKernel {
    * Never rejects.
    */
   journalRefusal(op: string, target: FsJournalTarget, code: string): Promise<void> {
-    if (!this.refusalLogOn() || this.refusal?.codeOfThrown({ code }) === undefined) return Promise.resolve();
-    return this.journal.append(this.refusedRecord(this.now().toISOString(), op, target, code, 0, 0));
+    const policy = this.refusal;
+    if (!policy || !this.refusalLogOn() || policy.codeOfThrown({ code }) === undefined) return Promise.resolve();
+    const codeFamily = policy.family(code);
+    const flush = (count: number) => {
+      void this.journal.append({ ts: this.now().toISOString(), op, target: {}, actor: this.actor(), outcome: "refused", refusal: code, codeFamily, suppressed: count, durationMs: 0, queueWaitMs: 0 });
+    };
+    if (!policy.limiter.admit(`${this.connection}|${code}`, flush)) return Promise.resolve();
+    const capped: FsJournalTarget = {
+      ...(target.path !== undefined ? { path: policy.path(target.path) } : {}),
+      ...(target.paths !== undefined ? { paths: target.paths.map(policy.path) } : {}),
+    };
+    return this.journal.append({ ts: this.now().toISOString(), op, target: capped, actor: this.actor(), outcome: "refused", refusal: code, codeFamily, durationMs: 0, queueWaitMs: 0 });
   }
 
   /** mtime (ms) of a vault-relative path, or undefined (missing file, no resolver). */
@@ -445,14 +461,15 @@ export class FsWriteKernel {
       } catch (e) {
         outcome = "error";
         error = e instanceof Error ? e.message : String(e);
-        // The refusal log (#618): a refusal at dequeue takes the refused shape in place of this error record.
-        if (this.refusalLogOn()) refusedCode = this.refusal?.codeOfThrown(e);
+        // The refusal log (#618): a refusal at dequeue keeps this error record and gains only its mark.
+        if (this.refusalLogOn()) {
+          const code = this.refusal?.codeOfThrown(e);
+          if (this.refusal?.atDequeue(code)) refusedCode = code;
+        }
         throw e;
       } finally {
         const revAfter = await this.revOf(target.path);
-        const record: FsJournalRecord = refusedCode !== undefined
-          ? this.refusedRecord(new Date(startedAt).toISOString(), op, target, refusedCode, this.now().getTime() - startedAt, startedAt - enqueuedAt)
-          : {
+        const record: FsJournalRecord = {
           ts: new Date(startedAt).toISOString(),
           op,
           target,
@@ -468,6 +485,7 @@ export class FsWriteKernel {
           queueWaitMs: startedAt - enqueuedAt,
           ...(revBefore !== undefined ? { revBefore } : {}),
           ...(revAfter !== undefined ? { revAfter } : {}),
+          ...(refusedCode !== undefined ? { refusal: refusedCode, codeFamily: this.refusal?.family(refusedCode) ?? "tool" } : {}),
         };
         // append() never rejects; awaiting it means "the record is on disk (or
         // dropped with a console.error) by the time the caller gets a result".

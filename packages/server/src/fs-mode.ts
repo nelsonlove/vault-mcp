@@ -66,6 +66,9 @@ import {
   refusalCodeOf,
   refusalCodeOfThrown,
   refusalFamily,
+  isDequeueRefusal,
+  refusalPath,
+  RefusalRateLimiter,
   INPUT_VALIDATION_CODE,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
@@ -212,8 +215,8 @@ export function isRefusalLogEnabled(env: NodeJS.ProcessEnv = process.env): boole
 }
 
 /** The FS write kernel's refusal policy: a switch (default: the environment variable, per call) and core's codes. */
-export function refusalPolicy(on: () => boolean = () => isRefusalLogEnabled()): FsRefusalPolicy {
-  return { on, codeOfThrown: refusalCodeOfThrown, family: refusalFamily };
+export function refusalPolicy(on: () => boolean = () => isRefusalLogEnabled(), limiter: RefusalRateLimiter = new RefusalRateLimiter()): FsRefusalPolicy {
+  return { on, codeOfThrown: refusalCodeOfThrown, family: refusalFamily, atDequeue: isDequeueRefusal, path: refusalPath, limiter };
 }
 
 const MAX_REFUSED_PATHS = 20;
