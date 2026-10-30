@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 
 const NOTES = [
   "00-09 System/06 Agent tooling/06.11 Vault MCP.md",
   "00-09 System/06 Agent tooling/06.12 Bridge.md",
   "Unfiled/loose note.md",
 ];
-const p = jdProvider(DEFAULT_JD_CONFIG);
+const p = jdProvider(FIXTURE_JD_CONFIG);
 
 test("occupantOf finds the claimant", () => {
   const addr = p.parse("06.11");

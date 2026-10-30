@@ -10,6 +10,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 
 const NOTES = [
   "00-09 System/00.00 Index.md",
@@ -21,7 +22,7 @@ const NOTES = [
   "Unfiled/loose.md",
 ];
 
-const p = jdProvider(DEFAULT_JD_CONFIG);
+const p = jdProvider(FIXTURE_JD_CONFIG);
 
 // ── scopeOf ──────────────────────────────────────────────────────────────────
 
@@ -347,13 +348,13 @@ describe("nextFree — configurable contentDecimalFloor (default preserves today
   });
 
   test("floor 5 -> content starts at .05 (decimals 5..99 allocatable)", () => {
-    const withFloor5 = jdProvider({ ...DEFAULT_JD_CONFIG, contentDecimalFloor: 5 });
+    const withFloor5 = jdProvider({ ...FIXTURE_JD_CONFIG, contentDecimalFloor: 5 });
     const notes = ["00-09 System/06 Agent tooling/06.00 JDex.md"];
     assert.equal(withFloor5.format(withFloor5.nextFree({ kind: "category", token: "06" }, notes)), "06.05");
   });
 
   test("floor 5 -> a used .05 is skipped for the next free decimal", () => {
-    const withFloor5 = jdProvider({ ...DEFAULT_JD_CONFIG, contentDecimalFloor: 5 });
+    const withFloor5 = jdProvider({ ...FIXTURE_JD_CONFIG, contentDecimalFloor: 5 });
     const notes = [
       "00-09 System/06 Agent tooling/06.00 JDex.md",
       "00-09 System/06 Agent tooling/06.05 Taken.md",

@@ -16,7 +16,8 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { installObsidianStub, TFile, TFolder } from "./obsidian-stub.mjs";
-import { makeRegistry, DEFAULT_SCHEMES } from "../src/kernel/scheme/registry.ts";
+import { makeRegistry } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 import { makeGuarded } from "../src/mcp/guarded.ts";
 
 installObsidianStub();
@@ -95,7 +96,7 @@ function fakeServer() {
   };
 }
 
-function toolServer({ schemes = DEFAULT_SCHEMES, notes = NOTES, folders = FOLDERS, settings = { readOnly: false, allowlist: [] } } = {}) {
+function toolServer({ schemes = JD_SCHEMES, notes = NOTES, folders = FOLDERS, settings = { readOnly: false, allowlist: [] } } = {}) {
   const { app, calls, tree } = fakeApp({ files: notes, folders });
   const server = fakeServer();
   registerSchemeWriteTools(server, app, {
@@ -412,9 +413,9 @@ describe("obsidian_renumber_address", () => {
     };
     const server = fakeServer();
     registerSchemeWriteTools(server, app, {
-      registry: () => makeRegistry(DEFAULT_SCHEMES),
+      registry: () => makeRegistry(JD_SCHEMES),
       notes: () => [...tree.values()].map((f) => f.path),
-      getSettings: () => ({ readOnly: false, allowlist: [], schemes: DEFAULT_SCHEMES }),
+      getSettings: () => ({ readOnly: false, allowlist: [], schemes: JD_SCHEMES }),
     });
     const call = (name, args = {}) => server.tools.get(name).handler(args, {});
 
@@ -567,9 +568,9 @@ describe("obsidian_renumber_address through the real guard wrapper (finding #2)"
     // (that is finding #3's "computed destination containment" test, above).
     const allowlist = ["Unfiled", "00-09 System"];
     registerSchemeWriteTools(server, app, {
-      registry: () => makeRegistry(DEFAULT_SCHEMES),
+      registry: () => makeRegistry(JD_SCHEMES),
       notes: () => NOTES,
-      getSettings: () => ({ readOnly: false, allowlist, schemes: DEFAULT_SCHEMES }),
+      getSettings: () => ({ readOnly: false, allowlist, schemes: JD_SCHEMES }),
     });
     const { def, handler } = server.tools.get("obsidian_renumber_address");
     const guarded = makeGuarded({

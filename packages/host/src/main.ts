@@ -26,7 +26,7 @@ import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore, UidIndex
 import { seedFromJournal, type SeedRecord } from "./kernel/idempotency.js";
 import { createSessionLog } from "./kernel/sessions/session-log.js";
 import { obsidianProbe, obsidianServerIdentity, obsidianUidSource } from "./kernel/obsidian-probe.js";
-import { DEFAULT_SCHEMES, type SchemeInstanceConfig } from "./kernel/scheme/registry.js";
+import { DEFAULT_SCHEMES, makeRegistry, schemesOnLoad, type SchemeInstanceConfig } from "./kernel/scheme/registry.js";
 import { DEFAULT_PROTECTED_PROPERTIES, setDeclaredProtectedProperties } from "@vault-mcp/core";
 // Host-side since S2 (condition 9): the mount decision is generic, and the
 // HOST uses it for the scheme panes.
@@ -133,8 +133,10 @@ interface VaultMcpSettings {
   vocabularies: VocabInstanceSettings[];
   /**
    * Scope-provider instances (scheme id + provider name + per-provider
-   * config). Defaults to DEFAULT_SCHEMES — the single "jd" instance backed by
-   * the Johnny Decimal provider with its own default config. Scheme semantics
+   * config). Defaults to DEFAULT_SCHEMES, which is EMPTY: a fresh install has
+   * no scheme, so no `<id>:` addressing, no scheme tool and no scheme check
+   * (01.33 pick A, step b). An install that predates the key keeps the one
+   * "jd" instance it had, saved once (`schemesOnLoad`). Scheme semantics
    * are configuration, not hardwired (Nelson's ruling): only the default
    * instance's JD config gets a settings-tab UI (comma-separated expanded
    * areas/categories + content-decimal floor); additional instances or
@@ -453,6 +455,11 @@ export default class VaultMcpPlugin extends Plugin {
     // predates the key keeps its old on, saved once. Before the override merge,
     // so a machine-local value still wins.
     const autoRegisterLoad = autoRegisterOnLoad(own, seed);
+    // 01.33 pick A step (b) — no scheme on a fresh install; an install that
+    // predates the key keeps its one jd instance, saved once. Before the
+    // override merge, so a machine-local `schemes` still wins.
+    const schemesLoad = schemesOnLoad(own, seed);
+    this.settings.schemes = schemesLoad.schemes;
     const rawHost = this.settings.host as unknown;
     this.settings.host = { ...(rawHost && typeof rawHost === "object" ? (rawHost as HostSettings) : DEFAULT_HOST_SETTINGS), autoRegisterClaude: autoRegisterLoad.value };
     // #579 — the machine-local override, merged over the synced settings key by
@@ -540,12 +547,12 @@ export default class VaultMcpPlugin extends Plugin {
           `${local.location.path}: the plugin does not take the value given for ${bad.join(", ")} (an unknown value, or one the setting would change)`,
         );
       }
-      const useTime = useTimeProblems(local.override, (p) => archivePatternRegExp(p) !== null);
+      const useTime = useTimeProblems(local.override, (p) => archivePatternRegExp(p) !== null, (rows) => makeRegistry(rows as SchemeInstanceConfig[]).instances().length === rows.length);
       if (useTime.length > 0) throw new LocalSettingsError(`${local.location.path}: ${useTime.join("; ")}`);
     }
     // Persist NOW if the territories key was absent (seeded or fresh), so the
     // seeding branch above can never run a second time for this install.
-    if (territories.persist || recordFoldersLoad.persist || autoRegisterLoad.persist) await this.saveSettings();
+    if (territories.persist || recordFoldersLoad.persist || autoRegisterLoad.persist || schemesLoad.persist) await this.saveSettings();
   }
   async saveSettings() {
     const local = this.localSettings;

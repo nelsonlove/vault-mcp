@@ -10,9 +10,10 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 import { schemeFindings } from "@vault-mcp/core";
 
-const instance = { id: "jd", providerName: "johnny-decimal", provider: jdProvider(DEFAULT_JD_CONFIG) };
+const instance = { id: "jd", providerName: "johnny-decimal", provider: jdProvider(FIXTURE_JD_CONFIG) };
 
 // A listing exhibiting each finding class exactly once, plus one clean
 // control note establishing "00-09 System/06 Agent tooling" as category 06's

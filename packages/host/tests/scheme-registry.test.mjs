@@ -18,6 +18,7 @@ import {
   requireOneAddress,
 } from "../src/kernel/scheme/registry.js";
 import { DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 
 const NOTES = [
   "00-09 System/00.00 Index.md",
@@ -32,8 +33,15 @@ const NOTES = [
 // ── makeRegistry / instances / get ──────────────────────────────────────────
 
 describe("makeRegistry — building instances from config", () => {
-  test("the default config registers one 'jd' instance backed by the JD provider", () => {
+  test("the default config registers no scheme (addressing is opt-in)", () => {
+    assert.deepEqual(DEFAULT_SCHEMES, []);
     const reg = makeRegistry(DEFAULT_SCHEMES);
+    assert.equal(reg.instances().length, 0);
+    assert.equal(reg.parseRef("jd:06.11"), null, "with no scheme, jd:06.11 is an ordinary path string");
+  });
+
+  test("a plain jd row registers one 'jd' instance backed by the JD provider", () => {
+    const reg = makeRegistry([{ id: "jd", provider: "johnny-decimal" }]);
     const instances = reg.instances();
     assert.equal(instances.length, 1);
     assert.equal(instances[0].id, "jd");
@@ -42,14 +50,14 @@ describe("makeRegistry — building instances from config", () => {
   });
 
   test("get(id) returns the matching instance", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const inst = reg.get("jd");
     assert.ok(inst);
     assert.equal(inst.id, "jd");
   });
 
   test("get(id) returns null for an unregistered id", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.equal(reg.get("nope"), null);
   });
 
@@ -218,35 +226,30 @@ describe("makeRegistry — building instances from config", () => {
 
   test("per-instance config deep-merges over provider defaults at the key level", () => {
     // Overriding only expandedCategories must leave expandedAreas at its
-    // provider default ["90-99"] — not clobber the whole config object.
-    const reg = makeRegistry([{ id: "jd", provider: "johnny-decimal", config: { expandedCategories: ["27", "31"] } }]);
+    // provider default (none) — not clobber the whole config object. The
+    // expansions here are made up.
+    const reg = makeRegistry([{ id: "jd", provider: "johnny-decimal", config: { expandedCategories: ["34", "41"] } }]);
     const inst = reg.get("jd");
-    // 92021 is only an expanded-item if area 90-99 (the untouched default) is
-    // still expanded.
-    assert.equal(inst.provider.parse("92021")?.kind, "expanded-item");
-    // 31001 is only an expanded-item because expandedCategories now includes "31".
-    assert.equal(inst.provider.parse("31001")?.kind, "expanded-item");
-    // Sanity: the merged config actually differs from the untouched default.
-    assert.notDeepEqual(inst.provider.parse("31001"), null);
+    // 41001 is only an expanded-item because expandedCategories includes "41".
+    assert.equal(inst.provider.parse("41001")?.kind, "expanded-item");
+    // No area is expanded: the provider default stands for the key the config left out.
+    assert.equal(inst.provider.parse("52021"), null);
   });
 
   // ── Task 5: registry-from-settings ──────────────────────────────────────────
 
-  test("makeRegistry(DEFAULT_SCHEMES) — the settings default — merges DEFAULT_JD_CONFIG under partial overrides", () => {
-    // DEFAULT_SCHEMES is exactly what VaultMcpSettings.schemes defaults to
-    // (main.ts DEFAULT_SETTINGS.schemes = DEFAULT_SCHEMES). A settings-loaded
-    // instance with a partial config override must merge the SAME way a
-    // hand-built one does — expandedAreas untouched at its provider default.
-    const settingsLikeConfigs = [{ id: "jd", provider: "johnny-decimal", config: { expandedCategories: ["27", "31"] } }];
-    const reg = makeRegistry(settingsLikeConfigs);
-    const inst = reg.get("jd");
-    assert.equal(inst.provider.parse("92021")?.kind, "expanded-item"); // expandedAreas default preserved
-    assert.equal(inst.provider.parse("31001")?.kind, "expanded-item"); // expandedCategories override applied
-
-    // The untouched DEFAULT_SCHEMES entry itself builds the same as an empty override.
-    const defaultReg = makeRegistry(DEFAULT_SCHEMES);
-    const defaultInst = defaultReg.get("jd");
-    assert.deepEqual(defaultInst.provider.parse("90001"), inst.provider.parse("90001"));
+  test("DEFAULT_JD_CONFIG expands nothing; a row's config adds expansions over it", () => {
+    assert.deepEqual(DEFAULT_JD_CONFIG.expandedAreas, []);
+    assert.deepEqual(DEFAULT_JD_CONFIG.expandedCategories, []);
+    const plain = makeRegistry([{ id: "jd", provider: "johnny-decimal" }]).get("jd");
+    // With no config, a 5-digit token is not an address at all.
+    assert.equal(plain.provider.parse("52021"), null);
+    assert.equal(plain.provider.parse("34001"), null);
+    // Plain JD still works.
+    assert.equal(plain.provider.parse("06.11")?.kind, "id");
+    const expanded = makeRegistry([{ id: "jd", provider: "johnny-decimal", config: { expandedAreas: ["50-59"], expandedCategories: ["34"] } }]).get("jd");
+    assert.equal(expanded.provider.parse("52021")?.kind, "expanded-item");
+    assert.equal(expanded.provider.parse("34001")?.kind, "expanded-item");
   });
 
   // ── Amendment 2: flexible user config, validated by the provider ───────────
@@ -290,7 +293,7 @@ describe("makeRegistry — building instances from config", () => {
   });
 
   test("contentDecimalFloor absent from config preserves default behavior (-> 06.10)", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const inst = reg.get("jd");
     const notes = ["00-09 System/06 Agent tooling/06.00 JDex.md"];
     const next = inst.provider.nextFree({ kind: "category", token: "06" }, notes);
@@ -301,7 +304,7 @@ describe("makeRegistry — building instances from config", () => {
 // ── parseRef ─────────────────────────────────────────────────────────────────
 
 describe("parseRef — 'scheme:address' -> {instance, addr} | null", () => {
-  const reg = makeRegistry(DEFAULT_SCHEMES);
+  const reg = makeRegistry(JD_SCHEMES);
 
   test("a well-formed ref against a registered scheme parses", () => {
     const parsed = reg.parseRef("jd:06.11");
@@ -337,7 +340,7 @@ describe("parseRef — 'scheme:address' -> {instance, addr} | null", () => {
 // ── resolve ──────────────────────────────────────────────────────────────────
 
 describe("resolve — canonical-form address equality against a notes listing", () => {
-  const reg = makeRegistry(DEFAULT_SCHEMES);
+  const reg = makeRegistry(JD_SCHEMES);
   const jd = reg.get("jd");
 
   test("resolves to the single matching path", () => {
@@ -360,7 +363,7 @@ describe("resolve — canonical-form address equality against a notes listing", 
 // ── requireOneAddress ────────────────────────────────────────────────────────
 
 describe("requireOneAddress — throws on 0 or 2+ candidates, else returns the one path", () => {
-  const reg = makeRegistry(DEFAULT_SCHEMES);
+  const reg = makeRegistry(JD_SCHEMES);
 
   test("resolves 'jd:06.11' against the NOTES listing to the one path", () => {
     assert.equal(requireOneAddress(reg, "jd:06.11", NOTES), "00-09 System/06 Agent tooling/06.11 Vault MCP.md");
@@ -481,7 +484,7 @@ describe("SchemeRegistry.skipped() — ids configured but with no live instance"
   });
 
   test("an id never mentioned in any config is absent from skipped() too (distinct from 'skipped')", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.equal(reg.skipped().has("never-configured"), false);
   });
 
@@ -493,7 +496,7 @@ describe("SchemeRegistry.skipped() — ids configured but with no live instance"
 
 describe("parseRefDetailed — distinguishes resolved / skipped / none", () => {
   test("a well-formed ref against a registered scheme is 'resolved'", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const detailed = reg.parseRefDetailed("jd:06.11");
     assert.equal(detailed.kind, "resolved");
     assert.equal(detailed.instance.id, "jd");
@@ -527,22 +530,22 @@ describe("parseRefDetailed — distinguishes resolved / skipped / none", () => {
   });
 
   test("an unregistered, never-skipped id is 'none'", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.deepEqual(reg.parseRefDetailed("nope:06.11"), { kind: "none" });
   });
 
   test("a plain path with no colon is 'none'", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.deepEqual(reg.parseRefDetailed("Unfiled/loose.md"), { kind: "none" });
   });
 
   test("a filename containing a colon that isn't scheme-shaped is 'none' (pinned: must keep passing through as an ordinary path)", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.deepEqual(reg.parseRefDetailed("Notes/a:b.md"), { kind: "none" });
   });
 
   test("'uid:...' is reserved and always 'none', even against a skipped 'uid' id (which can't happen, but the reserved check runs first)", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.deepEqual(reg.parseRefDetailed("uid:abc"), { kind: "none" });
   });
 });

@@ -17,12 +17,12 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   makeRegistry,
-  DEFAULT_SCHEMES,
   AddressUnresolvedError,
   AddressAmbiguousError,
   SchemeUnavailableError,
   resolveSchemeArgs,
 } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 import { UidIndex } from "../src/kernel/index.ts";
 import { makeGuarded, addressSafe } from "../src/mcp/guarded.ts";
 
@@ -60,7 +60,7 @@ function handlerHarness() {
  * laziness ("only when a scheme-shaped value is actually encountered") is
  * pinned, not just assumed. */
 function harness({ allowlist = [], notes = NOTES, withSchemes = true } = {}) {
-  const registry = makeRegistry(DEFAULT_SCHEMES);
+  const registry = makeRegistry(JD_SCHEMES);
   let notesCalls = 0;
   const schemeNotes = () => {
     notesCalls++;
@@ -80,14 +80,14 @@ function harness({ allowlist = [], notes = NOTES, withSchemes = true } = {}) {
 
 describe("resolveSchemeArgs", () => {
   test("jd:06.11 rewrites to the real path and reports what it resolved", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const { args, resolved } = resolveSchemeArgs({ path: "jd:06.11", overwrite: true }, reg, () => NOTES);
     assert.deepEqual(args, { path: VAULT_MCP_PATH, overwrite: true });
     assert.deepEqual(resolved, [{ ref: "jd:06.11", path: VAULT_MCP_PATH }]);
   });
 
   test("a call using no scheme addressing is handed back its own args, untouched, SAME object", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const args = { path: "Notes/Ordinary.md", content: "x" };
     const out = resolveSchemeArgs(args, reg, () => NOTES);
     assert.equal(out.args, args, "behavior is unchanged when scheme addressing is unused");
@@ -95,7 +95,7 @@ describe("resolveSchemeArgs", () => {
   });
 
   test('"Notes/a:b.md" — a colon that is not a registered scheme id — is untouched too', () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const args = { path: "Notes/a:b.md" };
     const out = resolveSchemeArgs(args, reg, () => NOTES);
     assert.equal(out.args, args);
@@ -112,7 +112,7 @@ describe("resolveSchemeArgs", () => {
   });
 
   test("notes() is called LAZILY — only once a scheme-shaped value is actually encountered", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     let calls = 0;
     const notesFn = () => {
       calls++;
@@ -130,7 +130,7 @@ describe("resolveSchemeArgs", () => {
   // per resolveSchemeArgs call, on the first scheme-shaped value, and reused
   // for the rest of the walk.
   test("notes() is memoized per call — several scheme-shaped values enumerate the vault ONCE, not once per value", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     let calls = 0;
     const notesFn = () => {
       calls++;
@@ -152,7 +152,7 @@ describe("resolveSchemeArgs", () => {
   });
 
   test("an unknown address throws AddressUnresolvedError", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     assert.throws(
       () => resolveSchemeArgs({ path: "jd:99.99" }, reg, () => NOTES),
       (e) => e instanceof AddressUnresolvedError && e.code === "address_unresolved"
@@ -160,7 +160,7 @@ describe("resolveSchemeArgs", () => {
   });
 
   test("two claimants throws AddressAmbiguousError naming both", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const dupNotes = [
       "00-09 System/06 Agent tooling/06.11 First.md",
       "00-09 System/06 Agent tooling/06.11 Second.md",
@@ -182,7 +182,7 @@ describe("resolveSchemeArgs", () => {
   // point, so this bounds wire size, not disclosure. `.candidates` itself stays
   // the full list (a caller that wants all of them still can).
   test("more than 10 claimants caps the NAMED candidates in the message, but not the .candidates array", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const dupNotes = Array.from(
       { length: 12 },
       (_, i) => `00-09 System/06 Agent tooling/06.11 Dup${i}.md`
@@ -202,7 +202,7 @@ describe("resolveSchemeArgs", () => {
   });
 
   test("resolution is scoped to the allowlist-VISIBLE notes only", () => {
-    const reg = makeRegistry(DEFAULT_SCHEMES);
+    const reg = makeRegistry(JD_SCHEMES);
     const settings = { readOnly: false, allowlist: ["90-99 Projects"] };
     // "jd:06.11" is real, but hidden by the allowlist — 0 visible candidates.
     assert.throws(
@@ -498,7 +498,7 @@ describe("uid: is reserved and resolved first — no regression when both addres
     const src = { paths: () => ["Notes/A.md"], uidOf: (p) => (p === "Notes/A.md" ? "uid-a" : undefined) };
     const index = new UidIndex(src);
     index.rebuild();
-    const registry = makeRegistry(DEFAULT_SCHEMES);
+    const registry = makeRegistry(JD_SCHEMES);
     const { seen, handler } = handlerHarness();
     const guarded = makeGuarded({
       getSettings: () => OPEN_SETTINGS,
