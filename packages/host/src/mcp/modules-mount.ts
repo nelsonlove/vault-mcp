@@ -283,6 +283,31 @@ export function schemesConfigured(settings: { schemes?: SchemeInstanceConfig[] }
  * instance) would be the exact silent-coercion this PR's own constraint
  * forbids.
  */
+/** A field value that says something: not absent, not an empty list, not blank. */
+function holdsValue(v: unknown): boolean {
+  return v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && v.length === 0);
+}
+
+/** Rows this settings page created in this session (a row the page made from nothing). Weak, so nothing outlives the row. */
+const pageMadeRows = new WeakSet<object>();
+
+/** A row with nothing in it: a plain jd row whose config holds no value and that excludes no root. */
+function rowIsEmpty(row: SchemeInstanceConfig): boolean {
+  const config = (row.config ?? {}) as Record<string, unknown>;
+  return !Object.values(config).some(holdsValue) && !holdsValue(row.excludedRoots);
+}
+
+/**
+ * The scheme on/off control on the settings page. On with no scheme: the plain
+ * `JD_SCHEME_INSTANCE`. Off: no scheme at all (every row goes, so no `<id>:`
+ * addressing and no scheme tool). Already in the asked state: the settings
+ * object back unchanged.
+ */
+export function setSchemeOn<S extends { schemes?: SchemeInstanceConfig[] }>(settings: S, on: boolean): S {
+  if (on === schemesConfigured(settings)) return settings;
+  return { ...settings, schemes: on ? [{ ...JD_SCHEME_INSTANCE }] : [] };
+}
+
 const schemeBinding: ConfigBinding = {
   read(settings) {
     const jd = currentSchemes(settings)[0];
@@ -293,6 +318,9 @@ const schemeBinding: ConfigBinding = {
     };
   },
   write(settings, patch) {
+    const configured = schemesConfigured(settings as { schemes?: SchemeInstanceConfig[] });
+    // No scheme yet, and the patch says nothing (a field typed in and cleared): write no row, so JD stays off.
+    if (!configured && !Object.values(patch).some(holdsValue)) return settings;
     const schemes = currentSchemes(settings);
     const jd = schemes[0];
     if (!jd || jd.provider !== "johnny-decimal") return settings;
@@ -306,6 +334,11 @@ const schemeBinding: ConfigBinding = {
     if ("excludedRoots" in patch) {
       if (excludedRoots === undefined) delete nextInstance.excludedRoots;
       else nextInstance.excludedRoots = excludedRoots as string[];
+    }
+    if (!configured || pageMadeRows.has(jd)) {
+      // A row this page made: an all-empty one goes again (clearing the fields undoes typing in them).
+      if (rowIsEmpty(nextInstance)) return { ...(settings as object), schemes: schemes.slice(1) };
+      pageMadeRows.add(nextInstance);
     }
     return { ...(settings as object), schemes: [nextInstance, ...schemes.slice(1)] };
   },
