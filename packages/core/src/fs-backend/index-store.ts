@@ -3,6 +3,8 @@ import path from "node:path";
 import { vaultRoot } from "./vault.js";
 import type { FrontmatterValue, ResolveResult, OutlinkEntry } from "../vault-backend.js";
 import { leadingFrontmatterBlock, stripLeadingFrontmatter } from "../accept-guard.js";
+import { makeRegistry, type SchemeInstanceConfig } from "../scheme/registry.js";
+import { DEFAULT_JD_CONFIG } from "../scheme/jd.js";
 
 /**
  * In-memory index of the vault.
@@ -234,13 +236,56 @@ function parseFrontmatter(text: string): { aliases: string[]; full: Record<strin
   return { aliases, full };
 }
 
-// Areas/categories that use 5-digit ("expanded") ids, mirroring the
-// jd-numbering plugin's DEFAULT_CONFIG (obsidian-jd-numbering src/jd.ts). A
-// 5-digit filename prefix is only a JD id inside one of these; elsewhere it is
-// just a title that happens to start with digits — "10000 Hours.md" is NOT id
-// 10000. Keep in sync with jd-numbering; the two are the vault's canonical model.
-const EXPANDED_AREAS = new Set(["90-99"]);
-const EXPANDED_CATEGORIES = new Set(["27"]);
+/** The environment variable that gives the file-system server its schemes:
+ * a JSON list of rows in the plugin's `schemes` shape. */
+export const SCHEMES_ENV_VAR = "VAULT_MCP_SCHEMES";
+
+/** The Johnny Decimal model the index derives ids by, or null for none. */
+export interface FsJdModel {
+  /** Areas that use 5-digit ("expanded") ids. */
+  expandedAreas: ReadonlySet<string>;
+  /** Single categories that use 5-digit flat ids. */
+  expandedCategories: ReadonlySet<string>;
+}
+
+let cachedModel: { raw: string | undefined; model: FsJdModel | null } | null = null;
+
+/**
+ * The JD model from `VAULT_MCP_SCHEMES` (01.33 pick A, step b): unset or empty,
+ * no scheme, so no note gets a JD id and no ref resolves by one, as on a fresh
+ * plugin install. A `johnny-decimal` row turns JD ids on, with the expansions in
+ * its `config` over the provider's defaults (which expand nothing), for
+ * example `[{"id": "jd", "provider": "johnny-decimal", "config":
+ * {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]` (made-up
+ * values). A value that is not JSON, not a list, or that holds a row the scheme
+ * registry does not take is an error, so the server does not start on a
+ * scheme the operator did not get. Read once per value (cached on the string).
+ */
+export function fsJdModel(env: Record<string, string | undefined> = process.env): FsJdModel | null {
+  const raw = env[SCHEMES_ENV_VAR]?.trim() || undefined;
+  if (cachedModel && cachedModel.raw === raw) return cachedModel.model;
+  let model: FsJdModel | null = null;
+  if (raw) {
+    let rows: unknown;
+    try {
+      rows = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`${SCHEMES_ENV_VAR} is not valid JSON: ${(e as Error).message}`);
+    }
+    if (!Array.isArray(rows)) throw new Error(`${SCHEMES_ENV_VAR} must be a JSON list of scheme rows`);
+    const registry = makeRegistry(rows as SchemeInstanceConfig[]);
+    if (registry.instances().length !== rows.length) {
+      throw new Error(`${SCHEMES_ENV_VAR} holds a row the scheme registry does not take (an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)`);
+    }
+    const jd = (rows as SchemeInstanceConfig[]).find((r) => r.provider === "johnny-decimal");
+    if (jd) {
+      const config = { ...DEFAULT_JD_CONFIG, ...(jd.config ?? {}) };
+      model = { expandedAreas: new Set(config.expandedAreas), expandedCategories: new Set(config.expandedCategories) };
+    }
+  }
+  cachedModel = { raw, model };
+  return model;
+}
 
 /**
  * Derive a note's canonical JD id from its filename + folder, replicating the
@@ -251,12 +296,16 @@ const EXPANDED_CATEGORIES = new Set(["27"]);
  *   - category folder note  ("…/00 System management/00 System …")    → "00.00"
  *   - id note               ("04.18 obsidian-execute-code.md")        → "04.18"
  *   - project note          ("92208 Concept note.md")                 → "92208"
- * A 5-digit prefix only counts inside an expanded area/category (see above);
- * "NN.NN"-prefixed names always count (matching the vault model). Returns
- * undefined for notes with no JD prefix. This replaced the former frontmatter
- * `jd-id` lookup when that property was retired in favour of filename-canonical.
+ * A 5-digit prefix only counts inside an expanded area/category (the model's
+ * expansions: a 5-digit filename prefix elsewhere is just a title that happens
+ * to start with digits — "10000 Hours.md" is NOT id 10000); "NN.NN"-prefixed
+ * names always count. Returns undefined for notes with no JD prefix, and for
+ * every note when no JD scheme is configured (`fsJdModel`). This replaced the
+ * former frontmatter `jd-id` lookup when that property was retired in favour
+ * of filename-canonical.
  */
-export function deriveJdIdFromPath(relPath: string, basename: string): string | undefined {
+export function deriveJdIdFromPath(relPath: string, basename: string, model: FsJdModel | null = fsJdModel()): string | undefined {
+  if (!model) return undefined;
   const slash = relPath.lastIndexOf("/");
   const folder = slash >= 0 ? relPath.slice(0, slash) : "";
   // Area folder note: the note is its own folder note and the folder is an area.
@@ -282,8 +331,8 @@ export function deriveJdIdFromPath(relPath: string, basename: string): string | 
     const cat = projMatch[1].slice(0, 2);
     const area = `${cat[0]}0-${cat[0]}9`;
     if (projMatch[2]) {
-      if (EXPANDED_AREAS.has(area)) return projMatch[1] + projMatch[2];
-    } else if (EXPANDED_AREAS.has(area) || EXPANDED_CATEGORIES.has(cat)) {
+      if (model.expandedAreas.has(area)) return projMatch[1] + projMatch[2];
+    } else if (model.expandedAreas.has(area) || model.expandedCategories.has(cat)) {
       return projMatch[1];
     }
   }

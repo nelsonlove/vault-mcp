@@ -31,9 +31,9 @@
 import type { Address, Capabilities, Member, Scope, SchemeFinding, ScopeProvider } from "./provider.js";
 
 export interface JdConfig {
-  /** Areas whose whole band uses 5-digit sequential IDs, e.g. ["90-99"]. */
+  /** Areas whose whole band uses 5-digit sequential IDs, e.g. ["50-59"]. None by default. */
   expandedAreas: string[];
-  /** Single categories that use 5-digit flat IDs, e.g. ["27"]. */
+  /** Single categories that use 5-digit flat IDs, e.g. ["34"]. None by default. */
   expandedCategories: string[];
   /**
    * Scheme semantics are configuration, not hardwired (Nelson's ruling): the
@@ -50,9 +50,15 @@ export interface JdConfig {
   contentDecimalFloor?: number;
 }
 
+/**
+ * The provider's own defaults expand nothing: which areas and categories use
+ * 5-digit IDs is a vault's choice, set in its scheme instance's `config` (for
+ * example `{ expandedAreas: ["80-89"], expandedCategories: ["42"] }`), never
+ * shipped here.
+ */
 export const DEFAULT_JD_CONFIG: JdConfig = {
-  expandedAreas: ["90-99"],
-  expandedCategories: ["27"],
+  expandedAreas: [],
+  expandedCategories: [],
 };
 
 // ── grammar core (ported verbatim from obsidian-johnny-decimal/src/core/jdId.ts) ──
@@ -730,10 +736,10 @@ export function validateJdConfig(config: unknown): string[] {
   if ("expandedAreas" in c && c.expandedAreas !== undefined) {
     const v = c.expandedAreas;
     if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
-      problems.push("expandedAreas must be an array of strings (e.g. [\"90-99\"])");
+      problems.push("expandedAreas must be an array of strings (e.g. [\"50-59\"])");
     } else {
       for (const token of v) {
-        if (!isValidAreaToken(token)) problems.push(`expandedAreas: "${token}" is not a valid area token (expected e.g. "90-99")`);
+        if (!isValidAreaToken(token)) problems.push(`expandedAreas: "${token}" is not a valid area token (expected e.g. "50-59")`);
       }
     }
   }
@@ -744,7 +750,7 @@ export function validateJdConfig(config: unknown): string[] {
       problems.push("expandedCategories must be an array of strings (e.g. [\"27\"])");
     } else {
       for (const token of v) {
-        if (!isValidCategoryToken(token)) problems.push(`expandedCategories: "${token}" is not a valid category token (expected e.g. "27")`);
+        if (!isValidCategoryToken(token)) problems.push(`expandedCategories: "${token}" is not a valid category token (expected e.g. "34")`);
       }
     }
   }

@@ -16,6 +16,8 @@ import os from "node:os";
  */
 
 let tmpRoot: string;
+const FIXTURE_SCHEMES = [{ id: "jd", provider: "johnny-decimal", config: { expandedAreas: ["90-99"], expandedCategories: ["27"] } }];
+
 // Imports happen after VAULT_PATH is set in `before` — see below.
 type IndexStoreModule = typeof import("../src/fs-backend/index-store.js");
 let indexStore: IndexStoreModule;
@@ -23,12 +25,17 @@ let indexStore: IndexStoreModule;
 before(async () => {
   tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vault-mcp-test-"));
   process.env.VAULT_PATH = tmpRoot;
+  // The older JD-id tests below run with one JD scheme whose expansion their
+  // fixtures are built around (test data, not a default: since 01.33 pick A
+  // step b the server has no scheme unless VAULT_MCP_SCHEMES names one).
+  process.env.VAULT_MCP_SCHEMES = JSON.stringify(FIXTURE_SCHEMES);
   // Dynamic import AFTER env is set — vault.ts captures VAULT_PATH at module
   // load time as a const, so the env must be set first.
   indexStore = await import("../src/fs-backend/index-store.js");
 });
 
 after(async () => {
+  delete process.env.VAULT_MCP_SCHEMES;
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
@@ -193,6 +200,33 @@ test("deriveJdIdFromPath: id / project / area / category / none", () => {
   assert.equal(d("some/random note.md", "random note"), undefined);
   // a bare "NN.NN.md" (no title after the id) is not an id note
   assert.equal(d("04.18.md", "04.18"), undefined);
+});
+
+test("fsJdModel / deriveJdIdFromPath: no scheme by default, a JD row's expansions when VAULT_MCP_SCHEMES names one", () => {
+  const { fsJdModel, deriveJdIdFromPath: d } = indexStore;
+  // Unset or empty: no scheme, so no JD id at all (a fresh install's default).
+  assert.equal(fsJdModel({}), null);
+  assert.equal(fsJdModel({ VAULT_MCP_SCHEMES: "[]" }), null);
+  assert.equal(d("04 Tooling/04.18 Probe.md", "04.18 Probe", null), undefined);
+  // A plain JD row: NN.NN ids, and no 5-digit id (the provider defaults expand nothing).
+  const plain = fsJdModel({ VAULT_MCP_SCHEMES: JSON.stringify([{ id: "jd", provider: "johnny-decimal" }]) });
+  assert.equal(d("04 Tooling/04.18 Probe.md", "04.18 Probe", plain), "04.18");
+  assert.equal(d("50-59 Builds/52021 Thing.md", "52021 Thing", plain), undefined);
+  // Made-up expansions from the row's config.
+  const expanded = fsJdModel({ VAULT_MCP_SCHEMES: JSON.stringify([{ id: "jd", provider: "johnny-decimal", config: { expandedAreas: ["50-59"], expandedCategories: ["34"] } }]) });
+  assert.equal(d("50-59 Builds/52021 Thing.md", "52021 Thing", expanded), "52021");
+  assert.equal(d("50-59 Builds/52021 Thing/52021.10 Sub.md", "52021.10 Sub", expanded), "52021.10");
+  assert.equal(d("30-39 Home/34 Garden/34001 Seeds.md", "34001 Seeds", expanded), "34001");
+  // A value the server cannot use stops it, rather than running with no scheme.
+  assert.throws(() => fsJdModel({ VAULT_MCP_SCHEMES: "{not json" }), /not valid JSON/);
+  assert.throws(() => fsJdModel({ VAULT_MCP_SCHEMES: '{"id":"jd"}' }), /must be a JSON list/);
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    assert.throws(() => fsJdModel({ VAULT_MCP_SCHEMES: '[{"id":"jd","provider":"johnny-decimal","config":{"expandedAreas":"50-59"}}]' }), /does not take/);
+  } finally {
+    console.error = quiet;
+  }
 });
 
 // =============================================================================
