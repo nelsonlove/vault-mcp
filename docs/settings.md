@@ -185,6 +185,18 @@ Governor may reduce low-information navigation and plumbing observations to ephe
 
 Playback access is checked against the current human/operator authorization as well as the original capture scope. Possession of an operation id is not read authority.
 
+### Schemes
+
+| Field | Value |
+|---|---|
+| Key | `schemes` |
+| Default | Empty on a fresh install: no scheme, so no `<id>:` addressing, no scheme tool and no scheme check. An install whose saved settings predate the key keeps the one plain Johnny Decimal instance, `{"id": "jd", "provider": "johnny-decimal"}`, written once at its next load. A saved list is kept |
+| Effect | Each row is one addressing scheme: an id (the address prefix, such as `jd`), a provider (`johnny-decimal` today) and an optional provider `config`. With a row, `<id>:<address>` resolves in path arguments, and the scheme module's tools register on the next connect |
+| Turning JD on | Add `{"id": "jd", "provider": "johnny-decimal"}` to the list, or fill in a field of the scheme section on this page. The provider expands no area or category by default; name yours in `config`, for example `{"expandedAreas": ["50-59"], "expandedCategories": ["34"]}` (made-up values) |
+| Takes effect | Addressing at once; the tools on the next connect |
+| Risk | Removing a scheme turns its addresses into ordinary paths and its tools off; the conformance rail then refuses a run whose baseline holds that scheme's debt |
+| Recovery | Put the row back |
+
 ### Scheme exclusions
 
 | Field | Value |
@@ -559,7 +571,8 @@ A bad override stops the plugin. It does not serve (no socket, no bridge, no dis
 - it is not a regular file (a folder, or a link to nothing), or it cannot be read (see the table above for ENOTDIR at the default path);
 - it is not valid JSON, or not one JSON object;
 - a key is not a setting of this plugin (a misspelt key would otherwise do nothing), or a key under a setting with fixed keys (such as `host` or `writeScope`) is not one of its keys; keys under `modules` and `cliPolicy.opaqueSnapshot` are free, as in `data.json`;
-- a value has the wrong type (a string where the setting is a boolean, an item that is not a string in a list of folders);
+- a value has the wrong type (a string where the setting is a boolean, an item that is not a string in a list of folders, a row that is not an object in `schemes`);
+- a `schemes` row is one the scheme registry does not take (an unknown provider, a `config` the provider refuses, a bad `excludedRoots` entry, or a repeated id), which in `data.json` would only skip that scheme;
 - a value is one the setting does not take, so that its check would change it (an unknown mode, a relative path, a `writeScope.paths` pattern that does not compile, a record folder that is blank or only slashes, a number out of range), or a `recordFolders.archivePattern` that does not compile as a regular expression (in `data.json` such a pattern matches nothing; in the override it is refused);
 - a value is `null`, or a key is `__proto__`, `constructor`, `prototype`, empty, or holds a `.` (keys are read as dotted paths);
 - `VAULT_MCP_LOCAL_SETTINGS` names a relative path, or a file that does not exist.
@@ -570,7 +583,7 @@ Fix or remove the file, then reload the plugin.
 
 The settings tab names the file and the keys it sets, above the tabs. Each control whose key the override sets is locked (it cannot be changed) and says where its value comes from. A save from the settings tab never writes this machine's values into the synced `data.json`: for each overridden key it writes the value that the synced file holds now, or, when the synced file does not hold that key, the value it had when the plugin loaded; every other key is saved as usual. So the other devices keep their own values for the keys this machine overrides.
 
-Satellite plugins that copy settings from the host once, on their first load (such as `vaultmcp-conformance`), read the host's synced `data.json`, not the override.
+Satellite plugins that copy settings from the host once, on their first load (such as `vaultmcp-conformance`), read the host's synced `data.json`, not the override. The conformance rail's scheme check is different: in the app it reads the host's schemes as the host holds them, override included, on every run; its CLI reads the override's `schemes` when the file sets them, else the host's `data.json`.
 
 `obsidian_doctor` reports the override as `local_settings`: the path it is looked up at, whether it comes from `VAULT_MCP_LOCAL_SETTINGS` or the default, whether the file was found, and the names of the keys it sets. It never reports their values.
 
@@ -587,6 +600,7 @@ Put a key in the override when its right value depends on the machine, not on th
 | `readOnly`, `allowlist` | A replica can be made read-only, or limited to some folders, without limiting the desktop |
 | `redactProfiles`, `redactConfig` | The secret scanner is for remote connections; a server that serves them turns it on, a desktop with local connections only may leave it off |
 | `enabled` | The socket can be off on one device and on on the other |
+| `schemes` | A scheme, or a scheme's expansions, that one machine uses and the synced file must not carry. The list replaces the synced list, so give every row this machine needs, for example `{"schemes": [{"id": "jd", "provider": "johnny-decimal", "config": {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]}` (made-up values). The settings tab's scheme fields are locked while it is set |
 
 Keys that describe the vault itself (guarded territories, record identification and record folders, protected properties, the command policy) usually stay in the synced `data.json`, so the devices share them. You can override them too; that is your choice.
 
@@ -596,7 +610,7 @@ An override can also make one machine less strict than the synced settings (for 
 
 ### The filesystem server
 
-The filesystem server in `packages/server` (the HTTP front's fallback when Obsidian is closed) does not read `data.json` at all: it takes its settings from environment variables (for example `VAULT_MCP_WRITE_SCOPE`), which are already local to the machine. The override does not apply to it.
+The filesystem server in `packages/server` (the HTTP front's fallback when Obsidian is closed) does not read `data.json` at all: it takes its settings from environment variables (for example `VAULT_MCP_WRITE_SCOPE`), which are already local to the machine. The override does not apply to it. Its schemes are `VAULT_MCP_SCHEMES`, a JSON list in the `schemes` shape; unset, it has none, as a fresh plugin install has none.
 
 ## Conformance
 

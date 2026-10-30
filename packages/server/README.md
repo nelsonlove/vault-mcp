@@ -26,7 +26,7 @@ Xvfb.
 | `obsidian_read_notes` | Bulk read by paths (up to 50/call); failed paths land in `errors[]` instead of failing the call | no |
 | `obsidian_search_notes` | Case-insensitive full-text search; `mode: "one_per_note" \| "all"` for hit breadth vs depth | no |
 | `obsidian_find_by_tag` | Find notes by frontmatter `tags:` or inline `#tag` | no |
-| `obsidian_resolve` | Obsidian-faithful reference resolution: `[[wikilink]]`, basename, frontmatter alias, JD-ID, or vault-relative path → canonical path. Handles `|alias`, `#heading`, `#^block`. Multiple matches → `ambiguous` with candidates | no |
+| `obsidian_resolve` | Obsidian-faithful reference resolution: `[[wikilink]]`, basename, frontmatter alias, JD-ID (only when `VAULT_MCP_SCHEMES` names a Johnny Decimal scheme), or vault-relative path → canonical path. Handles `|alias`, `#heading`, `#^block`. Multiple matches → `ambiguous` with candidates | no |
 | `obsidian_get_backlinks` | List notes that wikilink TO the given path | no |
 | `obsidian_get_outlinks` | List `[[wikilinks]]` in the body of a note, each with resolved path when unambiguous | no |
 | `obsidian_search_by_frontmatter` | Find notes whose frontmatter has `property == value` (case-insensitive property, exact value; array fields match any element) | no |
@@ -61,6 +61,7 @@ Environment:
 - `VAULT_PATH` — absolute path to the synced vault folder (default `./vault`)
 - `PORT` — listen port (default `8787`)
 - `HOST` — bind address (default `127.0.0.1`; keep it localhost behind your proxy)
+- `VAULT_MCP_SCHEMES` — the addressing schemes, as a JSON list in the plugin's `schemes` shape (default: none). With none, no note gets a Johnny Decimal id and no ref resolves by one (`matched_by: "jd-id"`), as on a fresh plugin install. A `johnny-decimal` row turns JD ids on, with the 5-digit expansions in its `config`, for example `[{"id": "jd", "provider": "johnny-decimal", "config": {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]` (made-up values; the provider's defaults expand nothing). A value that is not a JSON list, or that holds a row the plugin's scheme registry would skip, stops the index build
 
 The MCP endpoint is `POST /mcp`. There's also `GET /health`.
 

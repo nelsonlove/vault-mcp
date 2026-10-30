@@ -45,7 +45,7 @@ The journal records both halves: `target.path` is where the operation landed, `t
 
 ## Scheme addressing
 
-Beside `uid:`, a path argument also accepts `<scheme>:<address>` — for the default configuration, `jd:06.11` (Johnny Decimal). It resolves at the same interception point as uid addressing, immediately after it: `uid:` is reserved and always gets first look, so a call can freely mix the two (`uid:` for a note whose scheme address you don't know, `jd:` for one you do). Like uid addressing, it works on reads and writes alike and handlers never see the reference — they get the resolved path.
+Beside `uid:`, a path argument also accepts `<scheme>:<address>` when a scheme is configured — for a Johnny Decimal instance with id `jd`, `jd:06.11`. A fresh install has no scheme, so there it is an ordinary path (see [scope-provider.md](scope-provider.md#turning-a-scheme-on)). It resolves at the same interception point as uid addressing, immediately after it: `uid:` is reserved and always gets first look, so a call can freely mix the two (`uid:` for a note whose scheme address you don't know, `jd:` for one you do). Like uid addressing, it works on reads and writes alike and handlers never see the reference — they get the resolved path.
 
 ```jsonc
 {"path": "jd:06.11", "content": "…"}                    // obsidian_write_note

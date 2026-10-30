@@ -5,7 +5,7 @@
 
 The scope provider is a [capability module](module-system.md) (id `scheme`, capabilities
 `["addressing", "allocation"]`) that gives an agent a **scheme-relative** way to name and place
-notes. The default configured scheme is **Johnny Decimal**, addressed `jd:`.
+notes. A scheme is opt-in: a fresh install has none. The one provider today is **Johnny Decimal**, conventionally given the id `jd` and addressed `jd:` (see [Turning a scheme on](#turning-a-scheme-on)).
 
 Files: `packages/host/src/mcp/tools-scheme.ts` (five read tools), `packages/host/src/mcp/tools-scheme-write.ts`
 (three write tools), `packages/host/src/kernel/scheme/` (the pure engine: `registry.ts`, `jd.ts`,
@@ -33,10 +33,38 @@ it sees exactly the candidates `obsidian_resolve_address` would report:
 - `Error [address_ambiguous]` — two or more visible notes claim it; the error names only the
   candidates you could have named yourself (capped at 10).
 
-`jd` is the **id** of the default Johnny-Decimal instance, not a hardwired prefix:
-`DEFAULT_SCHEMES = [{ id: "jd", provider: "johnny-decimal" }]`, configurable via the top-level
-`schemes` setting. The ref grammar is `<scheme-id>:<address>`; `uid:` is explicitly never
-treated as a scheme ref.
+`jd` is the **id** of a Johnny-Decimal instance, not a hardwired prefix: the top-level
+`schemes` setting lists the instances, and `DEFAULT_SCHEMES` is empty. The ref grammar is
+`<scheme-id>:<address>`; `uid:` is explicitly never treated as a scheme ref.
+
+## Turning a scheme on
+
+A fresh install (no `data.json`, none adopted from the pre-split plugin) gets `schemes: []`: no
+`<id>:` addressing (a `jd:06.11` argument is an ordinary path), no scheme tool registered (the five
+read tools and the three write tools), and no scheme check in the conformance rail. `uid:` and
+paths work as before. An install whose saved settings predate the key keeps the one plain
+instance it had, `{ "id": "jd", "provider": "johnny-decimal" }`, and the plugin writes it once at
+its next load; a saved list, empty or not, is kept as it is.
+
+To turn Johnny Decimal on, add an instance to `schemes` in the plugin's `data.json` (or fill in
+any field of the scheme section on the settings page, which writes the plain `jd` instance), then
+reconnect (the tools register per connection):
+
+```json
+{ "schemes": [{ "id": "jd", "provider": "johnny-decimal" }] }
+```
+
+The provider's own defaults expand nothing. If your vault gives some areas or single categories
+5-digit IDs, say which in the instance's `config` (these values are examples only):
+
+```json
+{ "schemes": [{ "id": "jd", "provider": "johnny-decimal",
+  "config": { "expandedAreas": ["50-59"], "expandedCategories": ["34"] } }] }
+```
+
+When the expansions differ per machine, or must not sync, put the whole `schemes` list in the
+[machine-local override](settings.md#machine-local-override) instead: a list in the override
+replaces the synced list.
 
 ## The five read tools
 
@@ -117,8 +145,8 @@ only ever free among what your session can see.
 `jd.ts` recognizes: `area` (`00-09`), `category` (`06`), `id` (`06.11` / `06.110`),
 `expanded-item` (`92021` / `27001`), and `fractal-id` (`92021.10`). Its capabilities are
 `{ validate, itemAddresses, allocate, ordered }`. Content decimals start at a configurable floor
-(default `.10` — `.00–.09` reserved as standard zeros). Default config expands the `90-99` area
-and the `27` category. `allocatable(scope)` returns `{ allocatable:false, hint }` for scopes that
+(default `.10` — `.00–.09` reserved as standard zeros). The default config expands nothing:
+`expandedAreas` and `expandedCategories` are empty until an instance's `config` names them. `allocatable(scope)` returns `{ allocatable:false, hint }` for scopes that
 can't take a fresh content id (plain areas, expanded-items, categories folded into an expanded
 band) — distinct from a fully allocatable scope.
 

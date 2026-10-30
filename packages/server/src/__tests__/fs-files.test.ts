@@ -77,6 +77,20 @@ async function records(): Promise<Array<{ op: string; outcome: string }>> {
   return out;
 }
 
+describe("no scheme on the file-system server (01.33 pick A, step b)", () => {
+  test("its defaults: no scheme tool is listed, and a jd: path is an ordinary path, never resolved", async () => {
+    const c = await client();
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    for (const n of ["obsidian_schemes", "obsidian_validate_name", "obsidian_resolve_address", "obsidian_next_address", "obsidian_list_scope", "obsidian_expected_location", "obsidian_assign_address", "obsidian_refile_address", "obsidian_renumber_address"]) {
+      assert.equal(names.includes(n), false, n);
+    }
+    // Notes/Index.md exists; nothing resolves "jd:…" to it, so the read is of a path that is not there.
+    const r = await call(c, "obsidian_read_note", { path: "jd:00.00" });
+    assert.equal(r.isError, true);
+    await c.close();
+  });
+});
+
 describe("the file tools on the file-system server", () => {
   test("listed beside the 17 note tools and the replace tool; no trash tool on this server", async () => {
     const c = await client();
