@@ -17,6 +17,8 @@ import { runConformance } from "../src/kernel/cli.ts";
 import { serializeSidecar, sidecarPathFor, emptySidecar } from "../src/kernel/debt-sidecar.ts";
 import { DEFAULT_VOCABULARIES } from "@vault-mcp/core";
 import { DEFAULT_SCHEMES } from "@vault-mcp/core";
+
+const JD = [{ id: "jd", provider: "johnny-decimal" }];
 import { LEGACY_CONVENTIONS_SEED as SEED } from "../src/kernel/vault-conventions.ts";
 
 async function fixture() {
@@ -88,12 +90,13 @@ describe("obsidianDebtSource — #398 reaches the in-app tool", () => {
     try {
       await withoutEnvOverride(async () => {
         // Baseline taken with no territory listed: the key under 80-89 Sensitive is accepted debt.
-        const first = await runConformance({ root, conventions: SEED, baselineText: "", vocabularies: DEFAULT_VOCABULARIES, schemes: DEFAULT_SCHEMES, legacyPacks: true });
+        // One plain JD scheme, so the unaddressed note under the folder is a finding (no scheme is configured by default since 01.33 pick A, step b).
+        const first = await runConformance({ root, conventions: SEED, baselineText: "", vocabularies: DEFAULT_VOCABULARIES, schemes: JD, legacyPacks: true });
         assert.ok(first.rebaseline.includes("80-89 Sensitive/L.md"), "fixture: a key inside the folder is in the baseline");
         const baselinePath = path.join(root, REL);
         await mkdir(path.dirname(baselinePath), { recursive: true });
         await writeFile(baselinePath, "```ratchet-baseline\n" + first.rebaseline + "\n```\n");
-        const src = obsidianDebtSource(app(root), () => ["80-89"], () => withRel(SEED));
+        const src = obsidianDebtSource(app(root), () => ["80-89"], () => withRel(SEED), () => JD);
         await assert.rejects(() => src.liveFindings(), /refusing to run: a guarded territory was skipped \(80-89 Sensitive\)/);
       });
     } finally {

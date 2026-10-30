@@ -49,7 +49,7 @@ import { obsidianDriftSource } from "./obsidian-drift-source.js";
 import { DRIFT_VIEW_TYPE, DriftPaneView, type DriftPaneController } from "./drift-pane.js";
 import { ConformanceSettingTab } from "./settings-tab.js";
 import { conventionsNow, runAdoption, settingsOf, DEFAULT_PLUGIN_SETTINGS, type ConformancePluginSettings } from "./settings.js";
-import { declaredHeadless, findHostPlugin, hostSettingsOf, territoriesOrRefuse, type PluginsMap } from "./host-lookup.js";
+import { declaredHeadless, findHostPlugin, hostSchemes, hostSettingsOf, territoriesOrRefuse, type PluginsMap } from "./host-lookup.js";
 
 export default class VaultConformancePlugin extends Plugin {
   settings: ConformancePluginSettings = { ...DEFAULT_PLUGIN_SETTINGS, config: {} };
@@ -130,6 +130,8 @@ export default class VaultConformancePlugin extends Plugin {
   /** The two thunks every conformance source takes, read per run. */
   private territories = (): readonly string[] => territoriesOrRefuse(this.plugins());
   private conventions = () => conventionsNow(this.settings);
+  /** The host's configured schemes, read per run (none ⇒ no scheme check). */
+  private schemes = () => hostSchemes(this.plugins());
 
   /** Revoke whatever is published and publish freshly built specs. */
   private republish(): void {
@@ -138,7 +140,7 @@ export default class VaultConformancePlugin extends Plugin {
       this.unpublish = null;
       this.unpublish = publishTools(
         this,
-        buildConformanceTools(obsidianDebtRenderSource(this.app, this.territories, this.conventions), {
+        buildConformanceTools(obsidianDebtRenderSource(this.app, this.territories, this.conventions, this.schemes), {
           config: () => this.settings.config,
         }),
       );
@@ -150,7 +152,7 @@ export default class VaultConformancePlugin extends Plugin {
   /** The Drift pane: view, ribbon icon and command, for the plugin's lifetime
    *  (Obsidian unregisters all three when the plugin unloads). */
   private wireDriftPane(): void {
-    const source = obsidianDriftSource(this.app, this.territories, this.conventions);
+    const source = obsidianDriftSource(this.app, this.territories, this.conventions, this.schemes);
     const controller: DriftPaneController = {
       scan: () => source.scan(),
       openNote: (path) => void this.app.workspace.openLinkText(path, ""),

@@ -1,7 +1,7 @@
 // host-lookup.ts — "which loaded plugin is the Vault MCP HOST, and what does it
 // say?" Obsidian-free, so it is headlessly testable.
 //
-// The conformance rail reads three things that belong to the HOST and keeps no
+// The conformance rail reads four things that belong to the HOST and keeps no
 // copy of them:
 //
 //   * the guarded territories (`api.guardedTerritories()`, the host's #397
@@ -9,7 +9,9 @@
 //   * the host's settings object, ONCE, for the one-shot adoption of
 //     `vaultConventions` and `modules["conformance-debt"].config` (settings.ts);
 //   * the host's `host.headless` setting, at load, so the Drift pane is not
-//     mounted on a headless host (main.ts).
+//     mounted on a headless host (main.ts);
+//   * the host's configured `schemes`, per run, so the scheme pack measures
+//     the schemes the host addresses by (none configured: no scheme check).
 //
 // The host is found the way `vault-mcp-api` finds it: ids `vault-mcp` then
 // `governor`, CURRENT FIRST, and a plugin counts as the host only if it exposes
@@ -18,6 +20,8 @@
 // `tests/host-lookup.test.mjs` in this package; the territories reader is
 // the same function as `packages/governor/src/host-lookup.ts`'s
 // `hostGuardedTerritories`, with the same fail-closed reading of null.
+
+import type { SchemeInstanceConfig } from "@vault-mcp/core";
 
 /** The host plugin's ids, CURRENT FIRST — the pair `vault-mcp-api` reads. */
 export const HOST_PLUGIN_IDS = ["vault-mcp", "governor"] as const;
@@ -87,6 +91,17 @@ export function territoriesOrRefuse(plugins: PluginsMap): readonly string[] {
 export function hostSettingsOf(plugins: PluginsMap): unknown {
   const host = findHostPlugin(plugins);
   return host && host.settings !== undefined ? host.settings : undefined;
+}
+
+/** The host's configured scheme rows (`settings.schemes`), as the host holds
+ *  them in memory: the synced data.json with this machine's override merged
+ *  over it, so the rail measures the schemes the host addresses by. No host,
+ *  a host not ready, or a value that is not a list: none (no scheme check),
+ *  which the coverage refusal turns into a refusal when the baseline still
+ *  holds scheme debt. */
+export function hostSchemes(plugins: PluginsMap): SchemeInstanceConfig[] {
+  const s = hostSettingsOf(plugins) as { schemes?: unknown } | undefined;
+  return Array.isArray(s?.schemes) ? (s.schemes as SchemeInstanceConfig[]) : [];
 }
 
 /** Headless as DECLARED at load: the host's `host.headless` setting when it is
