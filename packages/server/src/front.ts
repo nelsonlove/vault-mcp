@@ -32,7 +32,7 @@ import {
   type AuthConfig,
 } from "./auth.js";
 import { createPresenceMonitor } from "./presence.js";
-import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
+import { createFsHandler, isFsWritesEnabled, checkFsSchemes } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
 import { loadProfileMap, createProfileGate, credentialOf, profileOf, type ProfileMap } from "./profiles.js";
@@ -424,6 +424,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
         "who can sign up at the AS. Set an allowlist, or AUTH_ALLOW_ANY_AUTHENTICATED=true " +
         "to opt in.",
     );
+    process.exit(1);
+  }
+
+  // 01.33 pick A step (b): a VAULT_MCP_SCHEMES the index cannot use stops the server here, not later in the index build.
+  try {
+    checkFsSchemes();
+  } catch (e) {
+    console.error(`[front] ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 

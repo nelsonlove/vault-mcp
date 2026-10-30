@@ -216,6 +216,7 @@ export {
   parseOutlinks,
   deriveJdIdFromPath,
   fsJdModel,
+  jdModelFromSchemes,
   SCHEMES_ENV_VAR,
   IndexStore,
 } from "./fs-backend/index-store.js";

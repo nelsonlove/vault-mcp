@@ -1,6 +1,6 @@
 # obsidian-vault-mcp-server
 
-> Project hub: `93046 obsidian-vault-mcp-server` (Obsidian vault)
+> Project hub: a project note in the operator's vault (for example `51001 obsidian-vault-mcp-server`; the id is made up)
 
 A minimal **remote** (Streamable HTTP) MCP server that exposes an Obsidian vault
 *folder* to Claude for reading, searching, and writing markdown. It operates
