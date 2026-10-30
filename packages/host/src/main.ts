@@ -33,6 +33,7 @@ import { DEFAULT_PROTECTED_PROPERTIES, setDeclaredProtectedProperties } from "@v
 import { mountAction } from "./mount-state.js";
 import { wireSchemePanes, registerSchemeCommands } from "./scheme/wiring.js";
 import { runHostAdoption, LEGACY_PLUGIN_ID, PLUGIN_ID } from "./id-migration.js";
+import { schemeModuleEnabled } from "./mcp/modules-mount.js";
 import { territoriesOnLoad } from "./territory-policy.js";
 import { recordFoldersOnLoad } from "./record-folders-policy.js";
 import { normalizeCliPolicy, type OpaqueSnapshotEntry } from "./mcp/cli-policy.js";
@@ -471,6 +472,9 @@ export default class VaultMcpPlugin extends Plugin {
     // override merge, so a machine-local `schemes` still wins.
     const schemesLoad = schemesOnLoad(own, seed);
     this.settings.schemes = schemesLoad.schemes;
+    // A saved value that is not a list: warn, run with no scheme, and keep the saved value as it was on every save (below).
+    this.unreadableSchemes = schemesLoad.warning ? { raw: own?.schemes ?? seed?.schemes } : null;
+    if (schemesLoad.warning) console.warn(`[vault-mcp] ${schemesLoad.warning}`);
     const rawHost = this.settings.host as unknown;
     this.settings.host = { ...(rawHost && typeof rawHost === "object" ? (rawHost as HostSettings) : DEFAULT_HOST_SETTINGS), autoRegisterClaude: autoRegisterLoad.value };
     // #579 — the machine-local override, merged over the synced settings key by
@@ -567,6 +571,20 @@ export default class VaultMcpPlugin extends Plugin {
     // seeding branch above can never run a second time for this install.
     if (territories.persist || recordFoldersLoad.persist || autoRegisterLoad.persist || schemesLoad.persist) await this.saveSettings();
   }
+  /** A saved `schemes` value that is not a list, kept so a save writes it back unchanged while no scheme has been set since (see loadSettings). */
+  private unreadableSchemes: { raw: unknown } | null = null;
+
+  /** What a save writes: the settings, with an unreadable saved `schemes` value kept as it was while nothing replaced it. */
+  private withUnreadableSchemes(data: Record<string, unknown>): Record<string, unknown> {
+    const s = this.unreadableSchemes;
+    if (!s) return data;
+    if (Array.isArray(data.schemes) && data.schemes.length > 0) {
+      this.unreadableSchemes = null; // a real list was set: it wins from now on
+      return data;
+    }
+    return { ...data, schemes: s.raw };
+  }
+
   async saveSettings() {
     const local = this.localSettings;
     if (local?.state === "loaded" && local.keys.length > 0) {
@@ -581,13 +599,15 @@ export default class VaultMcpPlugin extends Plugin {
       this.keepOverrides();
       try {
         const syncedNow = ((await this.loadData()) as Record<string, unknown> | null) ?? null;
-        await this.saveData(forSyncedFile(this.settings as unknown as Record<string, unknown>, local.keys, syncedNow, this.syncedBase));
+        await this.saveData(this.withUnreadableSchemes(forSyncedFile(this.settings as unknown as Record<string, unknown>, local.keys, syncedNow, this.syncedBase)));
       } finally {
         this.keepOverrides();
       }
     } else {
-      await this.saveData(this.settings);
+      await this.saveData(this.withUnreadableSchemes(this.settings as unknown as Record<string, unknown>));
     }
+    // The scheme panes follow whether a scheme exists and the module is on (a scheme added or removed on the settings page lands live).
+    if (this.schemeSurfaceLive) await this.setSchemePanesMounted(schemeModuleEnabled(this.settings));
     // Adoption is spent the moment the host owns a data.json of its own.
     this.adoptedSettings = null;
     // Keep the core guard registry live with settings-tab edits (#224).
@@ -1062,13 +1082,16 @@ export default class VaultMcpPlugin extends Plugin {
     // plugin reload, via `setSchemePanesMounted` below. The pane does not force a
     // leaf open on its own — the ribbon icon / command opens it on demand.
     // Headless (declared): no panes, and none of the commands below that open a view or a modal.
-    if (!headlessAtLoad && this.settings.modules?.scheme?.enabled !== false) {
+    // Since 01.33 pick A step (b) also only while a scheme is configured (`schemeModuleEnabled`):
+    // a fresh install has none, so it mounts no pane; saveSettings re-checks, so adding one mounts it live.
+    this.schemeSurfaceLive = !headlessAtLoad;
+    if (!headlessAtLoad && schemeModuleEnabled(this.settings)) {
       void this.setSchemePanesMounted(true);
     }
     // Commands register unconditionally, once, regardless of live mount
     // state — see scheme/wiring.ts's registerSchemeCommands doc comment for
     // why (no public Obsidian API to live-unregister a command).
-    if (!headlessAtLoad) registerSchemeCommands(this, () => this.settings.modules?.scheme?.enabled !== false);
+    if (!headlessAtLoad) registerSchemeCommands(this, () => schemeModuleEnabled(this.settings));
 
     if (!headlessAtLoad) this.addCommand({
       id: "connect-claude-code",
@@ -1160,8 +1183,12 @@ export default class VaultMcpPlugin extends Plugin {
    * owns that control now, over the provider's own `data.json`.
    */
   async onModuleEnabledChanged(moduleId: string, enabled: boolean): Promise<void> {
-    if (moduleId === "scheme") await this.setSchemePanesMounted(enabled);
+    // The toggle alone is not enough: with no scheme configured there is nothing to show.
+    if (moduleId === "scheme") await this.setSchemePanesMounted(enabled && schemeModuleEnabled(this.settings));
   }
+
+  /** True once onload decided the scheme panes may mount at all (not headless); saveSettings reconciles them then. */
+  schemeSurfaceLive = false;
 
   /**
    * Drive the scheme Inbox pane's mount state to `enabled`, live, without a plugin reload.

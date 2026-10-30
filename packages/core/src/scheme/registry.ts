@@ -59,6 +59,8 @@ export const JD_SCHEME_INSTANCE: Readonly<SchemeInstanceConfig> = Object.freeze(
 
 export interface SchemesOnLoad {
   schemes: SchemeInstanceConfig[];
+  /** Set when the stored `schemes` is not a list: what the caller should warn about. The stored value is left as it is (persist is false), so a hand-edited file is never rewritten by the load. */
+  warning?: string;
   /** True when the stored settings did not hold the key (or came from the adoption source): save now, so the decision runs at most once per install. */
   persist: boolean;
 }
@@ -70,8 +72,8 @@ export interface SchemesOnLoad {
  * install is an EXISTING install). No stored settings at all (a fresh
  * install): no scheme. Stored settings without the key (an install that
  * predates step b, which got the one jd instance by default): that instance,
- * saved once. Otherwise the stored list as it is (a value that is not a list
- * reads as none).
+ * saved once. Otherwise the stored list as it is. A stored value that is not
+ * a list reads as no scheme, with a `warning`, and is not written back.
  */
 export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
   const asObject = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -79,7 +81,10 @@ export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
   if (!stored) return { schemes: [], persist: true };
   if (!Object.prototype.hasOwnProperty.call(stored, "schemes")) return { schemes: [{ ...JD_SCHEME_INSTANCE }], persist: true };
   const list = stored.schemes;
-  return { schemes: Array.isArray(list) ? structuredClone(list as SchemeInstanceConfig[]) : [], persist: asObject(own) === null };
+  if (!Array.isArray(list)) {
+    return { schemes: [], persist: false, warning: `the saved "schemes" setting is not a list (it is ${list === null ? "null" : typeof list}), so no scheme is on; the saved value is left as it is — fix it to a list of scheme rows` };
+  }
+  return { schemes: structuredClone(list as SchemeInstanceConfig[]), persist: asObject(own) === null };
 }
 
 export interface SchemeInstance {
