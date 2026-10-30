@@ -143,7 +143,7 @@ only ever free among what your session can see.
 ## Johnny Decimal grammar (the default provider)
 
 `jd.ts` recognizes: `area` (`00-09`), `category` (`06`), `id` (`06.11` / `06.110`),
-`expanded-item` (`92021` / `27001`), and `fractal-id` (`92021.10`). Its capabilities are
+`expanded-item` (`52021` / `34001`), and `fractal-id` (`52021.10`). Its capabilities are
 `{ validate, itemAddresses, allocate, ordered }`. Content decimals start at a configurable floor
 (default `.10` — `.00–.09` reserved as standard zeros). The default config expands nothing:
 `expandedAreas` and `expandedCategories` are empty until an instance's `config` names them. `allocatable(scope)` returns `{ allocatable:false, hint }` for scopes that
