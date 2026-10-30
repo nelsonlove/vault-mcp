@@ -3,7 +3,7 @@ import path from "node:path";
 import { vaultRoot } from "./vault.js";
 import type { FrontmatterValue, ResolveResult, OutlinkEntry } from "../vault-backend.js";
 import { leadingFrontmatterBlock, stripLeadingFrontmatter } from "../accept-guard.js";
-import { makeRegistry, type SchemeInstanceConfig } from "../scheme/registry.js";
+import { allSchemeRowsTaken, schemeRowOn, type SchemeInstanceConfig } from "../scheme/registry.js";
 import { DEFAULT_JD_CONFIG, validateJdConfig } from "../scheme/jd.js";
 
 /**
@@ -260,7 +260,7 @@ let cachedModel: { raw: string | undefined; model: FsJdModel | null } | null = n
 export function jdModelFromSchemes(rows: unknown): FsJdModel | null {
   if (!Array.isArray(rows)) return null;
   for (const row of rows) {
-    if (!row || typeof row !== "object" || (row as { provider?: unknown }).provider !== "johnny-decimal") continue;
+    if (!row || typeof row !== "object" || (row as { provider?: unknown }).provider !== "johnny-decimal" || !schemeRowOn(row)) continue;
     const cfg = (row as { config?: unknown }).config;
     if (validateJdConfig(cfg).length > 0) return null;
     const config = { ...DEFAULT_JD_CONFIG, ...((cfg as Partial<typeof DEFAULT_JD_CONFIG> | undefined) ?? {}) };
@@ -295,11 +295,10 @@ export function fsJdModel(env: Record<string, string | undefined> = process.env)
       throw new Error(`${SCHEMES_ENV_VAR} is not valid JSON: ${(e as Error).message}`);
     }
     if (!Array.isArray(rows)) throw new Error(`${SCHEMES_ENV_VAR} must be a JSON list of scheme rows`);
-    const registry = makeRegistry(rows as SchemeInstanceConfig[]);
-    if (registry.instances().length !== rows.length) {
+    if (!allSchemeRowsTaken(rows)) {
       throw new Error(`${SCHEMES_ENV_VAR} holds a row the scheme registry does not take (an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)`);
     }
-    const jd = (rows as SchemeInstanceConfig[]).find((r) => r.provider === "johnny-decimal");
+    const jd = (rows as SchemeInstanceConfig[]).find((r) => r.provider === "johnny-decimal" && schemeRowOn(r));
     if (jd) {
       const config = { ...DEFAULT_JD_CONFIG, ...(jd.config ?? {}) };
       model = { expandedAreas: new Set(config.expandedAreas), expandedCategories: new Set(config.expandedCategories) };

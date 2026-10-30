@@ -120,12 +120,77 @@ describe("6. the settings page: a row only for a real value, and a plain on/off"
     assert.equal(s.schemes.length, 1);
   });
 
-  test("setSchemeOn turns the scheme on (plain jd) and off (no rows)", () => {
+  test("setSchemeOn with no row: on adds the plain jd row", () => {
     const on = setSchemeOn({ schemes: [] }, true);
     assert.deepEqual(on.schemes, PLAIN_JD);
-    assert.deepEqual(setSchemeOn(on, false).schemes, []);
     const same = { schemes: MADE_UP };
     assert.equal(setSchemeOn(same, true), same, "already on: unchanged");
+  });
+
+  test("on -> off -> on returns the user's own rows byte for byte; off keeps them, marked off", () => {
+    const rows = [
+      { id: "jd", provider: "johnny-decimal", config: { expandedAreas: ["50-59"], expandedCategories: ["34"], contentDecimalFloor: 20 }, excludedRoots: ["Old stuff"] },
+      { id: "num", provider: "johnny-decimal", config: { expandedCategories: ["41"] } },
+      { id: "odd", provider: "not-a-real-provider" },
+    ];
+    const start = { readOnly: true, schemes: structuredClone(rows) };
+    const before = JSON.stringify(start);
+    const off = setSchemeOn(start, false);
+    assert.equal(off.schemes.length, 3, "no row is deleted");
+    assert.ok(off.schemes.every((r) => r.enabled === false));
+    assert.equal(schemeModuleEnabled(off), false, "off: as with no rows");
+    const on = setSchemeOn(off, true);
+    assert.equal(JSON.stringify(on), before, "byte for byte");
+    assert.equal(JSON.stringify(start), before, "the input is not changed");
+  });
+
+  test("off: no scheme tools, no addressing, and the rows still validate", async () => {
+    const { mountModules } = await import("../src/mcp/modules-mount.ts");
+    const { fakeServer } = await import("./fake-server.mjs");
+    const { makeRegistry, allSchemeRowsTaken } = await import("../src/kernel/scheme/registry.ts");
+    const off = setSchemeOn({ schemes: MADE_UP }, false);
+    const server = fakeServer();
+    mountModules((n, d, h) => server.registerTool(n, d, h), { getSettings: () => off, schemeNotes: () => [] });
+    assert.deepEqual([...server.tools.keys()], []);
+    const reg = makeRegistry(off.schemes);
+    assert.equal(reg.instances().length, 0);
+    assert.equal(reg.parseRef("jd:06.11"), null);
+    assert.deepEqual(reg.offIds(), ["jd"]);
+    assert.equal(allSchemeRowsTaken(off.schemes), true, "an off row is a good row");
+    assert.equal(jdModelFromSchemes(off.schemes), null);
+  });
+
+  test("a missing flag means on, so an existing install does not change; a non-boolean flag is refused", async () => {
+    const { makeRegistry, allSchemeRowsTaken } = await import("../src/kernel/scheme/registry.ts");
+    assert.equal(makeRegistry(PLAIN_JD).instances().length, 1);
+    assert.equal(schemeModuleEnabled({ schemes: PLAIN_JD }), true);
+    assert.equal(makeRegistry([{ ...PLAIN_JD[0], enabled: true }]).instances().length, 1);
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      assert.equal(allSchemeRowsTaken([{ ...PLAIN_JD[0], enabled: "no" }]), false);
+    } finally {
+      console.error = quiet;
+    }
+  });
+
+  test("the override still wins and locks the on/off; a save never writes it", async () => {
+    const { p, state } = (() => {
+      const p = new VaultMcpPlugin();
+      const state = { disk: { ...BASE, schemes: PLAIN_JD }, writes: 0 };
+      p.loadData = async () => structuredClone(state.disk);
+      p.saveData = async (d) => { state.writes++; state.disk = structuredClone(d); };
+      const override = { schemes: MADE_UP };
+      p.localSettings = { state: "loaded", location: LOC, override, keys: ["schemes"] };
+      return { p, state };
+    })();
+    await p.loadSettings();
+    assert.deepEqual(p.settings.schemes, MADE_UP);
+    // A turn-off attempted anyway (the tab locks the control) is set back before the save writes.
+    p.settings = setSchemeOn(p.settings, false);
+    await p.saveSettings();
+    assert.deepEqual(state.disk.schemes, PLAIN_JD, "the synced file keeps its own rows");
+    assert.deepEqual(p.settings.schemes, MADE_UP, "memory keeps the override");
   });
 
   test("the settings tab renders the on/off, locked by an override of schemes", () => {

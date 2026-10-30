@@ -26,7 +26,7 @@ import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore, UidIndex
 import { seedFromJournal, type SeedRecord } from "./kernel/idempotency.js";
 import { createSessionLog } from "./kernel/sessions/session-log.js";
 import { obsidianProbe, obsidianServerIdentity, obsidianUidSource } from "./kernel/obsidian-probe.js";
-import { DEFAULT_SCHEMES, makeRegistry, schemesOnLoad, type SchemeInstanceConfig } from "./kernel/scheme/registry.js";
+import { DEFAULT_SCHEMES, allSchemeRowsTaken, schemesOnLoad, type SchemeInstanceConfig } from "./kernel/scheme/registry.js";
 import { DEFAULT_PROTECTED_PROPERTIES, setDeclaredProtectedProperties } from "@vault-mcp/core";
 // Host-side since S2 (condition 9): the mount decision is generic, and the
 // HOST uses it for the scheme panes.
@@ -564,7 +564,7 @@ export default class VaultMcpPlugin extends Plugin {
           `${local.location.path}: the plugin does not take the value given for ${bad.join(", ")} (an unknown value, or one the setting would change)`,
         );
       }
-      const useTime = useTimeProblems(local.override, (p) => archivePatternRegExp(p) !== null, (rows) => makeRegistry(rows as SchemeInstanceConfig[]).instances().length === rows.length);
+      const useTime = useTimeProblems(local.override, (p) => archivePatternRegExp(p) !== null, (rows) => allSchemeRowsTaken(rows));
       if (useTime.length > 0) throw new LocalSettingsError(`${local.location.path}: ${useTime.join("; ")}`);
     }
     // Persist NOW if the territories key was absent (seeded or fresh), so the

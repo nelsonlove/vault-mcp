@@ -58,7 +58,7 @@ import {
   type ToolRegistrar,
   type VaultModule,
 } from "../kernel/modules/index.js";
-import { makeRegistry, DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, validateExcludedRoots, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
+import { makeRegistry, DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemeRowOn, validateExcludedRoots, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import { validateJdConfig, type JdConfig } from "../kernel/scheme/jd.js";
 import { registerSchemeTools } from "./tools-scheme.js";
 
@@ -255,11 +255,17 @@ function currentSchemes(settings: unknown): SchemeInstanceConfig[] {
   return s && s.length > 0 ? s : [{ ...JD_SCHEME_INSTANCE }];
 }
 
-/** Whether any scheme is configured. None (a fresh install) ⇒ the scheme
- * module contributes no tool, and the three scheme write tools are not
- * registered either. */
+/** Whether any scheme is on: a row that is not turned off (`enabled: false`).
+ * None (a fresh install, or every row off) ⇒ the scheme module contributes no
+ * tool, and the three scheme write tools are not registered either. */
 export function schemesConfigured(settings: { schemes?: SchemeInstanceConfig[] }): boolean {
-  return Array.isArray(settings.schemes) && settings.schemes.length > 0;
+  return Array.isArray(settings.schemes) && settings.schemes.some(schemeRowOn);
+}
+
+/** Whether the list holds any row at all, on or off. */
+function hasRows(settings: unknown): boolean {
+  const s = (settings as { schemes?: unknown }).schemes;
+  return Array.isArray(s) && s.length > 0;
 }
 
 /** Resolves the scheme manifest's flat field keys against the EXISTING
@@ -298,14 +304,24 @@ function rowIsEmpty(row: SchemeInstanceConfig): boolean {
 }
 
 /**
- * The scheme on/off control on the settings page. On with no scheme: the plain
- * `JD_SCHEME_INSTANCE`. Off: no scheme at all (every row goes, so no `<id>:`
- * addressing and no scheme tool). Already in the asked state: the settings
- * object back unchanged.
+ * The scheme on/off control on the settings page. The rows are never deleted:
+ * off marks every row `enabled: false` (so no `<id>:` addressing, no scheme
+ * tool and no scheme check, exactly as with no rows), and on takes that mark
+ * off again, so the user's own rows come back as they were. On with no row at
+ * all adds the plain `JD_SCHEME_INSTANCE`. Already in the asked state: the
+ * settings object back unchanged.
  */
 export function setSchemeOn<S extends { schemes?: SchemeInstanceConfig[] }>(settings: S, on: boolean): S {
   if (on === schemesConfigured(settings)) return settings;
-  return { ...settings, schemes: on ? [{ ...JD_SCHEME_INSTANCE }] : [] };
+  const rows = Array.isArray(settings.schemes) ? settings.schemes : [];
+  if (on && rows.length === 0) return { ...settings, schemes: [{ ...JD_SCHEME_INSTANCE }] };
+  const next = rows.map((row) => {
+    if (!on) return { ...row, enabled: false };
+    if (row.enabled !== false) return row;
+    const { enabled: _off, ...rest } = row;
+    return rest as SchemeInstanceConfig;
+  });
+  return { ...settings, schemes: next };
 }
 
 const schemeBinding: ConfigBinding = {
@@ -318,7 +334,8 @@ const schemeBinding: ConfigBinding = {
     };
   },
   write(settings, patch) {
-    const configured = schemesConfigured(settings as { schemes?: SchemeInstanceConfig[] });
+    // "configured" here is whether a row exists, on or off: a field edit on an off row stays on that row and keeps it off.
+    const configured = hasRows(settings);
     // No scheme yet, and the patch says nothing (a field typed in and cleared): write no row, so JD stays off.
     if (!configured && !Object.values(patch).some(holdsValue)) return settings;
     const schemes = currentSchemes(settings);

@@ -1408,8 +1408,8 @@ export class VaultMcpSettingTab extends PluginSettingTab {
         .setName("Use a scheme (Johnny Decimal)")
         .setDesc(
           on
-            ? "On: `jd:` addresses resolve and the scheme tools register on the next connect. Off removes every scheme row, so no address resolves."
-            : "Off: no scheme, so no `jd:` addressing and no scheme tool. On adds a plain Johnny Decimal scheme with id `jd`; set its expansions below."
+            ? "On: `jd:` addresses resolve and the scheme tools register on the next connect. Off keeps your scheme rows and their settings but turns them off: no address resolves, no scheme tool registers, no scheme check runs."
+            : "Off: no `jd:` addressing, no scheme tool and no scheme check. On turns your saved scheme rows back on as they were, or adds a plain Johnny Decimal scheme with id `jd` when there is none; set its expansions below."
         )
         .addToggle((t) =>
           t.setValue(on).onChange(async (value) => {
