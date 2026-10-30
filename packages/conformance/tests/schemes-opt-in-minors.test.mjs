@@ -48,6 +48,15 @@ describe("3. the override's rows go through the registry check, as in the host",
       }
     });
   }
+  test("an off row in the override is a good row, kept as it is", async () => {
+    const off = [{ ...MADE_UP[0], enabled: false }];
+    const s = await setup({ data: { schemes: JD }, override: { schemes: off } });
+    try {
+      assert.deepEqual(cliSchemes(s.root, {}, s.home), off);
+    } finally {
+      await s.done();
+    }
+  });
   test("good rows pass", async () => {
     const s = await setup({ data: { schemes: JD }, override: { schemes: MADE_UP } });
     try {

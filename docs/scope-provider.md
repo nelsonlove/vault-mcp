@@ -62,6 +62,8 @@ The provider's own defaults expand nothing. If your vault gives some areas or si
   "config": { "expandedAreas": ["50-59"], "expandedCategories": ["34"] } }] }
 ```
 
+To turn a scheme off without losing its settings, use the scheme section's on/off switch, or give the row `"enabled": false` by hand: the row is still checked, but its id addresses nothing, no scheme tool registers for it and no scheme check runs on it, as if it were absent. A row without `enabled` is on. Every reader (the plugin, the file-system server's `VAULT_MCP_SCHEMES`, the conformance rail) honours the flag the same way, through the scheme registry.
+
 When the expansions differ per machine, or must not sync, put the whole `schemes` list in the
 [machine-local override](settings.md#machine-local-override) instead: a list in the override
 replaces the synced list.

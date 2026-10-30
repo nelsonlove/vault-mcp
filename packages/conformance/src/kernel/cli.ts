@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 // extraction (suite split, S7) — this rail is one of its two consumers, the
 // `vaultmcp-vocab` satellite's four tools being the other.
 import { VocabRegistry, DEFAULT_VOCABULARIES, type VocabInstanceSettings } from "@vault-mcp/core";
-import { makeRegistry, schemesOnLoad, splitSettings, type SchemeInstanceConfig } from "@vault-mcp/core";
+import { makeRegistry, schemesOnLoad, splitSettings, allSchemeRowsTaken, type SchemeInstanceConfig } from "@vault-mcp/core";
 import { homedir } from "node:os";
 import { buildSnapshot, DEFAULT_SKIP, type SkippedTerritory } from "./snapshot.js";
 import { envAliased } from "@vault-mcp/core";
@@ -890,8 +890,7 @@ export function cliSchemes(root: string, env: Record<string, string | undefined>
     if (schemes !== undefined) {
       if (!Array.isArray(schemes)) throw new Error(`the Vault MCP settings override ${overridePath}: schemes must be a list`);
       // The host refuses to serve on a row its registry would skip (local-settings.ts useTimeProblems); so does this.
-      const bad = schemes.some((r) => !r || typeof r !== "object" || Array.isArray(r)) || makeRegistry(schemes as SchemeInstanceConfig[]).instances().length !== schemes.length;
-      if (bad) {
+      if (!allSchemeRowsTaken(schemes)) {
         throw new Error(
           `the Vault MCP settings override ${overridePath}: schemes holds a row the scheme registry does not take (not an object, an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)`,
         );
