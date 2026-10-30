@@ -37,6 +37,8 @@ import {
   listFolders,
   buildIndex,
   indexStatus,
+  fsJdModel,
+  SCHEMES_ENV_VAR,
   resolveRefs,
   getBacklinks,
   getOutlinks,
@@ -471,13 +473,17 @@ export function makeBackend(
           update_backlinks: options.update_backlinks,
           overwrite: options.overwrite,
         },
-        () =>
-          moveNote(fromRel, toRel, {
+        () => {
+          // A move that heals links needs the index; in error, refuse rather than rename with no link rewrite.
+          const refusal = options.update_backlinks === false ? null : indexErrorMoveRefusal(indexStatus());
+          if (refusal) throw new Error(refusal);
+          return moveNote(fromRel, toRel, {
             update_backlinks: options.update_backlinks,
             overwrite: options.overwrite,
             backlinks_provider: getBacklinks,
             resolve_ref: (ref: string) => resolveRefs([ref])[0]?.path,
-          }),
+          });
+        },
       ),
 
     deleteNote: async (relPath, confirm) =>
@@ -530,6 +536,25 @@ function existsInVault(rel: string): boolean {
 //
 // Exported so tests can build a server and wire it over InMemoryTransport
 // without standing up a full Express + HTTP stack.
+
+/**
+ * Check `VAULT_MCP_SCHEMES` once, at startup: the value must be one the index
+ * can use, or the server must not start (01.33 pick A, step b). Throws an
+ * Error whose message names the variable and the problem; front.ts exits on it.
+ */
+export function checkFsSchemes(env: Record<string, string | undefined> = process.env): void {
+  try {
+    fsJdModel(env);
+  } catch (e) {
+    throw new Error(`refusing to start: ${SCHEMES_ENV_VAR} cannot be used (${e instanceof Error ? e.message : String(e)}). Fix or unset it.`);
+  }
+}
+
+/** The refusal a link-healing move gives while the index is in error: the index finds the backlinks, so without it a move would rename and rewrite no link. */
+export function indexErrorMoveRefusal(status: { status: string; error?: string }): string | null {
+  if (status.status !== "error") return null;
+  return `index_unavailable: the vault index is in error (${status.error ?? "unknown"}), so the links to this note cannot be found and rewritten; nothing was moved. Fix the cause and restart the server, or move with update_backlinks: false`;
+}
 
 export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   const server = new McpServer(
