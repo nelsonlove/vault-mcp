@@ -28,7 +28,7 @@ import { registerCreateNoteTool } from "./tools-create-note.js";
 import { mountModules, schemeModuleEnabled } from "./modules-mount.js";
 import { registerCodeModeTools, makeCaptureRegister, type CapturedRegistry } from "./tools-code-mode.js";
 import { makeGuarded, resolveGuardedPath, withKernelArgs, refOf } from "./guarded.js";
-import { INPUT_VALIDATION_CODE, refusalCodeOf } from "@vault-mcp/core";
+import { INPUT_VALIDATION_CODE, refusalCodeOf, jdModelFromSchemes } from "@vault-mcp/core";
 import { inputObjectOf, resolveProfile, profileAllows, profileCallRefusal, isProfileName, SNIPPET_TOOLS, buildRedaction, parseProfileList, scannerFor, type SecretScanner } from "@vault-mcp/core";
 import { APP_ONLY_ARGS, APP_ONLY_TOOLS, appOnlyCall, declaredHeadless, headlessRefusal, isHeadless, normalizeHostSettings } from "../headless.js";
 import { reportCompletedWrite } from "./seam.js";
@@ -618,7 +618,7 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // its own per-item guarded dispatch (see the write-notes block below).
   const backend = new ObsidianBackend(app, visible, (facts) => {
     writeFacts = facts;
-  }, recordIdentification);
+  }, recordIdentification, () => jdModelFromSchemes(ctx.getSettings().schemes));
   registerFsTools(server, backend, {
     decodeHtml: false,
     // obsidian_read_note returns no content for a binary file: the attachment types (core's default
