@@ -246,8 +246,8 @@ describe("who supplies the conventions — source-scan pins against 'threaded bu
   test("the in-app sources are handed a per-call conventions thunk from the live settings", () => {
     const main = src("main.ts");
     assert.match(main, /private conventions = \(\) => conventionsNow\(this\.settings\);/, "main.ts reads the live settings per call");
-    assert.match(main, /obsidianDebtRenderSource\(this\.app, this\.territories, this\.conventions\)/, "main.ts supplies the debt source's conventions thunk as the THIRD argument");
-    assert.match(main, /obsidianDriftSource\(this\.app, this\.territories, this\.conventions\)/, "main.ts supplies the drift pane's thunk");
+    assert.match(main, /obsidianDebtRenderSource\(this\.app, this\.territories, this\.conventions, this\.schemes\)/, "main.ts supplies the debt source's conventions thunk as the THIRD argument");
+    assert.match(main, /obsidianDriftSource\(this\.app, this\.territories, this\.conventions, this\.schemes\)/, "main.ts supplies the drift pane's thunk");
     assert.match(src("obsidian-debt-source.ts"), /conventions: conventions\?\.\(\) \?\? EMPTY_VAULT_CONVENTIONS/, "the debt source reads the thunk per run, EMPTY without one");
     assert.match(src("obsidian-drift-source.ts"), /conventions: conventions\?\.\(\) \?\? EMPTY_VAULT_CONVENTIONS/, "the drift source reads the thunk per run, EMPTY without one");
     for (const f of ["obsidian-debt-source.ts", "obsidian-drift-source.ts"]) {

@@ -249,14 +249,20 @@ describe("the territory thunk is FORWARDED, never dropped (#396 review, moved fr
   // `obsidianDebtSource(app)`, and the drift wiring once built
   // `obsidianDriftSource(app)`. Both walks ran unguarded.
   const src = (rel) => fs.readFileSync(path.join(HERE, "..", "src", rel), "utf8");
-  test("the render source hands BOTH thunks to the inner source", () => {
-    assert.match(src("obsidian-debt-source.ts"), /\.\.\.obsidianDebtSource\(app, territories, conventions\)/);
+  test("main.ts supplies the host's schemes, read per run, and both sources read the thunk per run (01.33 pick A, step b)", () => {
+    assert.match(src("main.ts"), /private schemes = \(\) => hostSchemes\(this\.plugins\(\)\);/);
+    for (const f of ["obsidian-debt-source.ts", "obsidian-drift-source.ts"]) {
+      assert.match(src(f), /schemes: schemes\?\.\(\) \?\? DEFAULT_SCHEMES,/, `${f} reads the schemes thunk per run, none without one`);
+    }
+  });
+  test("the render source hands every thunk to the inner source", () => {
+    assert.match(src("obsidian-debt-source.ts"), /\.\.\.obsidianDebtSource\(app, territories, conventions, schemes\)/);
   });
   test("main.ts supplies the host's territories, read per run, to the tools AND the Drift pane", () => {
     const main = src("main.ts");
     assert.match(main, /private territories = \(\): readonly string\[\] => territoriesOrRefuse\(this\.plugins\(\)\);/);
-    assert.match(main, /obsidianDebtRenderSource\(this\.app, this\.territories, this\.conventions\)/);
-    assert.match(main, /obsidianDriftSource\(this\.app, this\.territories, this\.conventions\)/);
+    assert.match(main, /obsidianDebtRenderSource\(this\.app, this\.territories, this\.conventions, this\.schemes\)/);
+    assert.match(main, /obsidianDriftSource\(this\.app, this\.territories, this\.conventions, this\.schemes\)/);
   });
   test("both sources call the thunk inside the run, so a refusal surfaces per call", () => {
     for (const f of ["obsidian-debt-source.ts", "obsidian-drift-source.ts"]) {

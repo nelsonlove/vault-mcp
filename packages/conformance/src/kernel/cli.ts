@@ -7,7 +7,7 @@
 // ready-to-write rebaseline body come out. `main` is the thin wrapper that
 // reads argv/env, loads the baseline note, prints, and sets the exit code.
 //
-// The two module packs (vocab + scheme) always run. All four ported legacy
+// The vocab pack always runs; the scheme pack runs when a scheme is configured. All four ported legacy
 // checks (structure/port/ste/drift) register by DEFAULT — `--no-legacy-packs`
 // opts out (the rationale is on `RunOpts.legacyPacks` below, issue #116).
 
@@ -18,7 +18,8 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 // extraction (suite split, S7) — this rail is one of its two consumers, the
 // `vaultmcp-vocab` satellite's four tools being the other.
 import { VocabRegistry, DEFAULT_VOCABULARIES, type VocabInstanceSettings } from "@vault-mcp/core";
-import { makeRegistry, DEFAULT_SCHEMES, type SchemeInstanceConfig } from "@vault-mcp/core";
+import { makeRegistry, schemesOnLoad, type SchemeInstanceConfig } from "@vault-mcp/core";
+import { homedir } from "node:os";
 import { buildSnapshot, DEFAULT_SKIP, type SkippedTerritory } from "./snapshot.js";
 import { envAliased } from "@vault-mcp/core";
 import { intendedRealPath, sameFile, isInside } from "./path-identity.js";
@@ -137,8 +138,12 @@ export async function runConformance(opts: RunOpts): Promise<RunResult> {
   // confines each instance to its own root).
   const vocabInstances = new VocabRegistry(opts.vocabularies).build(snapshot.notes);
   packs.push(vocabPack(vocabInstances.map((i) => i.provider)));
-  // scheme instances: from settings, independent of the listing.
-  packs.push(schemePack(makeRegistry(opts.schemes).instances()));
+  // scheme instances: from settings, independent of the listing. No instance
+  // (a vault with no scheme, the default since 01.33 pick A step b) ⇒ no scheme
+  // pack at all, so no scheme check runs; a baseline that still holds scheme
+  // debt is then refused by the coverage check below, never read as CLEARED.
+  const schemeInstances = makeRegistry(opts.schemes).instances();
+  if (schemeInstances.length > 0) packs.push(schemePack(schemeInstances));
   // ported legacy checks: native packs over the snapshot's raw sources,
   // blueprint listing, and config/existence inputs (conformance_check /
   // port_lint / ste_lint / drift_audit — the full legacy rail, all in TS).
@@ -831,6 +836,64 @@ export function pluginBaselineRel(root: string, env: Record<string, string | und
   }
 }
 
+/** The environment variable that names the host's machine-local settings override (#579). */
+export const LOCAL_SETTINGS_ENV = "VAULT_MCP_LOCAL_SETTINGS";
+
+/**
+ * The scheme rows the CLI measures: the ones the Vault MCP host in this vault
+ * addresses by, found the way the host finds them (01.33 pick A, step b — a
+ * vault has no scheme unless it configures one).
+ *
+ *   1. The host's machine-local settings override, when it sets `schemes`: the
+ *      file `VAULT_MCP_LOCAL_SETTINGS` names, else
+ *      `<VAULT_MCP_STATE_DIR or ~/.claude/vault-mcp>/local/settings.json` — the
+ *      host's own lookup (packages/host/src/local-settings.ts and paths.ts).
+ *      As in the host, a file that is there but cannot be read, or a named one
+ *      that is missing, is an error, never a quiet fall-back to the synced
+ *      value.
+ *   2. Else the host's data.json in this vault, by the host's own load rule
+ *      (`schemesOnLoad`): no data.json, none; a data.json without the key, the
+ *      plain jd instance; else the saved list.
+ *
+ * Read-only. None found ⇒ no scheme pack, and a baseline that holds scheme
+ * debt is refused by the coverage check rather than read as CLEARED.
+ */
+export function cliSchemes(root: string, env: Record<string, string | undefined> = process.env, home: string = homedir()): SchemeInstanceConfig[] {
+  const named = env[LOCAL_SETTINGS_ENV]?.trim();
+  const stateDir = env.VAULT_MCP_STATE_DIR?.trim();
+  const overridePath = named || join(stateDir ? resolve(stateDir) : join(home, ".claude", "vault-mcp"), "local", "settings.json");
+  if (named && !isAbsolute(named)) throw new Error(`${LOCAL_SETTINGS_ENV} must be an absolute path; it is '${named}'`);
+  let text: string | null = null;
+  try {
+    text = readFileSync(overridePath, "utf8");
+  } catch (e) {
+    const code = (e as { code?: unknown })?.code;
+    const absent = code === "ENOENT" || (code === "ENOTDIR" && !named);
+    if (!absent) throw new Error(`cannot read the Vault MCP settings override ${overridePath}: ${(e as Error).message}`);
+    if (named) throw new Error(`${LOCAL_SETTINGS_ENV} names ${overridePath}, and there is no file there`);
+  }
+  if (text !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      throw new Error(`the Vault MCP settings override ${overridePath} is not valid JSON: ${(e as Error).message}`);
+    }
+    const schemes = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).schemes : undefined;
+    if (schemes !== undefined) {
+      if (!Array.isArray(schemes)) throw new Error(`the Vault MCP settings override ${overridePath}: schemes must be a list`);
+      return schemes as SchemeInstanceConfig[];
+    }
+  }
+  let data: unknown = null;
+  try {
+    data = JSON.parse(readFileSync(join(resolve(root), ".obsidian", "plugins", CONVENTIONS_PLUGIN_DIRS[1], "data.json"), "utf8"));
+  } catch {
+    data = null;
+  }
+  return schemesOnLoad(data).schemes;
+}
+
 /**
  * The baseline path the IN-APP sources read (#493): the plugin's own setting
  * first, so an edit in Settings always takes effect; the process-environment
@@ -1113,7 +1176,8 @@ export async function runCli(argv: string[]): Promise<void> {
     root,
     baselineText,
     vocabularies: DEFAULT_VOCABULARIES,
-    schemes: DEFAULT_SCHEMES,
+    // The host's schemes (01.33 pick A, step b): its override, else its data.json; none ⇒ no scheme check.
+    schemes: cliSchemes(root),
     // Default ON — see RunOpts.legacyPacks. The baseline describes these packs
     // and nothing else, so omitting them clears it wholesale.
     legacyPacks: !argv.includes("--no-legacy-packs"),

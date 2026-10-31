@@ -15,7 +15,7 @@ import type { RunCoverage } from "./kernel/report-caps.js";
 import { parseSidecar, sidecarPathFor, type DebtSidecar } from "./kernel/debt-sidecar.js";
 import { runConformance, inAppBaselineRel, inAppBaselineRefusal, inAppBaselineFromEnv, excludedRootsFrom, coverageRefusal, baselinePackIds } from "./kernel/cli.js";
 import { parseBaseline } from "./kernel/ratchet.js";
-import { DEFAULT_VOCABULARIES, DEFAULT_SCHEMES } from "@vault-mcp/core";
+import { DEFAULT_VOCABULARIES, DEFAULT_SCHEMES, type SchemeInstanceConfig } from "@vault-mcp/core";
 import { EMPTY_VAULT_CONVENTIONS, type VaultConventions } from "./kernel/vault-conventions.js";
 
 /** Read a UTF-8 file, or null when it is absent/unreadable (never throws). */
@@ -36,13 +36,22 @@ function vaultRoot(app: App): string {
 
 /**
  * The Obsidian `DebtSource`: a live conformance run + the baseline/sidecar on
- * disk, using the SAME config resolution the CLI rail uses (default schemes /
- * vocabularies, env-driven excluded roots, legacy packs on). The baseline
+ * disk, using the SAME config resolution the CLI rail uses (default
+ * vocabularies, env-driven excluded roots, legacy packs on). The schemes are
+ * the host's configured ones, read per run through `schemes` (main.ts passes
+ * the host's live settings, which carry any machine-local override); a source
+ * built without the thunk has none, so no scheme check runs (01.33 pick A,
+ * step b). The baseline
  * location is the plugin's Conformance setting, read per call, then the env
  * override (#493); none configured or a missing note refuses. `liveFindings` runs the full engine once; `baselineText`/`sidecar` are
  * cheap reads.
  */
-export function obsidianDebtSource(app: App, territories?: () => readonly string[], conventions?: () => VaultConventions): DebtSource {
+export function obsidianDebtSource(
+  app: App,
+  territories?: () => readonly string[],
+  conventions?: () => VaultConventions,
+  schemes?: () => SchemeInstanceConfig[],
+): DebtSource {
   const root = vaultRoot(app);
   // Read per call from the live setting (#493), so a changed path applies with no reload. "" ⇒ none configured.
   const baselineRelNow = () => inAppBaselineRel(conventions?.());
@@ -76,10 +85,11 @@ export function obsidianDebtSource(app: App, territories?: () => readonly string
         // their own diff, which is the one extra disk read this costs.
         baselineText: text,
         vocabularies: DEFAULT_VOCABULARIES,
-        schemes: DEFAULT_SCHEMES,
         excludedRoots,
         legacyPacks: true,
         territories: territories?.(),
+        // The host's schemes, read per run after the territories (whose refusal comes first when the host cannot answer).
+        schemes: schemes?.() ?? DEFAULT_SCHEMES,
         // The operator's conventions, read per call (#403) exactly as the
         // territories are; a source built without the thunk measures nothing
         // (EMPTY), loudly, rather than one vault's former paths.
@@ -119,7 +129,12 @@ export function obsidianDebtSource(app: App, territories?: () => readonly string
  * the sidecar and trend log already live there, and the baseline itself is
  * never touched.
  */
-export function obsidianDebtRenderSource(app: App, territories?: () => readonly string[], conventions?: () => VaultConventions): DebtRegisterSource {
+export function obsidianDebtRenderSource(
+  app: App,
+  territories?: () => readonly string[],
+  conventions?: () => VaultConventions,
+  schemes?: () => SchemeInstanceConfig[],
+): DebtRegisterSource {
   // Per call, from the live setting (#493).
   const baselineRel = () => inAppBaselineRel(conventions?.());
   const vault = app.vault as unknown as {
@@ -129,7 +144,7 @@ export function obsidianDebtRenderSource(app: App, territories?: () => readonly 
     createFolder(path: string): Promise<unknown>;
   };
   return {
-    ...obsidianDebtSource(app, territories, conventions),
+    ...obsidianDebtSource(app, territories, conventions, schemes),
     defaultRegisterDir(): string {
       const rel = baselineRel();
       const dir = rel ? posix.dirname(rel) : ".";

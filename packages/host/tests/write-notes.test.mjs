@@ -16,7 +16,8 @@ import assert from "node:assert/strict";
 import { ok } from "../src/mcp/helpers.ts";
 import { makeGuarded, resolveGuardedPath } from "../src/mcp/guarded.ts";
 import { Kernel, WriteQueue, WriteJournal, IdempotencyStore, LockStore, UidIndex } from "../src/kernel/index.ts";
-import { makeRegistry, DEFAULT_SCHEMES } from "../src/kernel/scheme/registry.ts";
+import { makeRegistry } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 import { registerWriteNotesTool, batchItemWriter } from "../src/mcp/tools-write-notes.ts";
 import { parseYaml } from "./obsidian-stub.mjs";
 import { CHARACTER_LIMIT, WholeReads, wholeReadToken } from "@vault-mcp/core";
@@ -391,7 +392,7 @@ describe("obsidian_write_notes — stamp end-to-end", () => {
     const existing = new Map([
       [path, { rev: 100, content: "old", frontmatter: { uid: "JD-UID", created: "2019-02-02T00:00:00", "acceptance-status": "accepted" } }],
     ]);
-    const schemes = makeRegistry(DEFAULT_SCHEMES);
+    const schemes = makeRegistry(JD_SCHEMES);
     const { call, vault } = harness({ existing, schemes, schemeNotes: [path] });
     const res = await call({ notes: [{ path: "jd:06.11", frontmatter: { name: "V" }, body: "rewritten", if_rev: 100 }], stamp: true });
     const content = vault.get(path).content;

@@ -76,7 +76,8 @@ export interface SchemeToolsCtx {
  * examples. Providers not listed here (none yet, besides "johnny-decimal")
  * get no examples rather than a guess. */
 const PROVIDER_EXAMPLES: Record<string, string[]> = {
-  "johnny-decimal": ["06.11", "92021.10", "00-09"],
+  // No expanded (5-digit) example: which bands a vault expands is its own config, and the provider defaults expand none.
+  "johnny-decimal": ["06.11", "06", "00-09"],
 };
 
 type Pick_ = { instance: SchemeInstance } | { error: string } | { unavailable: string };
@@ -157,7 +158,7 @@ function resolveAddressAndInstance(
   return addr ? { instance: pick.instance, addr } : { error: `"${raw}" does not parse as an address` };
 }
 
-/** A scope token ("06", "90-99", "27") parsed through the provider's own
+/** A scope token ("06", "50-59", "34") parsed through the provider's own
  * address grammar — a Scope is just an Address's {kind, raw} renamed
  * {kind, token} for the kinds that can contain things (area / category /
  * expanded-item); `nextFree`/`membersOf` handle any kind mismatch themselves
@@ -425,8 +426,8 @@ export function registerSchemeTools(server: McpServer, ctx: SchemeToolsCtx): voi
     {
       title: "Compute the next free address in a scope",
       description:
-        "Compute the next unused address within a scope (e.g. category \"06\", area \"90-99\", expanded category " +
-        "\"27\"). This COMPUTES ONLY — it reserves nothing, so a second call, or a competing session, can compute the " +
+        "Compute the next unused address within a scope (e.g. category \"06\", area \"50-59\", expanded category " +
+        "\"34\"). This COMPUTES ONLY — it reserves nothing, so a second call, or a competing session, can compute the " +
         "identical answer right up until a note actually lands there. Pair this with `obsidian_claim_scope` to hold " +
         "the slot exclusively while you create the note. Under a path allowlist, or an instance configured with " +
         "`excludedRoots`, the address returned may already be held by a note outside your allowlist or under an " +
@@ -435,7 +436,7 @@ export function registerSchemeTools(server: McpServer, ctx: SchemeToolsCtx): voi
         "expanded area's band — those allocate via that area's own scope instead, named in `hint` when applicable), " +
         "distinct from `exhausted: true`, which means an allocatable scope is simply full right now. Read-only.",
       inputSchema: {
-        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "90-99", "27".'),
+        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "50-59", "34".'),
         scheme: z
           .string()
           .min(1)
@@ -489,7 +490,7 @@ export function registerSchemeTools(server: McpServer, ctx: SchemeToolsCtx): voi
         "`excludedRoots`, `members` omits notes you cannot see or that live under an excluded root, so a slot " +
         "listed as free may already be held by one of them.",
       inputSchema: {
-        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "90-99", "27".'),
+        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "50-59", "34".'),
         scheme: z
           .string()
           .min(1)

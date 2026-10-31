@@ -31,7 +31,7 @@ ruling — the engine replaced the loose Python rail scripts, whose retirement i
 
 ## Rule packs
 
-- **Native** — `scheme.ts` (the scope module's `schemeFindings`: addressing/structure drift)
+- **Native** — `scheme.ts` (the scope module's `schemeFindings`: addressing/structure drift; it runs only when the host has a scheme configured, read from the host's settings — none on a fresh install, see [scope-provider.md](scope-provider.md#turning-a-scheme-on))
   and `vocab.ts` (unregistered tags, undefined properties, unknown types, deprecated terms).
   `vocab.ts` wraps `noteVocabFindings` per note and runs `vocabularyFindings` once per pass (the `## Tags` table lint and `scope_root_missing`). Both live in **`@vault-mcp/core`** since the S7
   read-tier extraction: this rail and the `vaultmcp-vocab` satellite are its two consumers, and

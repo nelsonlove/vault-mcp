@@ -25,7 +25,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { installObsidianStub, TFile, TFolder, parseYaml } from "./obsidian-stub.mjs";
-import { makeRegistry, DEFAULT_SCHEMES } from "../src/kernel/scheme/registry.ts";
+import { makeRegistry } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 
 // The write tools import `moveOne`, which imports live `TFile`/`TAbstractFile`
 // from "obsidian" — stub must be installed before that module is imported.
@@ -118,7 +119,7 @@ function fakeServer() {
   };
 }
 
-function toolServer({ schemes = DEFAULT_SCHEMES, notes = NOTES, folders = FOLDERS, contents = {} } = {}) {
+function toolServer({ schemes = JD_SCHEMES, notes = NOTES, folders = FOLDERS, contents = {} } = {}) {
   const { app, calls, tree, body } = fakeApp({ files: notes, folders, contents });
   const server = fakeServer();
   registerSchemeWriteTools(server, app, {

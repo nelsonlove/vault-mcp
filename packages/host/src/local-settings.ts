@@ -173,6 +173,15 @@ export const STRING_LISTS: ReadonlySet<string> = new Set([
   "cliPolicy.opaqueWildcards",
 ]);
 
+/**
+ * Lists of objects by path whose default is an empty list, so the shape cannot
+ * say what an item must be. `schemes` is one since a fresh install has no
+ * scheme (01.33 pick A, step b): an override that turns a scheme on, or sets
+ * this machine's expansions, carries the whole list. What an item may hold is
+ * the provider's to say, so it is checked by `useTimeProblems`.
+ */
+export const OBJECT_LISTS: ReadonlySet<string> = new Set(["schemes"]);
+
 function kind(v: unknown): string {
   if (v === null) return "null";
   if (Array.isArray(v)) return "list";
@@ -226,6 +235,8 @@ export function checkOverride(raw: unknown, shape: Record<string, unknown>): str
       const defItems = def as unknown[];
       if (STRING_LISTS.has(at)) {
         items.forEach((v, i) => typeof v !== "string" && problems.push(`${at}[${i}] must be a string`));
+      } else if (OBJECT_LISTS.has(at)) {
+        items.forEach((v, i) => !isPlainObject(v) && problems.push(`${at}[${i}] must be an object`));
       } else if (defItems.length > 0) {
         const itemKind = kind(defItems[0]);
         items.forEach((v, i) => kind(v) !== itemKind && problems.push(`${at}[${i}] must be ${itemKind === "object" ? "an object" : `a ${itemKind}`}`));
@@ -414,10 +425,23 @@ export function localSettingsReport(load: LocalSettingsLoad): Record<string, unk
  * Checks of overridden values that no load-time normalizer makes, because the
  * setting is otherwise judged only where it is used (#582 review 1): an
  * archive pattern that does not compile would match nothing, so a record
- * folder rule the override meant to add would be silently off.
+ * folder rule the override meant to add would be silently off; a scheme row
+ * the registry skips (`schemesRegister` answers false) would leave that scheme
+ * off the same way.
  */
-export function useTimeProblems(override: Record<string, unknown>, compiles: (pattern: string) => boolean): string[] {
+export function useTimeProblems(
+  override: Record<string, unknown>,
+  compiles: (pattern: string) => boolean,
+  schemesRegister?: (rows: unknown[]) => boolean,
+): string[] {
   const problems: string[] = [];
+  // A scheme row the registry skips (an unknown provider, a config the
+  // provider refuses, a bad excluded root, a repeated id) would leave the
+  // scheme, or this machine's expansions, silently off.
+  const schemes = getPath(override, "schemes");
+  if (schemesRegister && schemes.present && Array.isArray(schemes.value) && !schemesRegister(schemes.value)) {
+    problems.push("schemes holds a row the scheme registry does not take (an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)");
+  }
   const pattern = getPath(override, "recordFolders.archivePattern");
   if (pattern.present && typeof pattern.value === "string" && pattern.value.trim() !== "" && !compiles(pattern.value)) {
     problems.push("recordFolders.archivePattern does not compile as a regular expression");

@@ -24,7 +24,8 @@ import {
   UidIndex,
 } from "../src/kernel/index.ts";
 import { makeGuarded } from "../src/mcp/guarded.ts";
-import { makeRegistry, DEFAULT_SCHEMES } from "../src/kernel/scheme/registry.ts";
+import { makeRegistry } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 
 const ACTOR = { transport: "mcp", client: "claude-code/1.0.0", connection: "abc-1" };
 const OPEN_SETTINGS = { readOnly: false, allowlist: [] };
@@ -72,7 +73,7 @@ function guardedWith(kernel, index, notes = []) {
     kernel,
     actor: () => ACTOR,
     uids: index,
-    schemes: () => makeRegistry(DEFAULT_SCHEMES),
+    schemes: () => makeRegistry(JD_SCHEMES),
     schemeNotes: () => notes,
   });
 }

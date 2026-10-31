@@ -37,6 +37,7 @@ import {
   resolveSchemeArgs,
 } from "../src/kernel/scheme/registry.ts";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.ts";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 import { schemeFindings } from "@vault-mcp/core";
 import { fakeServer } from "./fake-server.mjs";
 import { registerSchemeTools } from "../src/mcp/tools-scheme.ts";
@@ -310,7 +311,7 @@ describe("resolveSchemeArgs — excludedRoots (the 02.10 collision)", () => {
 // ── schemeFindings — excludedRoots ───────────────────────────────────────────
 
 describe("schemeFindings — excludedRoots", () => {
-  const provider = jdProvider(DEFAULT_JD_CONFIG);
+  const provider = jdProvider(FIXTURE_JD_CONFIG);
 
   test("the duplicate_address finding disappears when one side is excluded", () => {
     const instance = { id: "jd", providerName: "johnny-decimal", provider, excludedRoots: ["Vault archaeology"] };

@@ -58,7 +58,7 @@ import {
   type ToolRegistrar,
   type VaultModule,
 } from "../kernel/modules/index.js";
-import { makeRegistry, DEFAULT_SCHEMES, validateExcludedRoots, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
+import { makeRegistry, DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, validateExcludedRoots, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import { validateJdConfig, type JdConfig } from "../kernel/scheme/jd.js";
 import { registerSchemeTools } from "./tools-scheme.js";
 
@@ -84,16 +84,16 @@ const SCHEME_CONFIG_FIELDS: ConfigField[] = [
     key: "expandedAreas",
     label: "Expanded areas",
     help:
-      'Comma-separated area bands (e.g. "90-99") that use 5-digit sequential ids instead of category/decimal ids. ' +
-      "Leave blank to use the provider default (90-99).",
+      'Comma-separated area bands (e.g. "50-59") that use 5-digit sequential ids instead of category/decimal ids. ' +
+      "Leave blank to use the provider default (none).",
     type: "csv",
   },
   {
     key: "expandedCategories",
     label: "Expanded categories",
     help:
-      'Comma-separated categories (e.g. "27") that use 5-digit flat ids instead of category.decimal ids. Leave ' +
-      "blank to use the provider default (27).",
+      'Comma-separated categories (e.g. "34") that use 5-digit flat ids instead of category.decimal ids. Leave ' +
+      "blank to use the provider default (none).",
     type: "csv",
   },
   {
@@ -139,7 +139,7 @@ function validateSchemeManifestConfig(config: Record<string, unknown>): string[]
 
 const SCHEME_MANIFEST: ModuleManifest = {
   summary:
-    "Scope resolution and address allocation over the configured scheme (Johnny Decimal today): resolve, allocate, " +
+    "Scope resolution and address allocation over the configured scheme (Johnny Decimal today; none on a fresh install, and with none these tools are not registered): resolve, allocate, " +
     "validate a filename, and check placement; assigning, refiling and renumbering an address are switched off with it. `jd:` addressing in path arguments is kernel-level and stays " +
     "available even when this module is disabled.",
   config: {
@@ -194,7 +194,7 @@ const SCHEME_MANIFEST: ModuleManifest = {
         purpose: "Compute (never reserve) the next free address within a scope.",
         readOnly: true,
         options: [
-          { name: "scope", what: 'a scope token in the scheme\'s grammar, e.g. "06", "90-99", "27"' },
+          { name: "scope", what: 'a scope token in the scheme\'s grammar, e.g. "06", "50-59", "34"' },
           { name: "scheme", what: "which configured instance to use when more than one is configured" },
         ],
         caveats: [
@@ -209,7 +209,7 @@ const SCHEME_MANIFEST: ModuleManifest = {
         purpose: "List a scope's visible members plus its next free address and up to 20 open slots.",
         readOnly: true,
         options: [
-          { name: "scope", what: 'a scope token in the scheme\'s grammar, e.g. "06", "90-99", "27"' },
+          { name: "scope", what: 'a scope token in the scheme\'s grammar, e.g. "06", "50-59", "34"' },
           { name: "scheme", what: "which configured instance to use when more than one is configured" },
         ],
         caveats: [
@@ -242,16 +242,24 @@ const SCHEME_MANIFEST: ModuleManifest = {
   },
 };
 
-/** The live `schemes[0]` instance the binding operates on, falling back to
- * `DEFAULT_SCHEMES` (which always has exactly one entry) when `schemes` is
- * missing OR explicitly empty — an empty `schemes: []` must not turn the
- * ALWAYS-RENDERED scheme section's fields into a silent no-op the way an
- * absent instance would have (the old hand-built section simply hid itself
- * when `jdInstance` was falsy; the generic renderer has no such per-instance
- * visibility, so the binding self-heals instead of failing quietly). */
+/** The live `schemes` list the binding operates on (`schemes[0]` is the
+ * instance its fields edit). Missing OR explicitly empty — a fresh install
+ * since 01.33 pick A step (b) — reads as one plain `JD_SCHEME_INSTANCE`, so
+ * the ALWAYS-RENDERED scheme section's fields are never a silent no-op:
+ * `read` shows them blank, and the first field a user fills in `write`s that
+ * instance into `schemes`, which turns Johnny Decimal on (the old hand-built
+ * section simply hid itself when `jdInstance` was falsy; the generic renderer
+ * has no such per-instance visibility). */
 function currentSchemes(settings: unknown): SchemeInstanceConfig[] {
   const s = (settings as { schemes?: SchemeInstanceConfig[] }).schemes;
-  return s && s.length > 0 ? s : DEFAULT_SCHEMES;
+  return s && s.length > 0 ? s : [{ ...JD_SCHEME_INSTANCE }];
+}
+
+/** Whether any scheme is configured. None (a fresh install) ⇒ the scheme
+ * module contributes no tool, and the three scheme write tools are not
+ * registered either. */
+export function schemesConfigured(settings: { schemes?: SchemeInstanceConfig[] }): boolean {
+  return Array.isArray(settings.schemes) && settings.schemes.length > 0;
 }
 
 /** Resolves the scheme manifest's flat field keys against the EXISTING
@@ -536,16 +544,21 @@ const SCHEME_ENABLED_BY_DEFAULT = true;
  * through this mount, and server.ts gates them on this same answer, so the
  * toggle turns off all of the module's tools (01.28 rule 7; Nelson's pick A,
  * 2026-10-09). `jd:` addressing is kernel-level and stays on either way.
+ * With no scheme configured (a fresh install, 01.33 pick A step b) the
+ * answer is false whatever the toggle says: there is nothing to address.
  */
-export function schemeModuleEnabled(settings: { modules?: ModuleSettings }): boolean {
-  return settings.modules?.scheme?.enabled ?? SCHEME_ENABLED_BY_DEFAULT;
+export function schemeModuleEnabled(settings: { modules?: ModuleSettings; schemes?: SchemeInstanceConfig[] }): boolean {
+  return schemesConfigured(settings) && (settings.modules?.scheme?.enabled ?? SCHEME_ENABLED_BY_DEFAULT);
 }
 
 export function builtinModules(deps: MountDeps): VaultModule[] {
   return [
     moduleFromRegistrar(
       { id: "scheme", capabilities: ["addressing", "allocation"], enabled: SCHEME_ENABLED_BY_DEFAULT, manifest: SCHEME_MANIFEST, configBinding: schemeBinding },
-      registerSchemeTools,
+      // No scheme configured ⇒ no scheme tool (01.33 pick A, step b). Read once per mount, i.e. per connection, like the toggle.
+      (server, ctx) => {
+        if (schemesConfigured(deps.getSettings())) registerSchemeTools(server, ctx);
+      },
       () => ({
         registry: () => makeRegistry(deps.getSettings().schemes ?? DEFAULT_SCHEMES),
         notes: deps.schemeNotes,

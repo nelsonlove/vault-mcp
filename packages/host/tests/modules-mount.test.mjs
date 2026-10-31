@@ -24,6 +24,7 @@ import path from "node:path";
 import { fakeServer } from "./fake-server.mjs";
 import { mountModules, mountHost, builtinModules } from "../src/mcp/modules-mount.ts";
 import { ModuleRegistry, collect, toolDocDrift, toolDocReadOnlyDrift } from "../src/kernel/modules/index.ts";
+import { JD_SCHEMES } from "./scheme-fixture.mjs";
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -43,9 +44,14 @@ const pendingReviewSource = { read: async () => null };
 // `MountDeps` no longer declares a slot for any of them — it is down to
 // `getSettings` and `schemeNotes`.
 
+/** The settings every mount below starts from: one JD instance, since a fresh
+ * install has none (01.33 pick A, step b) and these tests are about the scheme
+ * module's tools. A test that wants no scheme passes `schemes: []`. */
+const WITH_JD = { schemes: JD_SCHEMES };
+
 function deps(overrides = {}) {
   return {
-    getSettings: () => ({ ...(overrides.settings ?? {}) }),
+    getSettings: () => ({ ...WITH_JD, ...(overrides.settings ?? {}) }),
     schemeNotes: () => NOTES,
     pendingReviewSource,
     ...overrides.deps,
@@ -59,7 +65,7 @@ function mount(overrides = {}) {
 }
 
 describe("mountModules: the built-in modules register through the registry", () => {
-  test("default settings: the scheme tools are all present, no problems", () => {
+  test("one JD scheme configured: the scheme tools are all present, no problems", () => {
     const { server, registry } = mount();
     const names = [...server.tools.keys()];
     // The scheme module's five, exactly as the direct registrations used to
@@ -493,13 +499,20 @@ describe("extracted-module settings rows are adoption sources, not typos (2026-0
 // 01.28 rule 7, Nelson's pick A (2026-10-09): the scheme toggle gates the three
 // hand-registered scheme WRITE tools too.
 describe("scheme toggle gates the scheme write tools", () => {
-  test("schemeModuleEnabled reads modules.scheme.enabled, default on", async () => {
+  test("schemeModuleEnabled reads modules.scheme.enabled, default on, when a scheme is configured", async () => {
     const { schemeModuleEnabled } = await import("../src/mcp/modules-mount.ts");
-    assert.equal(schemeModuleEnabled({}), true);
-    assert.equal(schemeModuleEnabled({ modules: {} }), true);
-    assert.equal(schemeModuleEnabled({ modules: { scheme: { enabled: true } } }), true);
-    assert.equal(schemeModuleEnabled({ modules: { scheme: { enabled: false } } }), false);
-    assert.equal(schemeModuleEnabled({ modules: { other: { enabled: false } } }), true);
+    assert.equal(schemeModuleEnabled({ ...WITH_JD }), true);
+    assert.equal(schemeModuleEnabled({ ...WITH_JD, modules: {} }), true);
+    assert.equal(schemeModuleEnabled({ ...WITH_JD, modules: { scheme: { enabled: true } } }), true);
+    assert.equal(schemeModuleEnabled({ ...WITH_JD, modules: { scheme: { enabled: false } } }), false);
+    assert.equal(schemeModuleEnabled({ ...WITH_JD, modules: { other: { enabled: false } } }), true);
+  });
+
+  test("schemeModuleEnabled is false with no scheme configured, whatever the toggle says (01.33 pick A, step b)", async () => {
+    const { schemeModuleEnabled } = await import("../src/mcp/modules-mount.ts");
+    assert.equal(schemeModuleEnabled({}), false, "a fresh install's settings have no schemes key");
+    assert.equal(schemeModuleEnabled({ schemes: [] }), false);
+    assert.equal(schemeModuleEnabled({ schemes: [], modules: { scheme: { enabled: true } } }), false);
   });
 
   test("server.ts registers the write tools only when the scheme module is on", async () => {
@@ -516,6 +529,27 @@ describe("scheme toggle gates the scheme write tools", () => {
   test("the mount's scheme default and the gate agree", async () => {
     const { builtinModules, schemeModuleEnabled } = await import("../src/mcp/modules-mount.ts");
     const scheme = builtinModules({ getSettings: () => ({ allowlist: [], readOnly: false }), schemeNotes: () => [] }).find((m) => m.id === "scheme");
-    assert.equal(scheme.enabled, schemeModuleEnabled({}));
+    assert.equal(scheme.enabled, schemeModuleEnabled({ ...WITH_JD }));
+  });
+});
+
+describe("no scheme configured: the scheme module contributes no tool (01.33 pick A, step b)", () => {
+  for (const [label, settings] of [["schemes: []", { schemes: [] }], ["no schemes key", { schemes: undefined }]]) {
+    test(`${label}: no scheme tool is registered, and the mount reports no problem`, () => {
+      const { server, registry } = mount({ settings });
+      const names = [...server.tools.keys()];
+      for (const n of ["obsidian_schemes", "obsidian_validate_name", "obsidian_resolve_address", "obsidian_next_address", "obsidian_list_scope", "obsidian_expected_location"]) {
+        assert.ok(!names.includes(n), `${n} must not be registered with no scheme`);
+      }
+      assert.deepEqual(names, [], "the scheme module is the only built-in module, so nothing at all is mounted");
+      assert.deepEqual(registry.problems, []);
+    });
+  }
+
+  test("the settings binding reads blank with no scheme, and the first field written turns plain JD on", () => {
+    const scheme = builtinModules(deps({ settings: { schemes: [] } })).find((m) => m.id === "scheme");
+    assert.deepEqual(scheme.configBinding.read({ schemes: [] }), {});
+    const next = scheme.configBinding.write({ schemes: [] }, { expandedAreas: ["50-59"] });
+    assert.deepEqual(next.schemes, [{ id: "jd", provider: "johnny-decimal", config: { expandedAreas: ["50-59"] } }]);
   });
 });

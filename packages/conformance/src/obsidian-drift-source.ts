@@ -5,7 +5,7 @@
 // `vaultmcp_conformance_debt` MCP tool makes (see obsidian-debt-source.ts,
 // this file's sibling and closest precedent) — same root resolution, same
 // baseline path (the plugin setting, then the env, #493) and excluded-roots env resolution, same DEFAULT_VOCABULARIES/
-// DEFAULT_SCHEMES/legacyPacks:true config. The only difference is what
+// host's-schemes/legacyPacks:true config. The only difference is what
 // happens to the result: obsidian-debt-source.ts discards the ratchet and
 // keeps raw findings (debt reporting doesn't care about new-vs-carried);
 // this keeps the ratchet and narrows to the scheme pack's NEW findings via
@@ -52,7 +52,7 @@ import {
 } from "./kernel/cli.js";
 import { parseBaseline } from "./kernel/ratchet.js";
 import { newSchemeDrift, type DriftGroup } from "./kernel/drift-view.js";
-import { DEFAULT_VOCABULARIES, DEFAULT_SCHEMES } from "@vault-mcp/core";
+import { DEFAULT_VOCABULARIES, DEFAULT_SCHEMES, type SchemeInstanceConfig } from "@vault-mcp/core";
 import { EMPTY_VAULT_CONVENTIONS, type VaultConventions } from "./kernel/vault-conventions.js";
 
 /** The on-disk root of this vault (FileSystemAdapter). Desktop-only, which
@@ -74,7 +74,12 @@ export interface DriftPaneSource {
   scan(): Promise<DriftGroup[]>;
 }
 
-export function obsidianDriftSource(app: App, territories?: () => readonly string[], conventions?: () => VaultConventions): DriftPaneSource {
+export function obsidianDriftSource(
+  app: App,
+  territories?: () => readonly string[],
+  conventions?: () => VaultConventions,
+  schemes?: () => SchemeInstanceConfig[],
+): DriftPaneSource {
   const root = vaultRoot(app);
 
   const excludedRoots = excludedRootsFrom([], process.env);
@@ -96,10 +101,11 @@ export function obsidianDriftSource(app: App, territories?: () => readonly strin
         root,
         baselineText,
         vocabularies: DEFAULT_VOCABULARIES,
-        schemes: DEFAULT_SCHEMES,
         excludedRoots,
         legacyPacks: true,
         territories: territories?.(),
+        // The host's schemes, read per run (as the debt source does); none ⇒ no scheme check.
+        schemes: schemes?.() ?? DEFAULT_SCHEMES,
         // Read per call (#403), as the territories are.
         conventions: conventions?.() ?? EMPTY_VAULT_CONVENTIONS,
       });

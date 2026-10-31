@@ -26,22 +26,23 @@ export interface Capabilities {
  * token an address would carry at each level of nesting — not the grammar's
  * parsed structural fields (area/category/decimal), which a scheme need not
  * expose at all. It is what `expectedFolder` walks to place a note and what
- * `chainOf` walks in reverse. For Johnny Decimal (default config:
- * expandedAreas ["90-99"], expandedCategories ["27"]):
+ * `chainOf` walks in reverse. For Johnny Decimal (with an example config,
+ * expandedAreas ["50-59"], expandedCategories ["34"]; the provider's own
+ * defaults expand nothing):
  *
  *   "00-09"    (area)                        -> ["00-09"]
  *   "06"       (category)                    -> ["00-09", "06"]
  *   "06.11"    (id)                          -> ["00-09", "06", "11"]
  *   "06.110"   (id, 3-digit decimal)         -> ["00-09", "06", "110"]
- *   "92021"    (expanded-item, area 90-99
- *               is itself expanded)          -> ["90-99", "92021"]
+ *   "52021"    (expanded-item, area 50-59
+ *               is itself expanded)          -> ["50-59", "52021"]
  *              — no category folder: an expanded AREA collapses the
  *                category level entirely, items sit directly under the area.
- *   "92021.10" (fractal-id, inside an
- *               expanded area)               -> ["90-99", "92021", "10"]
- *   "27001"    (expanded-item, category 27
- *               is itself expanded)          -> ["20-29", "27", "27001"]
- *              — the category folder SURVIVES: only category 27 flattens to
+ *   "52021.10" (fractal-id, inside an
+ *               expanded area)               -> ["50-59", "52021", "10"]
+ *   "34001"    (expanded-item, category 34
+ *               is itself expanded)          -> ["30-39", "34", "34001"]
+ *              — the category folder SURVIVES: only category 34 flattens to
  *                5-digit ids, the area around it is ordinary.
  *
  * `raw` carries the exact (trimmed) input string `parse` accepted; `format`

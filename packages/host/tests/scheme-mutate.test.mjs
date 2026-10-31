@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 import { planAssign, planRefile, planRenumber } from "../src/kernel/scheme/mutate.js";
 
-const p = jdProvider(DEFAULT_JD_CONFIG);
+const p = jdProvider(FIXTURE_JD_CONFIG);
 const NOTES = [
   "00-09 System/06 Agent tooling/06.11 Vault MCP.md",
   "00-09 System/06 Agent tooling/06.12 Bridge.md",

@@ -6,7 +6,7 @@
 // Scheme semantics are configuration, not hardwired (Nelson's ruling): each
 // instance's config is a PARTIAL provider config, deep-merged at the key
 // level over that provider's own default config — {expandedCategories:
-// ["27","31"]} overrides only that key and leaves expandedAreas at the
+// ["34","41"]} overrides only that key and leaves expandedAreas at the
 // provider default. The registry itself introduces no new semantic
 // constants; it only wires a provider name + merged config to a live
 // ScopeProvider.
@@ -40,7 +40,47 @@ export interface SchemeInstanceConfig {
   excludedRoots?: string[];
 }
 
-export const DEFAULT_SCHEMES: SchemeInstanceConfig[] = [{ id: "jd", provider: "johnny-decimal" }];
+/**
+ * No scheme on a fresh install (01.33, pick A step b): addressing is opt-in.
+ * With no instance there is no `<id>:` addressing, no scheme tool and no
+ * scheme check; `uid:` and paths work as before. A vault turns Johnny Decimal
+ * on by adding `JD_SCHEME_INSTANCE` (below) to its `schemes` setting, with any
+ * expansions in its `config`.
+ */
+export const DEFAULT_SCHEMES: SchemeInstanceConfig[] = [];
+
+/**
+ * The Johnny Decimal instance as it shipped by default until step (b): id
+ * `jd`, the JD provider, no config (so the provider defaults, which expand
+ * nothing). The opt-in row for a vault that wants JD, and the seed an
+ * install that predates the `schemes` key keeps (`schemesOnLoad`).
+ */
+export const JD_SCHEME_INSTANCE: Readonly<SchemeInstanceConfig> = Object.freeze({ id: "jd", provider: "johnny-decimal" as const });
+
+export interface SchemesOnLoad {
+  schemes: SchemeInstanceConfig[];
+  /** True when the stored settings did not hold the key (or came from the adoption source): save now, so the decision runs at most once per install. */
+  persist: boolean;
+}
+
+/**
+ * The `schemes` setting at load, by the rule the guarded territories, the
+ * record folders and `autoRegisterClaude` use. The plugin's own data.json
+ * first; failing that, settings adopted from the pre-split plugin (an adopted
+ * install is an EXISTING install). No stored settings at all (a fresh
+ * install): no scheme. Stored settings without the key (an install that
+ * predates step b, which got the one jd instance by default): that instance,
+ * saved once. Otherwise the stored list as it is (a value that is not a list
+ * reads as none).
+ */
+export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
+  const asObject = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
+  const stored = asObject(own) ?? asObject(adopted);
+  if (!stored) return { schemes: [], persist: true };
+  if (!Object.prototype.hasOwnProperty.call(stored, "schemes")) return { schemes: [{ ...JD_SCHEME_INSTANCE }], persist: true };
+  const list = stored.schemes;
+  return { schemes: Array.isArray(list) ? structuredClone(list as SchemeInstanceConfig[]) : [], persist: asObject(own) === null };
+}
 
 export interface SchemeInstance {
   id: string;

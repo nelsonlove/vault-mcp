@@ -14,7 +14,8 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { fakeServer } from "./fake-server.mjs";
 import { registerSchemeTools } from "../src/mcp/tools-scheme.ts";
-import { makeRegistry, DEFAULT_SCHEMES } from "../src/kernel/scheme/registry.ts";
+import { makeRegistry } from "../src/kernel/scheme/registry.ts";
+import { JD_SCHEMES, FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 
 const NOTES = [
   "00-09 System/00.00 Index.md",
@@ -27,7 +28,7 @@ const NOTES = [
   "Unfiled/loose.md",
 ];
 
-function toolServer({ schemes = DEFAULT_SCHEMES, notes = NOTES, settings = { readOnly: false, allowlist: [] } } = {}) {
+function toolServer({ schemes = JD_SCHEMES, notes = NOTES, settings = { readOnly: false, allowlist: [] } } = {}) {
   const server = fakeServer();
   registerSchemeTools(server, {
     registry: () => makeRegistry(schemes),
@@ -110,8 +111,8 @@ describe("obsidian_schemes", () => {
         id: "jd",
         provider: "johnny-decimal",
         capabilities: { validate: true, itemAddresses: true, allocate: true, ordered: true },
-        config: {},
-        examples: ["jd:06.11", "jd:92021.10", "jd:00-09"],
+        config: FIXTURE_JD_CONFIG,
+        examples: ["jd:06.11", "jd:06", "jd:00-09"],
       },
     ]);
   });
@@ -121,7 +122,7 @@ describe("obsidian_schemes", () => {
     const { call } = toolServer({ schemes });
     const res = await call("obsidian_schemes");
     assert.deepEqual(res.structuredContent.schemes[0].config, { contentDecimalFloor: 20 });
-    assert.deepEqual(res.structuredContent.schemes[0].examples, ["numbering:06.11", "numbering:92021.10", "numbering:00-09"]);
+    assert.deepEqual(res.structuredContent.schemes[0].examples, ["numbering:06.11", "numbering:06", "numbering:00-09"]);
   });
 
   test("no configured schemes reports an empty list, not an error", async () => {
@@ -151,7 +152,7 @@ describe("obsidian_schemes", () => {
         provider: "johnny-decimal",
         capabilities: { validate: true, itemAddresses: true, allocate: true, ordered: true },
         config: {},
-        examples: ["jd:06.11", "jd:92021.10", "jd:00-09"],
+        examples: ["jd:06.11", "jd:06", "jd:00-09"],
       },
       { id: "bogus", available: false },
     ]);

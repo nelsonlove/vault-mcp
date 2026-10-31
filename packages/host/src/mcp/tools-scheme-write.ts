@@ -125,7 +125,7 @@ export function registerSchemeWriteTools(server: McpServer, app: App, ctx: Schem
         "something now occupies the computed path fails the move rather than clobbering it. Mutating.",
       inputSchema: {
         path: z.string().min(1).describe("Vault-relative path (ending in .md) of the note to assign an address to."),
-        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "90-99", "27".'),
+        scope: z.string().min(1).describe('A scope token in the scheme\'s own grammar, e.g. "06", "50-59", "34".'),
         scheme: z
           .string()
           .min(1)

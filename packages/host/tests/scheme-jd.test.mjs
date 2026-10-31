@@ -15,8 +15,9 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { jdProvider, DEFAULT_JD_CONFIG, validateJdConfig } from "../src/kernel/scheme/jd.js";
+import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 
-const p = jdProvider(DEFAULT_JD_CONFIG);
+const p = jdProvider(FIXTURE_JD_CONFIG);
 
 // ── capabilities ──────────────────────────────────────────────────────────────
 
