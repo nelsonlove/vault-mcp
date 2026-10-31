@@ -3,8 +3,8 @@ import path from "node:path";
 import { vaultRoot } from "./vault.js";
 import type { FrontmatterValue, ResolveResult, OutlinkEntry } from "../vault-backend.js";
 import { leadingFrontmatterBlock, stripLeadingFrontmatter } from "../accept-guard.js";
-import { makeRegistry, type SchemeInstanceConfig } from "../scheme/registry.js";
-import { DEFAULT_JD_CONFIG } from "../scheme/jd.js";
+import { allSchemeRowsTaken, schemeRowOn, type SchemeInstanceConfig } from "../scheme/registry.js";
+import { DEFAULT_JD_CONFIG, validateJdConfig } from "../scheme/jd.js";
 
 /**
  * In-memory index of the vault.
@@ -251,6 +251,25 @@ export interface FsJdModel {
 let cachedModel: { raw: string | undefined; model: FsJdModel | null } | null = null;
 
 /**
+ * The JD model from scheme rows already in hand (the plugin's own `schemes`
+ * setting): the first `johnny-decimal` row whose config the provider takes,
+ * its expansions over the provider defaults; none, null. Never throws and
+ * never logs: a bad row simply gives no model (the plugin reports bad rows
+ * where its settings load).
+ */
+export function jdModelFromSchemes(rows: unknown): FsJdModel | null {
+  if (!Array.isArray(rows)) return null;
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || (row as { provider?: unknown }).provider !== "johnny-decimal" || !schemeRowOn(row)) continue;
+    const cfg = (row as { config?: unknown }).config;
+    if (validateJdConfig(cfg).length > 0) return null;
+    const config = { ...DEFAULT_JD_CONFIG, ...((cfg as Partial<typeof DEFAULT_JD_CONFIG> | undefined) ?? {}) };
+    return { expandedAreas: new Set(config.expandedAreas), expandedCategories: new Set(config.expandedCategories) };
+  }
+  return null;
+}
+
+/**
  * The JD model from `VAULT_MCP_SCHEMES` (01.33 pick A, step b): unset or empty,
  * no scheme, so no note gets a JD id and no ref resolves by one, as on a fresh
  * plugin install. A `johnny-decimal` row turns JD ids on, with the expansions in
@@ -258,8 +277,11 @@ let cachedModel: { raw: string | undefined; model: FsJdModel | null } | null = n
  * example `[{"id": "jd", "provider": "johnny-decimal", "config":
  * {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]` (made-up
  * values). A value that is not JSON, not a list, or that holds a row the scheme
- * registry does not take is an error, so the server does not start on a
- * scheme the operator did not get. Read once per value (cached on the string).
+ * registry does not take throws. The file-system server calls this once at
+ * startup (`checkFsSchemes` in packages/server) and exits on the throw, so it
+ * never serves on a scheme the operator did not get; a throw later, inside
+ * `buildIndex`, puts the index in error, and a move then refuses rather than
+ * renaming with no link rewrite. Read once per value (cached on the string).
  */
 export function fsJdModel(env: Record<string, string | undefined> = process.env): FsJdModel | null {
   const raw = env[SCHEMES_ENV_VAR]?.trim() || undefined;
@@ -273,11 +295,10 @@ export function fsJdModel(env: Record<string, string | undefined> = process.env)
       throw new Error(`${SCHEMES_ENV_VAR} is not valid JSON: ${(e as Error).message}`);
     }
     if (!Array.isArray(rows)) throw new Error(`${SCHEMES_ENV_VAR} must be a JSON list of scheme rows`);
-    const registry = makeRegistry(rows as SchemeInstanceConfig[]);
-    if (registry.instances().length !== rows.length) {
+    if (!allSchemeRowsTaken(rows)) {
       throw new Error(`${SCHEMES_ENV_VAR} holds a row the scheme registry does not take (an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)`);
     }
-    const jd = (rows as SchemeInstanceConfig[]).find((r) => r.provider === "johnny-decimal");
+    const jd = (rows as SchemeInstanceConfig[]).find((r) => r.provider === "johnny-decimal" && schemeRowOn(r));
     if (jd) {
       const config = { ...DEFAULT_JD_CONFIG, ...(jd.config ?? {}) };
       model = { expandedAreas: new Set(config.expandedAreas), expandedCategories: new Set(config.expandedCategories) };
@@ -295,7 +316,7 @@ export function fsJdModel(env: Record<string, string | undefined> = process.env)
  *   - area folder note      ("00-09 System/00-09 System.md")          → "00-09"
  *   - category folder note  ("…/00 System management/00 System …")    → "00.00"
  *   - id note               ("04.18 obsidian-execute-code.md")        → "04.18"
- *   - project note          ("92208 Concept note.md")                 → "92208"
+ *   - project note          ("52208 Concept note.md")                 → "52208"
  * A 5-digit prefix only counts inside an expanded area/category (the model's
  * expansions: a 5-digit filename prefix elsewhere is just a title that happens
  * to start with digits — "10000 Hours.md" is NOT id 10000); "NN.NN"-prefixed

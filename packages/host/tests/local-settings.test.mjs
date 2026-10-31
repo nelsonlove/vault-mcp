@@ -272,8 +272,9 @@ describe("saving", () => {
     assert.ok(first > 0 && first < save.indexOf("await this.loadData()"), "the override is set back before the first await");
     assert.ok(save.indexOf("forSyncedFile(") > 0 && save.indexOf("finally {") > save.indexOf("forSyncedFile("));
     assert.ok(save.slice(save.indexOf("finally {")).includes("this.keepOverrides();"), "and again in finally");
-    assert.equal((save.match(/this\.saveData\(this\.settings\)/g) ?? []).length, 1, "the plain save is only the no-override branch");
-    assert.ok(save.indexOf("saveData(this.settings)") > save.indexOf("} else {"));
+    // The plain save writes the settings (through withUnreadableSchemes, which only keeps an unreadable saved `schemes` value as it was).
+    assert.equal((save.match(/this\.saveData\(this\.withUnreadableSchemes\(this\.settings /g) ?? []).length, 1, "the plain save is only the no-override branch");
+    assert.ok(save.indexOf("saveData(this.withUnreadableSchemes(this.settings ") > save.indexOf("} else {"));
   });
 });
 

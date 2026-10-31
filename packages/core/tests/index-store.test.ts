@@ -217,6 +217,8 @@ test("fsJdModel / deriveJdIdFromPath: no scheme by default, a JD row's expansion
   assert.equal(d("50-59 Builds/52021 Thing.md", "52021 Thing", expanded), "52021");
   assert.equal(d("50-59 Builds/52021 Thing/52021.10 Sub.md", "52021.10 Sub", expanded), "52021.10");
   assert.equal(d("30-39 Home/34 Garden/34001 Seeds.md", "34001 Seeds", expanded), "34001");
+  // A JD row turned off (enabled: false): no JD id, as with no row.
+  assert.equal(fsJdModel({ VAULT_MCP_SCHEMES: JSON.stringify([{ id: "jd", provider: "johnny-decimal", enabled: false }]) }), null);
   // A value the server cannot use stops it, rather than running with no scheme.
   assert.throws(() => fsJdModel({ VAULT_MCP_SCHEMES: "{not json" }), /not valid JSON/);
   assert.throws(() => fsJdModel({ VAULT_MCP_SCHEMES: '{"id":"jd"}' }), /must be a JSON list/);

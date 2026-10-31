@@ -62,6 +62,8 @@ The provider's own defaults expand nothing. If your vault gives some areas or si
   "config": { "expandedAreas": ["50-59"], "expandedCategories": ["34"] } }] }
 ```
 
+To turn a scheme off without losing its settings, use the scheme section's on/off switch, or give the row `"enabled": false` by hand: the row is still checked, but its id addresses nothing, no scheme tool registers for it and no scheme check runs on it, as if it were absent. A row without `enabled` is on. Every reader (the plugin, the file-system server's `VAULT_MCP_SCHEMES`, the conformance rail) honours the flag the same way, through the scheme registry.
+
 When the expansions differ per machine, or must not sync, put the whole `schemes` list in the
 [machine-local override](settings.md#machine-local-override) instead: a list in the override
 replaces the synced list.
@@ -143,7 +145,7 @@ only ever free among what your session can see.
 ## Johnny Decimal grammar (the default provider)
 
 `jd.ts` recognizes: `area` (`00-09`), `category` (`06`), `id` (`06.11` / `06.110`),
-`expanded-item` (`92021` / `27001`), and `fractal-id` (`92021.10`). Its capabilities are
+`expanded-item` (`52021` / `34001`), and `fractal-id` (`52021.10`). Its capabilities are
 `{ validate, itemAddresses, allocate, ordered }`. Content decimals start at a configurable floor
 (default `.10` — `.00–.09` reserved as standard zeros). The default config expands nothing:
 `expandedAreas` and `expandedCategories` are empty until an instance's `config` names them. `allocatable(scope)` returns `{ allocatable:false, hint }` for scopes that

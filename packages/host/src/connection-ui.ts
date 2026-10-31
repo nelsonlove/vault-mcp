@@ -23,7 +23,7 @@ import {
   type OpaqueSaveInput,
 } from "./mcp/cli-policy.js";
 import { CommandSuggest } from "./command-suggest.js";
-import { builtinModules } from "./mcp/modules-mount.js";
+import { builtinModules, schemesConfigured, setSchemeOn } from "./mcp/modules-mount.js";
 import {
   ModuleRegistry,
   collect,
@@ -1400,6 +1400,25 @@ export class VaultMcpSettingTab extends PluginSettingTab {
           await this.plugin.onModuleEnabledChanged(mod.id, value);
         })
       );
+
+    if (mod.id === "scheme") {
+      // 01.33 pick A step (b): a scheme is opt-in, so the page says plainly whether one is on and turns it on or off.
+      const on = schemesConfigured(this.plugin.settings);
+      this.lock(new Setting(section), "schemes")
+        .setName("Use a scheme (Johnny Decimal)")
+        .setDesc(
+          on
+            ? "On: `jd:` addresses resolve and the scheme tools register on the next connect. Off keeps your scheme rows and their settings but turns them off: no address resolves, no scheme tool registers, no scheme check runs."
+            : "Off: no `jd:` addressing, no scheme tool and no scheme check. On turns your saved scheme rows back on as they were, or adds a plain Johnny Decimal scheme with id `jd` when there is none; set its expansions below."
+        )
+        .addToggle((t) =>
+          t.setValue(on).onChange(async (value) => {
+            this.plugin.settings = setSchemeOn(this.plugin.settings, value);
+            await this.plugin.saveSettings();
+            this.display();
+          })
+        );
+    }
 
     // Config validation problems (generalizes the old JD-specific
     // jdWarningEl to every module): cleared when the current merged config

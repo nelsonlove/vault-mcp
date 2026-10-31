@@ -1,6 +1,6 @@
 # obsidian-vault-mcp-server
 
-> Project hub: `93046 obsidian-vault-mcp-server` (Obsidian vault)
+> Project hub: a project note in the operator's vault (for example `51001 obsidian-vault-mcp-server`; the id is made up)
 
 A minimal **remote** (Streamable HTTP) MCP server that exposes an Obsidian vault
 *folder* to Claude for reading, searching, and writing markdown. It operates
@@ -61,7 +61,7 @@ Environment:
 - `VAULT_PATH` — absolute path to the synced vault folder (default `./vault`)
 - `PORT` — listen port (default `8787`)
 - `HOST` — bind address (default `127.0.0.1`; keep it localhost behind your proxy)
-- `VAULT_MCP_SCHEMES` — the addressing schemes, as a JSON list in the plugin's `schemes` shape (default: none). With none, no note gets a Johnny Decimal id and no ref resolves by one (`matched_by: "jd-id"`), as on a fresh plugin install. A `johnny-decimal` row turns JD ids on, with the 5-digit expansions in its `config`, for example `[{"id": "jd", "provider": "johnny-decimal", "config": {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]` (made-up values; the provider's defaults expand nothing). A value that is not a JSON list, or that holds a row the plugin's scheme registry would skip, stops the index build
+- `VAULT_MCP_SCHEMES` — the addressing schemes, as a JSON list in the plugin's `schemes` shape (default: none). With none, no note gets a Johnny Decimal id and no ref resolves by one (`matched_by: "jd-id"`), as on a fresh plugin install. A `johnny-decimal` row turns JD ids on (unless it has `"enabled": false`), with the 5-digit expansions in its `config`, for example `[{"id": "jd", "provider": "johnny-decimal", "config": {"expandedAreas": ["50-59"], "expandedCategories": ["34"]}}]` (made-up values; the provider's defaults expand nothing). A value that is not a JSON list, or that holds a row the plugin's scheme registry would skip, stops the index build
 
 The MCP endpoint is `POST /mcp`. There's also `GET /health`.
 

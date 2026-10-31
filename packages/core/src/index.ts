@@ -216,6 +216,7 @@ export {
   parseOutlinks,
   deriveJdIdFromPath,
   fsJdModel,
+  jdModelFromSchemes,
   SCHEMES_ENV_VAR,
   IndexStore,
 } from "./fs-backend/index-store.js";
@@ -451,7 +452,7 @@ export { vaultSlug } from "./vault-slug.js";
 export type { Capabilities, Address, Scope, Member, SchemeFinding, ScopeProvider } from "./scheme/provider.js";
 export { DEFAULT_JD_CONFIG, jdProvider, validateJdConfig } from "./scheme/jd.js";
 export type { JdConfig } from "./scheme/jd.js";
-export { DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, SchemeRegistry, validateExcludedRoots, excludeRoots, makeRegistry, AddressUnresolvedError, AddressAmbiguousError, SchemeUnavailableError, requireOneAddress, resolveSchemeArgs } from "./scheme/registry.js";
+export { DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, schemeRowOn, allSchemeRowsTaken, SchemeRegistry, validateExcludedRoots, excludeRoots, makeRegistry, AddressUnresolvedError, AddressAmbiguousError, SchemeUnavailableError, requireOneAddress, resolveSchemeArgs } from "./scheme/registry.js";
 export type { SchemesOnLoad, SchemeInstanceConfig, SchemeInstance, ParsedRef, SchemeAddressing } from "./scheme/registry.js";
 export { schemeFindings } from "./scheme/findings.js";
 export { intendedRealPath, sameFile, isInside } from "./path-identity.js";

@@ -38,6 +38,32 @@ export interface SchemeInstanceConfig {
    * allowlist.
    */
   excludedRoots?: string[];
+  /**
+   * `false` turns this row off without deleting it: the row is still checked
+   * (provider, config, excluded roots, id), but no instance is built, so its id
+   * addresses nothing, no scheme tool counts it and no scheme check runs on it,
+   * exactly as if the row were absent. Absent or `true`: on. Every reader goes
+   * through `makeRegistry`, so this one test is the whole switch. The settings
+   * page's on/off sets and clears it (`setSchemeOn` in the host).
+   */
+  enabled?: boolean;
+}
+
+/** Whether a row is on: anything but an explicit `enabled: false`. */
+export function schemeRowOn(row: unknown): boolean {
+  return !(row && typeof row === "object" && (row as { enabled?: unknown }).enabled === false);
+}
+
+/**
+ * True when the registry takes every row (each one an object, and each on row
+ * registers, each off row passes the same checks): the one check the host's
+ * override, the file-system server's VAULT_MCP_SCHEMES and the conformance CLI
+ * all make before they trust a list.
+ */
+export function allSchemeRowsTaken(rows: unknown[]): boolean {
+  if (rows.some((r) => !r || typeof r !== "object" || Array.isArray(r))) return false;
+  const reg = makeRegistry(rows as SchemeInstanceConfig[]);
+  return reg.instances().length + reg.offIds().length === rows.length;
 }
 
 /**
@@ -59,6 +85,8 @@ export const JD_SCHEME_INSTANCE: Readonly<SchemeInstanceConfig> = Object.freeze(
 
 export interface SchemesOnLoad {
   schemes: SchemeInstanceConfig[];
+  /** Set when the stored `schemes` is not a list: what the caller should warn about. The stored value is left as it is (persist is false), so a hand-edited file is never rewritten by the load. */
+  warning?: string;
   /** True when the stored settings did not hold the key (or came from the adoption source): save now, so the decision runs at most once per install. */
   persist: boolean;
 }
@@ -70,8 +98,8 @@ export interface SchemesOnLoad {
  * install is an EXISTING install). No stored settings at all (a fresh
  * install): no scheme. Stored settings without the key (an install that
  * predates step b, which got the one jd instance by default): that instance,
- * saved once. Otherwise the stored list as it is (a value that is not a list
- * reads as none).
+ * saved once. Otherwise the stored list as it is. A stored value that is not
+ * a list reads as no scheme, with a `warning`, and is not written back.
  */
 export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
   const asObject = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -79,7 +107,10 @@ export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
   if (!stored) return { schemes: [], persist: true };
   if (!Object.prototype.hasOwnProperty.call(stored, "schemes")) return { schemes: [{ ...JD_SCHEME_INSTANCE }], persist: true };
   const list = stored.schemes;
-  return { schemes: Array.isArray(list) ? structuredClone(list as SchemeInstanceConfig[]) : [], persist: asObject(own) === null };
+  if (!Array.isArray(list)) {
+    return { schemes: [], persist: false, warning: `the saved "schemes" setting is not a list (it is ${list === null ? "null" : typeof list}), so no scheme is on; the saved value is left as it is — fix it to a list of scheme rows` };
+  }
+  return { schemes: structuredClone(list as SchemeInstanceConfig[]), persist: asObject(own) === null };
 }
 
 export interface SchemeInstance {
@@ -140,9 +171,18 @@ export class SchemeRegistry {
    */
   private readonly rawSkipped: Map<string, string[]>;
 
-  constructor(instances: SchemeInstance[], skipped: Map<string, string[]> = new Map()) {
+  /** Ids of rows that passed every check but are turned off (`enabled: false`). */
+  private readonly off: string[];
+
+  constructor(instances: SchemeInstance[], skipped: Map<string, string[]> = new Map(), off: string[] = []) {
     this.byId = new Map(instances.map((inst) => [inst.id, inst]));
     this.rawSkipped = skipped;
+    this.off = off;
+  }
+
+  /** The ids of rows that are valid but turned off (`enabled: false`). */
+  offIds(): string[] {
+    return [...this.off];
   }
 
   instances(): SchemeInstance[] {
@@ -347,6 +387,7 @@ export function makeRegistry(configs: SchemeInstanceConfig[]): SchemeRegistry {
   // and must keep its own simpler last-wins-by-Map semantics for a caller
   // that already deduplicated.
   const seenIds = new Set<string>();
+  const off: string[] = [];
   for (const cfg of configs) {
     if (seenIds.has(cfg.id)) {
       const msg = `duplicate scheme id "${cfg.id}" — first entry wins, this one is skipped`;
@@ -363,6 +404,13 @@ export function makeRegistry(configs: SchemeInstanceConfig[]): SchemeRegistry {
     // unknown provider/invalid config would leave the id unreserved and a
     // later same-id row would register as if it were the only one.
     seenIds.add(cfg.id);
+    const enabledRaw = (cfg as { enabled?: unknown }).enabled;
+    if (enabledRaw !== undefined && typeof enabledRaw !== "boolean") {
+      const msg = `"enabled" for scheme id "${cfg.id}" must be true or false — instance skipped`;
+      console.error(`[scheme-registry] ${msg}`);
+      recordSkip(cfg.id, [msg]);
+      continue;
+    }
     const factory = Object.prototype.hasOwnProperty.call(PROVIDER_FACTORIES, cfg.provider)
       ? PROVIDER_FACTORIES[cfg.provider]
       : undefined;
@@ -388,9 +436,14 @@ export function makeRegistry(configs: SchemeInstanceConfig[]): SchemeRegistry {
       recordSkip(cfg.id, rootProblems);
       continue;
     }
+    // A row turned off (`enabled: false`) is checked like any other and then left out: its id addresses nothing.
+    if (enabledRaw === false) {
+      off.push(cfg.id);
+      continue;
+    }
     instances.push({ id: cfg.id, providerName: cfg.provider, provider: factory.make(cfg.config), ...(excludedRoots ? { excludedRoots } : {}) });
   }
-  return new SchemeRegistry(instances, skipped);
+  return new SchemeRegistry(instances, skipped, off);
 }
 
 export class AddressUnresolvedError extends Error {

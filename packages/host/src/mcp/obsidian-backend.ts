@@ -42,6 +42,7 @@ import {
   truncateForRead,
   acceptTransitionNeedsBefore,
   deriveJdIdFromPath,
+  type FsJdModel,
   parseGuardFrontmatter,
   unverifiableProtectedPropertyIn, unverifiableBeforeReason,
   assertFilePath,
@@ -116,6 +117,13 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
     private readonly onWriteNote?: (facts: { path: string; baseBytes: Uint8Array | null; proposedBytes: Uint8Array; created: boolean }) => void,
     /** The operator's record identification (#397), for moveNote's record test (records.ts). Absent ⇒ the default `record: true`. */
     private readonly recordIdentification?: () => RecordRules,
+    /**
+     * The JD model `matched_by: "jd-id"` is judged by: built from the host's
+     * own `schemes` (`jdModelFromSchemes`), read per call. Absent ⇒ none, so
+     * no ref is reported as matched by a JD id. Never the file-system server's
+     * VAULT_MCP_SCHEMES: that variable is not this plugin's setting.
+     */
+    private readonly jdModel: () => FsJdModel | null = () => null,
   ) {}
 
   /**
@@ -389,7 +397,7 @@ export class ObsidianBackend implements VaultBackend, FileBackend, TextReplaceBa
       if (clean === dest.path || clean + ".md" === dest.path) {
         matched_by = "path";
       } else {
-        const jdId = deriveJdIdFromPath(dest.path, dest.basename);
+        const jdId = deriveJdIdFromPath(dest.path, dest.basename, this.jdModel());
         if (jdId !== undefined && jdId === clean) {
           matched_by = "jd-id";
         } else if (dest.basename.toLowerCase() === clean.toLowerCase()) {
