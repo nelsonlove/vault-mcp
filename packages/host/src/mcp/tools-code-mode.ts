@@ -111,7 +111,9 @@ export async function callCapturedTool(
   registry: CapturedRegistry,
   name: string,
   args: Record<string, unknown> | undefined,
-  extra: unknown
+  extra: unknown,
+  /** Told when the args fail the target's schema (the refusal log, #618). Absent ⇒ nothing is told. */
+  onInvalid?: (name: string, def: any, args: Record<string, unknown>) => void
 ): Promise<any> {
   const t = registry.get(name);
   if (!t) return fail(new Error(`unknown tool '${name}' — use obsidian_search_tools to list available tools`));
@@ -120,6 +122,7 @@ export async function callCapturedTool(
     const issues = parsed.error.issues
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
+    onInvalid?.(name, t.def, args ?? {});
     return fail(new Error(`invalid args for '${name}': ${issues} — see obsidian_describe_tool`));
   }
   return t.handler(parsed.data, extra);
@@ -134,7 +137,9 @@ export async function callCapturedTool(
 export function registerCodeModeTools(
   server: McpServer,
   registry: CapturedRegistry,
-  register?: (name: string, def: unknown, handler: unknown) => unknown
+  register?: (name: string, def: unknown, handler: unknown) => unknown,
+  /** Passed to callCapturedTool: told when a target call fails its schema (the refusal log, #618). */
+  onInvalid?: (name: string, def: any, args: Record<string, unknown>) => void
 ): void {
   const reg: any = register ?? (server.registerTool as any).bind(server);
   reg(
@@ -189,6 +194,6 @@ export function registerCodeModeTools(
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     async (args: { name: string; args?: Record<string, unknown> }, extra: unknown) =>
-      callCapturedTool(registry, args.name, args.args, extra)
+      callCapturedTool(registry, args.name, args.args, extra, onInvalid)
   );
 }

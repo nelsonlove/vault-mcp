@@ -62,6 +62,14 @@ import {
   parseFileMoveExtensions,
   FILE_MOVE_EXTENSIONS_ENV_VAR,
   registerReplaceTextTool,
+  collectPaths,
+  refusalCodeOf,
+  refusalCodeOfThrown,
+  refusalFamily,
+  isDequeueRefusal,
+  refusalPath,
+  RefusalRateLimiter,
+  INPUT_VALIDATION_CODE,
 } from "@vault-mcp/core";
 import type { Redaction } from "@vault-mcp/core";
 import { loadRedaction } from "./redaction-env.js";
@@ -70,7 +78,7 @@ import { existsSync } from "node:fs";
 import type { VaultBackend, VaultWatcherHandle, FileBackend, TextReplaceBackend } from "@vault-mcp/core";
 import path from "node:path";
 import { promises as fsp } from "node:fs";
-import { FsWriteKernel, defaultJournalDir } from "./fs-write-kernel.js";
+import { FsWriteKernel, defaultJournalDir, refusalCall, type FsJournalTarget, type FsRefusalPolicy } from "./fs-write-kernel.js";
 
 /** This server's version, as asserted in MCP serverInfo and journal identity. */
 const SERVER_VERSION = "1.0.0";
@@ -187,9 +195,87 @@ export function getFsWriteKernel(): FsWriteKernel {
       // the journal's revBefore (its throw is swallowed by the kernel's
       // revOf, which then records no rev) (#444).
       resolvePath: (relPath) => resolveInVault(relPath),
+      // The refusal log (#618): the environment switch, read per call.
+      refusal: refusalPolicy(),
     });
   }
   return processKernel;
+}
+
+/**
+ * The refusal log (#618): a truthy VAULT_MCP_REFUSAL_LOG journals every
+ * refused write call as one `refused` line (code and code family, no argument
+ * value) in the FS write journal. The same meaning as the plugin's
+ * `refusalLog` setting. Unset ⇒ off, the default. Read per call.
+ */
+export const REFUSAL_LOG_ENV_VAR = "VAULT_MCP_REFUSAL_LOG";
+
+export function isRefusalLogEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return ["true", "1", "yes", "on"].includes((env[REFUSAL_LOG_ENV_VAR] ?? "").trim().toLowerCase());
+}
+
+/** The FS write kernel's refusal policy: a switch (default: the environment variable, per call) and core's codes. */
+export function refusalPolicy(on: () => boolean = () => isRefusalLogEnabled(), limiter: RefusalRateLimiter = new RefusalRateLimiter()): FsRefusalPolicy {
+  return { on, codeOfThrown: refusalCodeOfThrown, family: refusalFamily, atDequeue: isDequeueRefusal, path: refusalPath, limiter };
+}
+
+const MAX_REFUSED_PATHS = 20;
+
+/** The journal target of a tool call: the paths its arguments name, through core's walker. */
+function refusalTarget(args: unknown): FsJournalTarget {
+  const paths = args && typeof args === "object" ? collectPaths(args as Record<string, unknown>) : [];
+  if (paths.length === 0) return {};
+  return { path: paths[0], ...(paths.length > 1 ? { paths: paths.slice(0, MAX_REFUSED_PATHS) } : {}) };
+}
+
+/**
+ * Wire the refusal log (#618) into one FS server: the SDK's input validation
+ * (the strict write schemas) and every MUTATING tool handler. A refusal that
+ * the write kernel did not journal (the gate, the path, the write scope, the
+ * cut-read check, the profile, a tool's own check before the backend) is
+ * journaled here as one `refused` line. Off, a handler runs exactly as before
+ * and nothing is marked. Read calls are not journaled, refused or not.
+ */
+function wireRefusalLog(server: McpServer, kernelOpt: FsWriteKernel | undefined): void {
+  const on = (): boolean => (kernelOpt ? kernelOpt.refusalLogOn() : isRefusalLogEnabled());
+  const kernel = (): FsWriteKernel => kernelOpt ?? getFsWriteKernel();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mutating = (def: any): boolean => def?.annotations?.readOnlyHint === false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const sdk = server as any;
+  if (typeof sdk.validateToolInput === "function") {
+    const validate = sdk.validateToolInput.bind(server);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sdk.validateToolInput = async (tool: any, args: unknown, toolName: string) => {
+      try {
+        return await validate(tool, args, toolName);
+      } catch (e) {
+        if (mutating(tool) && on()) await kernel().journalRefusal(toolName, refusalTarget(args), INPUT_VALIDATION_CODE);
+        throw e;
+      }
+    };
+  }
+  const register = sdk.registerTool.bind(server);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sdk.registerTool = (name: string, def: any, handler: (args: any, extra: any) => any) => {
+    if (!mutating(def)) return register(name, def, handler);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return register(name, def, async (args: any, extra: any) => {
+      if (!on()) return handler(args, extra);
+      const mark = { journaled: false };
+      let result: unknown;
+      try {
+        result = await refusalCall.run(mark, () => handler(args, extra));
+      } catch (e) {
+        const code = refusalCodeOfThrown(e);
+        if (code !== undefined && !mark.journaled) await kernel().journalRefusal(name, refusalTarget(args), code);
+        throw e;
+      }
+      const code = refusalCodeOf(result);
+      if (code !== undefined && !mark.journaled) await kernel().journalRefusal(name, refusalTarget(args), code);
+      return result;
+    });
+  };
 }
 
 /**
@@ -545,6 +631,8 @@ export function buildFsServer(opts?: FsHandlerOpts): McpServer {
   const redaction = opts?.redaction === undefined ? loadRedaction() : (opts.redaction ?? undefined);
   const scanner = scannerFor(redaction, profile?.name ?? "full");
   const backend = makeBackend({ allowWrites: opts?.allowWrites, kernel: opts?.kernel });
+  // The refusal log (#618), before any tool registers, so every registration below passes through it.
+  wireRefusalLog(server, opts?.kernel);
   registerFsTools(server, backend, {
     // The same per-connection filter the plugin applies at origRegister (#521).
     ...(profile ? { profile, exists: existsInVault } : {}),

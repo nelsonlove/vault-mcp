@@ -690,7 +690,7 @@ describe("FS-mode write queue + journal (issue #92)", () => {
         assert.equal(rec.actor.server.mode, "fs-fallback");
         // Note bodies never enter the journal.
         if ("content" in step.args) {
-          assert.match(String(rec.argsDigest.content), /^<\d+ chars>$/);
+          assert.match(String(rec.argsDigest?.content), /^<\d+ chars>$/);
         }
       }
 

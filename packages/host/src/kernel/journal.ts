@@ -32,8 +32,15 @@ import type { ServerIdentity } from "./install-id.js";
  * `deduped` is an idempotency-key replay: a call whose key was already seen
  * returned the original call's result without executing anything, and
  * `dedupeOf` names the `ts` of the record it replays.
+ *
+ * `refused` is written only while the `refusalLog` setting is on (#618), for
+ * a call refused BEFORE the queue (nothing ran, no key was taken): `refusal`
+ * and `codeFamily`, capped paths, and no argument value (no `argsDigest`,
+ * `error` or `intent`). A call refused at dequeue keeps its own record
+ * (`error` / `conflict`) unchanged and gains only `refusal` and `codeFamily`,
+ * for a code on core's DEQUEUE_REFUSALS. Off, nothing is added.
  */
-export type JournalOutcome = "ok" | "error" | "late-ok" | "late-error" | "conflict" | "deduped";
+export type JournalOutcome = "ok" | "error" | "late-ok" | "late-error" | "conflict" | "deduped" | "refused";
 
 /**
  * Who did it. Established by the transport, never claimed by the caller:
@@ -110,9 +117,16 @@ export interface JournalRecord {
   op: string;
   target: JournalTarget;
   actor: JournalActor;
-  argsDigest: Record<string, unknown>;
+  /** Absent only on a `refused` record, which keeps no argument value. */
+  argsDigest?: Record<string, unknown>;
   outcome: JournalOutcome;
   error?: string;
+  /** The refusal log (#618): the refusal's error code, e.g. `rev_conflict`, on a `refused` record or a dequeue record it marks. */
+  refusal?: string;
+  /** With `refusal`: the guard stage the code belongs to, e.g. `rev` (core's refusalFamily). */
+  codeFamily?: string;
+  /** On a `refused` record only: how many more refusals of this code and session the cap left out of the window that just ended. */
+  suppressed?: number;
   /** Handler execution only — measured from dequeue, so it never includes queue wait. */
   durationMs: number;
   /** Enqueue→dequeue: how long the operation waited behind other writes. */

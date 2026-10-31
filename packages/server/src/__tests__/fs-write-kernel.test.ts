@@ -251,8 +251,8 @@ describe("FsWriteKernel.runMutation", () => {
     assert.equal(r.actor.transport, "mcp");
     assert.equal(r.actor.connection, kernel.connection);
     assert.deepEqual(r.actor.server, { mode: "fs-fallback", vault: "test-vault", version: "0" });
-    assert.equal(r.argsDigest.content, "<11 chars>", "bodies must be digested");
-    assert.equal(r.argsDigest.path, "A.md");
+    assert.equal(r.argsDigest?.content, "<11 chars>", "bodies must be digested");
+    assert.equal(r.argsDigest?.path, "A.md");
     assert.ok(typeof r.durationMs === "number" && r.durationMs >= 0);
     assert.ok(typeof r.queueWaitMs === "number" && r.queueWaitMs >= 0);
     assert.ok(!Number.isNaN(Date.parse(r.ts)));

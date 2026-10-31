@@ -106,6 +106,13 @@ export interface WriteNotesDeps {
   formatTs: (ms: number) => string;
   /** Wall-clock now, ms. Injected for deterministic tests. */
   now?: () => number;
+  /**
+   * Told when an item is refused HERE, before its guarded write (the
+   * allowlist at resolution, the accept guard at compose), for the refusal log
+   * (#618). An item refused inside the guarded write is journaled there.
+   * Absent ⇒ nothing is told.
+   */
+  onRefused?: (path: string, code: string) => void;
 }
 
 type PerItemResult =
@@ -216,6 +223,7 @@ export function registerWriteNotesTool(
         // that property — nothing here dispatches early).
         const resolved = deps.resolveTarget(item.path);
         if ("blocked" in resolved) {
+          deps.onRefused?.(item.path, resolved.blocked.code);
           results.push({ ok: false, path: item.path, code: resolved.blocked.code, error: resolved.blocked.message });
           continue;
         }
@@ -242,6 +250,7 @@ export function registerWriteNotesTool(
           });
         } catch (e) {
           if (e instanceof AcceptForbiddenError) {
+            deps.onRefused?.(resolvedPath, e.code);
             results.push({ ok: false, path: item.path, code: e.code, error: e.message });
             continue;
           }

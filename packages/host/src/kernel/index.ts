@@ -34,12 +34,14 @@ import {
   type JournalActor,
   type JournalEffects,
   type JournalOutcome,
+  type JournalRecord,
   type JournalTarget,
 } from "./journal.js";
 import { argsHashOf, fingerprintArgs, IdempotencyMismatchError, IdempotencyStore, type IdempotencySettlement } from "./idempotency.js";
 import { holderOf, lockNoticeText, LockStore, expiresInSeconds, type Lock, type LockNotice } from "./locks.js";
 import { recordImmutableRefusal } from "./record-guard.js";
 import type { UidIndex } from "./uid-index.js";
+import { isDequeueRefusal, refusalCodeOf, refusalCodeOfThrown, refusalFamily, refusalPath, RefusalRateLimiter } from "@vault-mcp/core";
 
 export { WriteQueue, WriteTimeoutError, WRITE_TIMEOUT_MS } from "./write-queue.js";
 export type { LateSettlement } from "./write-queue.js";
@@ -271,6 +273,20 @@ export interface MutationContext {
   effectsOf?: (result: unknown) => JournalEffects | undefined;
 }
 
+/**
+ * A call refused before it reached the write queue, for the refusal log
+ * (#618): what the record says about it. `args` only feeds the target (the
+ * paths it names, through the same walker as every other record); no
+ * argument value is recorded.
+ */
+export interface RefusalContext {
+  op: string;
+  args: Record<string, unknown>;
+  actor: JournalActor;
+  ref?: string;
+  addressedAs?: Array<{ ref: string; path: string }>;
+}
+
 // A batch move can name 100 paths; the journal records the shape, not the payload.
 const MAX_JOURNALED_PATHS = 20;
 const MAX_JOURNALED_ERROR = 500;
@@ -374,6 +390,81 @@ export class Kernel {
   ) {}
 
   /**
+   * The refusal log (#618): whether refused calls are marked in the journal
+   * (see core's refusal-log.ts for the two kinds of mark). OFF unless the host
+   * wires it to its `refusalLog` setting (main.ts), read live per call; off,
+   * every record is what it was before and no line is added.
+   */
+  refusalLog: () => boolean = () => false;
+
+  /** The cap on NEW refused lines, per session and code (core's RefusalRateLimiter). Replaceable in tests. */
+  refusalLimiter: RefusalRateLimiter = new RefusalRateLimiter();
+
+  /** The code that marks a DEQUEUE record, or undefined: the log is on and the code is on core's DEQUEUE_REFUSALS. */
+  private dequeueRefusal(code: string | undefined): { refusal: string; codeFamily: string } | Record<string, never> {
+    if (!isDequeueRefusal(code) || !this.journal || !this.refusalLogOn()) return {};
+    return { refusal: code, codeFamily: refusalFamily(code) };
+  }
+
+  /** The switch, read safely: a throwing settings read is off, never a failed call. */
+  refusalLogOn(): boolean {
+    try {
+      return this.refusalLog() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Journal a call refused BEFORE the queue (the strict schema, the profile,
+   * the allowlist, the write scope, the protection, the Sync guard, …), when
+   * the refusal log is on. A no-op when it is off, when the code is not a
+   * refusal, or with no journal. Never throws.
+   */
+  journalRefusal(rc: RefusalContext, code: string): void {
+    const journal = this.journal;
+    if (!journal || !this.refusalLogOn()) return;
+    if (refusalCodeOfThrown({ code }) === undefined) return;
+    try {
+      const key = `${rc.actor.session ?? rc.actor.connection}|${code}`;
+      const flush = (count: number) => {
+        void journal.append({ ts: new Date().toISOString(), op: rc.op, target: {}, actor: rc.actor, outcome: "refused", refusal: code, codeFamily: refusalFamily(code), suppressed: count, durationMs: 0, queueWaitMs: 0 });
+      };
+      if (!this.refusalLimiter.admit(key, flush)) return;
+      const target = this.capTarget(this.withUid(this.resolveTarget(rc.args, rc.ref)));
+      void journal.append({
+        ts: new Date().toISOString(),
+        op: rc.op,
+        target,
+        actor: rc.actor,
+        outcome: "refused",
+        refusal: code,
+        codeFamily: refusalFamily(code),
+        durationMs: 0,
+        queueWaitMs: 0,
+        ...(rc.addressedAs !== undefined && rc.addressedAs.length > 0
+          ? { addressedAs: rc.addressedAs.slice(0, MAX_JOURNALED_PATHS).map((a) => ({ ref: refusalPath(a.ref), path: refusalPath(a.path) })) }
+          : {}),
+      });
+    } catch (e) {
+      console.error("[vault-mcp] refusal journal failed", e);
+    }
+  }
+
+  /**
+   * A refused call's target with every path capped (core's refusalPath): its
+   * args were never checked, so a value under a path key may hold anything.
+   */
+  private capTarget(t: JournalTarget): JournalTarget {
+    return {
+      ...t,
+      ...(t.path !== undefined ? { path: refusalPath(t.path) } : {}),
+      ...(t.paths !== undefined ? { paths: t.paths.map(refusalPath) } : {}),
+      ...(t.ref !== undefined ? { ref: refusalPath(t.ref) } : {}),
+    };
+  }
+
+  /**
    * Run one mutating operation: serialized behind every other mutating
    * operation on this plugin instance, and journaled exactly once.
    *
@@ -422,7 +513,7 @@ export class Kernel {
           claim.firstIfRev,
           mc.ifRev
         );
-        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message });
+        this.journalTerminal(mc, argsDigest, "error", { error: mismatch.message, ...this.dequeueRefusal(mismatch.code) });
         throw mismatch;
       }
       if (claim.kind === "replay") {
@@ -593,6 +684,15 @@ export class Kernel {
       // never said what it touched, and the record must not guess.
       const effects = settled !== undefined ? safeEffects(mc, settled.value) : undefined;
       ts = new Date().toISOString();
+      // The refusal log (#618): a call refused at dequeue keeps its record
+      // exactly as it is (key, argsHash, returned, revs, effects), and gains
+      // only `refusal` and `codeFamily`, and only for a code on core's
+      // DEQUEUE_REFUSALS ("refused, nothing written"). Any other code, a
+      // failure after a write above all, gains nothing. Off: nothing.
+      const refusal =
+        outcome === "ok"
+          ? {}
+          : this.dequeueRefusal(settled !== undefined ? refusalCodeOf(settled.value) : refusalCodeOfThrown(thrown?.error));
       // Fire-and-forget: WriteJournal.append never rejects, and the operation's
       // result must not wait on (or be affected by) the audit write. Appended
       // BEFORE the key is settled, so this record always precedes the `deduped`
@@ -614,6 +714,7 @@ export class Kernel {
         ...(effects !== undefined ? { effects } : {}),
         ...this.preconditionFields(mc),
         ...(mc.idempotencyKey !== undefined && settled !== undefined ? { returned: true } : {}),
+        ...refusal,
       });
       // Release the key: waiters adopt this outcome verbatim, and only now does
       // the store decide the key's future. A RETURNED envelope (success or a
@@ -663,7 +764,7 @@ export class Kernel {
     mc: MutationContext,
     argsDigest: Record<string, unknown>,
     outcome: JournalOutcome,
-    extra: { error?: string; dedupeOf?: string } = {}
+    extra: { error?: string; dedupeOf?: string; refusal?: string; codeFamily?: string } = {}
   ): void {
     void this.journal?.append({
       ts: new Date().toISOString(),
@@ -685,6 +786,7 @@ export class Kernel {
         ? { addressedAs: mc.addressedAs.slice(0, MAX_JOURNALED_PATHS) }
         : {}),
       ...(mc.syncWarning !== undefined ? { syncWarning: mc.syncWarning.slice(0, MAX_JOURNALED_ERROR) } : {}),
+      ...(extra.refusal !== undefined ? { refusal: extra.refusal, codeFamily: extra.codeFamily } : {}),
     });
   }
 
