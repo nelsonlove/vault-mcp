@@ -1,7 +1,7 @@
 // registry.ts — the SchemeRegistry: multiple named scheme instances (each a
-// provider name + a merged config) plus address-string resolution
-// ("jd:06.11" -> a vault path). Kernel-module rules apply: nothing here
-// imports from "obsidian".
+// provider name + a merged config) plus the refusal of the retired
+// `<scheme-id>:<address>` path syntax (`refuseSchemeRefs`). Kernel-module rules
+// apply: nothing here imports from "obsidian".
 //
 // Scheme semantics are configuration, not hardwired (Nelson's ruling): each
 // instance's config is a PARTIAL provider config, deep-merged at the key
@@ -13,8 +13,7 @@
 
 import type { Address, ScopeProvider } from "./provider.js";
 import { jdProvider, DEFAULT_JD_CONFIG, validateJdConfig, type JdConfig } from "./jd.js";
-import { mapPaths, visiblePaths } from "../guard-paths.js";
-import type { GuardSettings } from "../visibility.js";
+import { collectPaths } from "../guard-paths.js";
 
 export interface SchemeInstanceConfig {
   id: string;
@@ -31,8 +30,7 @@ export interface SchemeInstanceConfig {
    *
    * Applied uniformly at the listing layer (`excludeRoots`, below) wherever a
    * listing reaches this instance's provider: tools-scheme.ts's per-call
-   * visible listing, `resolveSchemeArgs`'s `jd:<address>` addressing, and
-   * `schemeFindings`. It bounds SCHEME resolution and scheme tool output
+   * visible listing and `schemeFindings`. It bounds SCHEME resolution and scheme tool output
    * ONLY — an excluded note's own path still works as an ordinary path
    * argument (read, write, uid resolution, …); this is not a second
    * allowlist.
@@ -41,9 +39,8 @@ export interface SchemeInstanceConfig {
 }
 
 /**
- * No scheme on a fresh install (01.33, pick A step b): addressing is opt-in.
- * With no instance there is no `<id>:` addressing, no scheme tool and no
- * scheme check; `uid:` and paths work as before. A vault turns Johnny Decimal
+ * No scheme on a fresh install (01.33, pick A step b): schemes are opt-in.
+ * With no instance there is no scheme tool and no scheme check; `uid:` and paths work as before. A vault turns Johnny Decimal
  * on by adding `JD_SCHEME_INSTANCE` (below) to its `schemes` setting, with any
  * expansions in its `config`.
  */
@@ -176,13 +173,23 @@ export class SchemeRegistry {
     return out;
   }
 
+  /** The configured scheme id (live or skipped) that `value` starts with,
+   * followed by a colon, or null. `uid` is reserved and never matches. The
+   * test `refuseSchemeRefs` uses to refuse the retired path syntax. */
+  refId(value: string): string | null {
+    const m = value.match(/^([a-z][a-z0-9-]*):/);
+    if (!m || m[1] === "uid") return null;
+    return this.byId.has(m[1]) || this.rawSkipped.has(m[1]) ? m[1] : null;
+  }
+
   /** "jd:06.11" -> resolved / skipped / none. The full-detail form of
    * `parseRef` (below): distinguishes a ref naming a SKIPPED id (no live
    * instance — a typed `scheme_unavailable` refusal is warranted) from every
    * other reason a ref isn't a resolvable scheme address (not scheme-shaped
    * at all, the reserved "uid:" prefix, an unregistered id, or an id-shaped
    * address the provider itself can't parse) — all of those are `"none"`,
-   * meaning "not a scheme ref at all, treat it as an ordinary path". A
+   * meaning "not a resolvable scheme ref" (the address tools' input; a path
+   * argument is checked by `refId` instead). A
    * skipped id's address portion is never parsed against a provider (there
    * is none to parse it) — matching the id alone is enough to report
    * `"skipped"`. */
@@ -206,8 +213,7 @@ export class SchemeRegistry {
    * reserved "uid:" prefix, an unregistered scheme id, a SKIPPED scheme id
    * (see `parseRefDetailed` for that distinction), or an id-shaped address
    * the provider itself can't parse. Callers treat null uniformly as
-   * "not a scheme ref — treat it as an ordinary path", so a filename that
-   * happens to contain a colon never breaks. A caller that must distinguish
+   * "not a resolvable scheme ref". A caller that must distinguish
    * a skipped id (to issue a typed refusal instead) uses `parseRefDetailed`
    * directly. */
   parseRef(ref: string): { instance: SchemeInstance; addr: Address } | null {
@@ -304,8 +310,7 @@ export function validateExcludedRoots(raw: string[] | undefined): { roots: strin
  *
  * `roots` empty/absent, or nothing in `paths` matches, returns the SAME
  * ARRAY (`paths`, not a copy) — the identity convention every caller downstream
- * (the visible-listing memo in `resolveSchemeArgs`, `mapPaths`'s no-op
- * sharing) relies on to treat "unchanged" as `===`, and the byte-identical
+ * (`mapPaths`'s no-op sharing) relies on to treat "unchanged" as `===`, and the byte-identical
  * behavior `excludedRoots` absent/`[]` must have.
  */
 export function excludeRoots(paths: string[], roots: string[] | undefined): string[] {
@@ -343,8 +348,7 @@ export function makeRegistry(configs: SchemeInstanceConfig[]): SchemeRegistry {
   // let a later, possibly-unintended entry shadow an earlier one with no
   // trace in the log. Tracked by id alongside `instances` rather than
   // `byId.has(...)` inside the SchemeRegistry constructor, since that
-  // constructor is also used directly (see e.g. requireOneAddress's tests)
-  // and must keep its own simpler last-wins-by-Map semantics for a caller
+  // constructor is also used directly (in tests) and must keep its own simpler last-wins-by-Map semantics for a caller
   // that already deduplicated.
   const seenIds = new Set<string>();
   for (const cfg of configs) {
@@ -393,27 +397,6 @@ export function makeRegistry(configs: SchemeInstanceConfig[]): SchemeRegistry {
   return new SchemeRegistry(instances, skipped);
 }
 
-export class AddressUnresolvedError extends Error {
-  readonly code = "address_unresolved";
-
-  constructor(message: string) {
-    super(message);
-    this.name = "AddressUnresolvedError";
-  }
-}
-
-export class AddressAmbiguousError extends Error {
-  readonly code = "address_ambiguous";
-
-  constructor(
-    message: string,
-    readonly candidates: string[],
-  ) {
-    super(message);
-    this.name = "AddressAmbiguousError";
-  }
-}
-
 /**
  * A ref (or an explicit `scheme` argument) named a scheme id that IS
  * configured but has no live instance — `SchemeRegistry.skipped()` (issue
@@ -439,131 +422,44 @@ export class SchemeUnavailableError extends Error {
   }
 }
 
-// A duplicate can in principle be large; an error message should not be — same
-// convention (and same cap) as UidAmbiguousError's MAX_LISTED_PATHS in
-// uid-index.ts. The candidates are already allowlist-VISIBLE-only by the time
-// they get here, so this bounds the wire size, not disclosure.
-const MAX_LISTED_CANDIDATES = 10;
-
-/**
- * The post-parse half of `requireOneAddress`: given a ref ALREADY PARSED (or
- * `null`, meaning `ref` never parsed as a scheme reference at all), decide the
- * one matching path or throw. Factored out so a caller that must parse `ref`
- * itself anyway to decide whether it's scheme-shaped — resolveSchemeArgs,
- * below — never parses it a SECOND time just to resolve it.
- */
-function resolveParsedAddress(
-  reg: SchemeRegistry,
-  parsed: { instance: SchemeInstance; addr: Address } | null,
-  ref: string,
-  notes: string[]
-): string {
-  if (!parsed) {
-    throw new AddressUnresolvedError(`"${ref}" does not resolve to any address`);
-  }
-  const candidates = reg.resolve(parsed.instance, parsed.addr, notes);
-  if (candidates.length === 0) {
-    throw new AddressUnresolvedError(`no note found for "${ref}"`);
-  }
-  if (candidates.length > 1) {
-    const listed = candidates.slice(0, MAX_LISTED_CANDIDATES);
-    const more = candidates.length > listed.length ? `, +${candidates.length - listed.length} more` : "";
-    throw new AddressAmbiguousError(`"${ref}" is ambiguous between: ${listed.join(", ")}${more}`, candidates);
-  }
-  return candidates[0];
-}
-
-/** Resolve `ref` (e.g. "jd:06.11") against `notes` to exactly one path, or
- * throw. A ref that isn't a resolvable scheme address at all (unregistered
- * id, unparseable address, "uid:", not scheme-shaped) is treated the same as
- * zero candidates — there is nothing for the caller to have meant. */
-export function requireOneAddress(reg: SchemeRegistry, ref: string, notes: string[]): string {
-  return resolveParsedAddress(reg, reg.parseRef(ref), ref, notes);
-}
-
-// ── scheme addressing (`jd:<address>`) ──────────────────────────────────────
+// ── the retired scheme-address path syntax ──────────────────────────────────
 //
-// The uid-addressing analog (see kernel/uid-index.ts's resolveUidArgs, applied
-// at the same interception point in mcp/guarded.ts): `path: "jd:06.11"`
-// resolves to the real path before anything else sees the call. Defined over
-// the guard's own path walker (mapPaths), so the arguments scheme addressing
-// reaches and the arguments the allowlist scopes are the same set by
-// construction, exactly as uid addressing is.
-//
-// Resolution runs over the allowlist-VISIBLE notes only (`visiblePaths`, the
-// same helper `obsidian_resolve_address` uses) — 0 visible candidates ⇒
-// address_unresolved even when a hidden note claims the address, 2+ visible ⇒
-// address_ambiguous naming ONLY the visible ones. A duplicated address with
-// one hidden claimant must not read as more resolvable, and disambiguous, to
-// an allowlisted session than to obsidian_resolve_address — the same
-// no-existence-oracle property uid addressing's D-A fix established.
+// A path argument of the form `<scheme-id>:<address>` (`jd:06.11`) used to
+// resolve to the note at that address, at the same interception point as
+// `uid:`. That syntax is retired (Nelson, 2026-10-30: "retire em", after a
+// finding that nothing used it). A path argument that starts with a
+// CONFIGURED scheme id and a colon is now refused, never read as a plain path
+// that happens to start with that text: a caller who still writes the old
+// form learns why, instead of reading or writing a note named "jd:06.11".
+// Reading or allocating an address stays with the scheme tools
+// (`obsidian_resolve_address`, `obsidian_next_address`, ...); only the path
+// syntax is gone. `uid:` is reserved and untouched.
 
-/** What a call's scheme addressing resolved to — the `jd:<address>` analog of
- * `UidAddressing`. */
-export interface SchemeAddressing {
-  /**
-   * The arguments with every scheme reference replaced by its resolved path.
-   * The SAME object when the call used no scheme addressing at all —
-   * behavior for ordinary path arguments (including ones merely containing a
-   * colon) is unchanged, byte for byte.
-   */
-  args: Record<string, unknown>;
-  /** Each reference resolved, in walk order. Empty ⇒ no scheme addressing was used. */
-  resolved: Array<{ ref: string; path: string }>;
+/** A path argument used the retired `<scheme-id>:<address>` syntax. */
+export class SchemeRefRetiredError extends Error {
+  readonly code = "scheme_ref_retired";
+
+  constructor(
+    readonly ref: string,
+    readonly id: string,
+    alternatives = "a vault-relative path or a uid:<value> ref",
+  ) {
+    super(`"${ref}" uses the scheme-address path syntax ("${id}:<address>"), which is retired; name the note by ${alternatives}`);
+    this.name = "SchemeRefRetiredError";
+  }
 }
 
 /**
- * Rewrite every `<scheme-id>:<address>` path argument (e.g. `jd:06.11`) to the
- * path it names.
- *
- * Throws AddressUnresolvedError / AddressAmbiguousError — the caller (makeGuarded)
- * renders them as typed tool errors and nothing runs. `reg` absent (no scheme
- * registry configured for this call) ⇒ every value is left untouched, same as
- * a value whose `parseRef` is null: a filename that happens to contain a colon,
- * or an unregistered scheme id, is never mistaken for an address.
- *
- * `notes()` — and the allowlist filter over it — is computed LAZILY and AT MOST
- * ONCE per call: nothing runs until a scheme-shaped value is actually met, and
- * from then on every further value in the SAME call reuses the one listing.
- * Before this memoization a K-address batch enumerated and allowlist-filtered
- * the whole vault K times (O(K x N) against a single mapPaths walk) — a real
- * cost on a large vault, and one a read-only sandboxed session could trigger
- * synchronously, unserialized, since reads never take the write queue.
- *
- * Exclusion (`SchemeInstanceConfig.excludedRoots`) is applied AFTER the
- * shared `visible` memo, per ref, keyed on THAT ref's own instance
- * (`excludeRoots(visible, parsed.instance.excludedRoots)`) — exclusion is
- * per-instance while the visible listing is call-wide, so a batch mixing
- * refs across two instances with different excluded roots still shares the
- * one `visiblePaths` computation and only refilters (a cheap array scan) per
- * instance actually used.
+ * Throw `SchemeRefRetiredError` for the first path argument (by the guard's own
+ * walk, `collectPaths`, so the same keys the allowlist scopes) that starts
+ * with `<id>:` for an id the registry was configured with, live or skipped.
+ * `reg` absent or an id that is not configured ⇒ nothing is refused: a
+ * filename that merely contains a colon is an ordinary path.
  */
-export function resolveSchemeArgs(
-  args: Record<string, unknown>,
-  reg: SchemeRegistry | null,
-  notes: () => string[],
-  settings?: GuardSettings | null
-): SchemeAddressing {
-  const resolved: Array<{ ref: string; path: string }> = [];
-  // undefined ⇒ not yet computed for this call; set once, on the FIRST
-  // scheme-shaped value, then reused for every subsequent one.
-  let visible: string[] | undefined;
-  const rewritten = mapPaths(args ?? {}, (value) => {
-    if (!reg) return value;
-    const detailed = reg.parseRefDetailed(value);
-    // A ref naming a SKIPPED id (#88): refuse before the handler ever runs,
-    // same as an unresolved or ambiguous address below — the id it names is
-    // configured but has no live instance, so there is nothing to resolve
-    // against, and silently falling through as "not a scheme ref" would let
-    // an ordinary-path branch of the handler run against a literal string
-    // like "jd:06.11" instead of telling the caller why addressing failed.
-    if (detailed.kind === "skipped") throw new SchemeUnavailableError(detailed.id);
-    if (detailed.kind === "none") return value;
-    if (visible === undefined) visible = visiblePaths(notes(), settings);
-    const candidates = excludeRoots(visible, detailed.instance.excludedRoots);
-    const path = resolveParsedAddress(reg, detailed, value, candidates);
-    resolved.push({ ref: value, path });
-    return path;
-  });
-  return { args: rewritten, resolved };
+export function refuseSchemeRefs(args: Record<string, unknown>, reg: SchemeRegistry | null, alternatives?: string): void {
+  if (!reg) return;
+  for (const value of collectPaths(args ?? {})) {
+    const id = reg.refId(value);
+    if (id !== null) throw new SchemeRefRetiredError(value, id, alternatives);
+  }
 }

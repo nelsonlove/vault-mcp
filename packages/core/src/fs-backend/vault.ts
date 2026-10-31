@@ -25,6 +25,8 @@ import { assertNotTruncatedRead, assertPatchRangeRead, truncateForRead } from ".
 import { outlineNote, findHeadingSection, findBlock, assertNotH1Replace, lineEndingOf } from "../note-sections.js";
 import { assertFilePath, assertMovePair, isBinaryAttachmentPath, looksBinary, validateFileContent, applyFileEdit, type FileEdit, type FileEditResult } from "../file-formats.js";
 import { planReplaceText, type ReplaceTextResult } from "../replace-text.js";
+import { refuseSchemeRefs } from "../scheme/registry.js";
+import { fsSchemeRegistry } from "./schemes-env.js";
 
 /**
  * All filesystem access for the vault goes through this module so that
@@ -369,6 +371,11 @@ class VaultImpl {
    * it, or hits an ignored folder.
    */
   resolveInVault(relPath: string): string {
+    // The retired `<id>:<address>` path syntax (`jd:06.11`) is refused for
+    // every scheme id VAULT_MCP_SCHEMES configures, before anything else:
+    // such a value is never read as a plain path that happens to start with
+    // that text (Nelson, 2026-10-30: "retire em").
+    refuseSchemeRefs({ path: relPath }, fsSchemeRegistry(), "a vault-relative path");
     // A backslash is refused outright, on every platform, as every sibling
     // package does: a vault path uses '/', an Obsidian name may not contain
     // '\\', and everything downstream (the journal, the index, the ignored
