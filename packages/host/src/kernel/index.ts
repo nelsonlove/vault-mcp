@@ -235,8 +235,7 @@ export interface MutationContext {
    */
   intent?: string;
   /**
-   * The address form(s) the caller actually used (`uid:<value>` / scheme refs
-   * like `jd:<address>`), paired with the paths they resolved to at the
+   * The address form(s) the caller actually used (`uid:<value>`), paired with the paths they resolved to at the
    * interception point — enqueue-time CALL metadata like `argsDigest`, not
    * vault state, so no dequeue sampling applies. Journal-only, audit-of-intent
    * (issue #91): `target` says what was touched; this says what was ASKED for.

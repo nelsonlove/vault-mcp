@@ -156,8 +156,9 @@ export interface JournalRecord {
    */
   intent?: string;
   /**
-   * The caller's ADDRESS FORM(s), when the call addressed by `uid:<value>` or
-   * a scheme ref (`jd:<address>`) rather than a raw path: each entry pairs the
+   * The caller's ADDRESS FORM(s), when the call addressed by `uid:<value>`
+   * rather than a raw path (the scheme-ref form `jd:<address>` is retired;
+   * older records may still carry it): each entry pairs the
    * ref as passed with the path it resolved to at call time. Audit-of-intent
    * beside `target`'s audit-of-effect — if the index was stale or wrong, the
    * record shows the caller addressed something other than what was touched.

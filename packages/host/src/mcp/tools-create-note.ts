@@ -307,7 +307,7 @@ export function registerCreateNoteTool(server: McpServer, app: App, ctx: CreateN
       const extraBinding = bindingKeys.find((k) => k in extra);
       if (extraBinding) return refuse("invalid_argument", `\`frontmatter\` may not set '${extraBinding}': the class sets it. Pass the class as \`class\`.`);
       if (args.folder !== undefined && (/^[a-z][\w-]*:/i.test(args.folder) || args.folder.split("/").includes(".."))) {
-        return refuse("invalid_argument", `\`folder\` is a plain vault-relative folder path (no 'uid:' or 'jd:' address, no '..').`);
+        return refuse("invalid_argument", `\`folder\` is a plain vault-relative folder path (no 'uid:' or scheme-address prefix such as 'jd:' — that syntax is retired — and no '..').`);
       }
 
       let mods: FlowModules;

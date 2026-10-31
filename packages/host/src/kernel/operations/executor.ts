@@ -199,8 +199,8 @@ export type MarkPhase = (phase: OperationPhase) => void;
  * What a handler can tell the executor that the executor cannot see itself.
  *
  * `setSources` exists because the executor is handed the caller's RAW
- * arguments, and a caller may address a note as `uid:019f…` or `jd:06.11`.
- * Those are resolved to real paths deep inside the guard, after the executor
+ * arguments, and a caller may address a note as `uid:019f…`.
+ * That is resolved to a real path deep inside the guard, after the executor
  * has already built the operation — so attributing a captured payload from the
  * raw arguments would record its provenance as the literal string `uid:019f…`,
  * and playback authorization would then check whether THAT is a visible path.

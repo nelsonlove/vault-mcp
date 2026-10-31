@@ -1,12 +1,13 @@
 /**
  * addressed-as.test.mjs — journal audit-of-intent (issue #91): a mutating call
- * addressed by `uid:<value>` or `jd:<address>` records the ADDRESS FORM the
- * caller used, paired with what it resolved to, beside the resolved target.
+ * addressed by `uid:<value>` records the ADDRESS FORM the caller used, paired
+ * with what it resolved to, beside the resolved target. The scheme-ref form
+ * (`jd:<address>`) is retired (2026-10-30): it is refused before the queue,
+ * so it never reaches the journal.
  *
  * Load-bearing properties:
- *   • uid- and jd-addressed writes carry `addressedAs: [{ref, path}]`;
- *   • a call using both carries both, uid entries first (resolution order —
- *     the uid pass runs strictly before the scheme pass);
+ *   • uid-addressed writes carry `addressedAs: [{ref, path}]`;
+ *   • a retired jd: ref writes no record at all;
  *   • plain-path writes carry NO addressedAs field (byte-identical records);
  *   • a deduped terminal record keeps its own call's addressedAs (like
  *     `intent` — it documents this caller's ask, no dequeue check implied);
@@ -65,16 +66,14 @@ function kernelWith(index) {
   return { kernel, records };
 }
 
-/** A guarded wrapper over a kernel + optional scheme registry, plus the vault
- * listing the scheme resolver sees. */
-function guardedWith(kernel, index, notes = []) {
+/** A guarded wrapper over a kernel + a jd scheme registry. */
+function guardedWith(kernel, index) {
   return makeGuarded({
     getSettings: () => OPEN_SETTINGS,
     kernel,
     actor: () => ACTOR,
     uids: index,
     schemes: () => makeRegistry(JD_SCHEMES),
-    schemeNotes: () => notes,
   });
 }
 
@@ -92,34 +91,16 @@ describe("journal addressedAs (issue #91)", () => {
     assert.equal(rec.target.path, "Notes/A.md");
   });
 
-  test("a jd-addressed write records the scheme ref and its resolution", async () => {
-    const index = new UidIndex(fakeSource({}));
-    index.rebuild();
-    const { kernel, records } = kernelWith(index);
-    const notes = ["00-09 System/06 Agent tooling/06.11 Something.md"];
-    const guarded = guardedWith(kernel, index, notes);
-
-    await guarded(RW_DEF, OK, "obsidian_write_note")({ path: "jd:06.11", content: "hi" }, {});
-    await tick();
-    const [rec] = records();
-    assert.deepEqual(rec.addressedAs, [{ ref: "jd:06.11", path: notes[0] }]);
-    assert.equal(rec.target.path, notes[0]);
-  });
-
-  test("uid and jd refs in one call both land, uid first", async () => {
+  test("a retired jd: ref is refused before the queue and writes no record, even beside a uid", async () => {
     const index = new UidIndex(fakeSource({ "Notes/A.md": "uid-a" }));
     index.rebuild();
     const { kernel, records } = kernelWith(index);
-    const notes = ["00-09 System/06 Agent tooling/06.11 Something.md"];
-    const guarded = guardedWith(kernel, index, notes);
+    const guarded = guardedWith(kernel, index);
 
-    await guarded(RW_DEF, OK, "obsidian_move_note")({ from: "uid:uid-a", to: "jd:06.11", idempotency_key: "k-move" }, {});
+    const res = await guarded(RW_DEF, OK, "obsidian_move_note")({ from: "uid:uid-a", to: "jd:06.11", idempotency_key: "k-move" }, {});
     await tick();
-    const [rec] = records();
-    assert.deepEqual(rec.addressedAs, [
-      { ref: "uid:uid-a", path: "Notes/A.md" },
-      { ref: "jd:06.11", path: notes[0] },
-    ]);
+    assert.match(res.content[0].text, /^Error \[scheme_ref_retired\]/);
+    assert.deepEqual(records(), []);
   });
 
   test("a plain-path write carries NO addressedAs field", async () => {
