@@ -46,7 +46,7 @@ connection runs, so conditional tools (Dataview / Templater / CLI / module tools
 settings are reflected — and the built server is connected to no transport; only its
 **captured guarded handlers** are used. Invocation goes through `runCapturedTool` →
 `callCapturedTool`, the exact function a Code Mode `obsidian_call_tool` delegates to, so the
-guard wrapper (read-only mode, the path allowlist, `uid:`/`jd:` addressing, the kernel
+guard wrapper (read-only mode, the path allowlist, `uid:` addressing and the refusal of the retired `jd:` form, the kernel
 queue and journal, the accept-forbidden rule in the write primitives) binds on a runner call
 exactly as on an agent call. No raw handler is reachable from the runner.
 
