@@ -136,7 +136,7 @@ export function compatibilityAction(spec: CompatibilitySpec): ActionDefinition {
     authority: { governorOnly: false, automaticAdmission: "never" },
     scope: {
       argumentKeys: spec.paths ?? [],
-      // uid: and <scheme>: addressing binds at the shared interception point
+      // uid: addressing (and the retired <scheme>: refusal) binds at the shared interception point
       // for every path-bearing argument, so this is true of all of them at
       // once rather than tool by tool.
       resolvesAddresses: (spec.paths?.length ?? 0) > 0,

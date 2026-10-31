@@ -365,7 +365,7 @@ describe("the codes and the families (core)", () => {
   });
 
   test("families name the guard stage; an unlisted code is a tool's own", () => {
-    for (const [code, fam] of [["input_validation", "schema"], ["out_of_allowlist", "allowlist"], ["write_scope", "write_scope"], ["protection_required", "protection"], ["uid_unresolved", "address"], ["address_unresolved", "address"], ["truncated_read", "read_limit"], ["record_immutable", "record"], ["rev_conflict", "rev"], ["idempotency_mismatch", "idempotency"], ["accept_forbidden", "accept"], ["sync_behind", "sync"], ["h1_replace", "h1"], ["cache_mismatch", "cache"], ["profile_refused", "profile"], ["no_match", "tool"]]) {
+    for (const [code, fam] of [["input_validation", "schema"], ["out_of_allowlist", "allowlist"], ["write_scope", "write_scope"], ["protection_required", "protection"], ["uid_unresolved", "address"], ["scheme_ref_retired", "address"], ["truncated_read", "read_limit"], ["record_immutable", "record"], ["rev_conflict", "rev"], ["idempotency_mismatch", "idempotency"], ["accept_forbidden", "accept"], ["sync_behind", "sync"], ["h1_replace", "h1"], ["cache_mismatch", "cache"], ["profile_refused", "profile"], ["no_match", "tool"]]) {
       assert.equal(refusalFamily(code), fam, code);
     }
   });

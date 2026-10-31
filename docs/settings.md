@@ -190,8 +190,8 @@ Playback access is checked against the current human/operator authorization as w
 | Field | Value |
 |---|---|
 | Key | `schemes` |
-| Default | Empty on a fresh install: no scheme, so no `<id>:` addressing, no scheme tool and no scheme check. An install whose saved settings predate the key keeps the one plain Johnny Decimal instance, `{"id": "jd", "provider": "johnny-decimal"}`, written once at its next load. A saved list is kept |
-| Effect | Each row is one addressing scheme: an id (the address prefix, such as `jd`), a provider (`johnny-decimal` today) and an optional provider `config`. With a row, `<id>:<address>` resolves in path arguments, and the scheme module's tools register on the next connect |
+| Default | Empty on a fresh install: no scheme, so no scheme tool and no scheme check. An install whose saved settings predate the key keeps the one plain Johnny Decimal instance, `{"id": "jd", "provider": "johnny-decimal"}`, written once at its next load. A saved list is kept |
+| Effect | Each row is one addressing scheme: an id (the address prefix, such as `jd`), a provider (`johnny-decimal` today) and an optional provider `config`. With a row, the scheme module's tools register on the next connect, and a path argument in the retired `<id>:<address>` form is refused (`scheme_ref_retired`) |
 | Turning JD on | Add `{"id": "jd", "provider": "johnny-decimal"}` to the list, or fill in a field of the scheme section on this page. The provider expands no area or category by default; name yours in `config`, for example `{"expandedAreas": ["50-59"], "expandedCategories": ["34"]}` (made-up values) |
 | Takes effect | Addressing at once; the tools on the next connect |
 | Risk | Removing a scheme turns its addresses into ordinary paths and its tools off; the conformance rail then refuses a run whose baseline holds that scheme's debt |

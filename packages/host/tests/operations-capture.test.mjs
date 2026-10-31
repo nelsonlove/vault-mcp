@@ -239,7 +239,7 @@ describe("capture — the cap stops the store growing forever", () => {
 
 describe("capture — provenance comes from the handler, not the raw request", () => {
   test("a handler that resolves an address reports the RESOLVED path", async () => {
-    // Callers may address a note as `uid:019f…` or `jd:06.11`, and the guard
+    // Callers may address a note as `uid:019f…`, and the guard
     // resolves that to a real path deep inside the call — AFTER the executor
     // has already been handed the raw arguments. Recording provenance from the
     // raw request would store the literal string `uid:019f…` as the source, and

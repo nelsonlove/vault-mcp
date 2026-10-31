@@ -27,7 +27,7 @@ Never use the primary personal vault as the development test environment.
 Cover:
 
 - path normalization and segment boundaries;
-- stable and scheme address parsing;
+- stable address parsing, scheme address parsing, and the refusal of the retired scheme-ref path form;
 - planning and collision refusal;
 - frontmatter recognition parity;
 - accepted-family and protected-property transitions;
@@ -78,7 +78,7 @@ At minimum:
 
 - absolute and traversal paths;
 - path-prefix collisions;
-- stable or scheme reference outside scope;
+- stable reference outside scope, or a retired scheme reference;
 - hidden counts and backlink paths;
 - duplicate and ambiguous identities;
 - accepted status as scalar, array, map, alternate key spelling, BOM-prefixed frontmatter, unusual closer, embedded fence, and encoded content;

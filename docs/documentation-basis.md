@@ -88,7 +88,7 @@ The repository and supplied records support these architectural mechanisms:
 - local socket plus stdio bridge;
 - compact code-mode discovery over the same registry;
 - read-only mode and path allowlist;
-- stable identity and scheme addressing;
+- stable identity and scheme addresses (read through the address tools; the `<id>:` path form is retired);
 - single serialized write queue;
 - optimistic revision preconditions;
 - bounded in-memory idempotency;

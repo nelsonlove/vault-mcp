@@ -183,7 +183,7 @@ That package and `docs/crosssession.md` are gone: vaultmcp-crosssession was reti
 ## docs/suite-split-design.md (scheme ruling, S8)
 
 - Scheme addressing (`jd:<address>`) is wired into the host's guard interception point (`mcp/guarded.ts`) exactly like `uid:` addressing — every path argument of every tool, host or external, can carry a scheme ref, and the resolution must run before the allowlist checks the resolved path.
-  approved 2026-09-07: substantiated by shipped code and its pins — `resolveSchemeArgs` binds in `makeGuarded` immediately after uid resolution and before `guardCall` (guarded.ts), which is the CLAUDE.md-documented design ("Resolution runs before the guard so the allowlist checks the RESOLVED path"), exercised by the scheme-addressing suites. The sentence is the RATIONALE for ruling scheme host-side, describing the existing wiring; it asserts no new behavior.
+  approved 2026-09-07, kept as a historical record of the S8 ruling: the `jd:` path syntax it describes was retired on 2026-10-30 (now refused with `scheme_ref_retired`, scheme-ref-retired.test.mjs). At the time — `resolveSchemeArgs` bound in `makeGuarded` immediately after uid resolution and before `guardCall` (guarded.ts), which is the CLAUDE.md-documented design ("Resolution runs before the guard so the allowlist checks the RESOLVED path"), exercised by the scheme-addressing suites (since removed). The sentence is the RATIONALE for ruling scheme host-side, describing the existing wiring; it asserts no new behavior.
 
 ## docs/suite-split-design.md (host/governor split, S3c)
 
@@ -562,8 +562,8 @@ anchor for every target-state claim is docs/status-and-compatibility.md
   tracked by: substantiated as of 0.17.0 — nothing reads commit author strings for authority; admission binds gate-minted gestureRefs (D08 suites). Promotion is the operator's call. [docs/git-and-sync.md:25]
 - never auto-accepts a merged conflict;
   tracked by: Gate 3 (signing / portable standing / Sync replicas) per docs/status-and-compatibility.md § Current release state — target-state, not shipped in 0.17.0. No merge path exists in 0.17.0, so the claim is vacuously true today. [docs/git-and-sync.md:125]
-- Every path-taking operation accepts vault-relative paths and may accept registered stable or scheme addresses.
-  tracked by: substantiated as of 0.17.0 — uid:/jd: addressing binds at the shared interception point (mapPaths suites). Promotion is the operator's call. [docs/operation-contract.md:62]
+- Every path-taking operation accepts vault-relative paths and may accept registered stable addresses (`uid:`); the scheme-address path form (`jd:06.11`) is retired and refused.
+  tracked by: substantiated — uid: addressing and the retired-scheme-ref refusal (2026-10-30) bind at the shared interception point (mapPaths suites, scheme-ref-retired.test.mjs). Promotion is the operator's call. [docs/operation-contract.md:62]
 - A session, collection, folder, or query may select items, but cannot remain the mutable subject of an acceptance.
   tracked by: substantiated as of 0.17.0 — WP7a freeze pins. Promotion is the operator's call. [docs/operation-contract.md:178]
 - The accepted family and Governor authority state are always protected.

@@ -154,7 +154,8 @@ Stable identifiers belong to the runtime error registry. The exact set may grow,
 |---|---|---|---|
 | Posture | `read_only`, `capability_disabled` | No | Preview or ask the human to enable the smallest posture |
 | Scope | `out_of_allowlist`, `invalid_scope` | No | Correct or narrow the target; human may revise scope |
-| Identity | `uid_unresolved`, `uid_ambiguous`, `address_unresolved`, `address_ambiguous` | No | Resolve identity; never guess among candidates |
+| Identity | `uid_unresolved`, `uid_ambiguous` | No | Resolve identity; never guess among candidates |
+| Identity | `scheme_ref_retired` | No | Name the note by its path or `uid:`; look an address up with `obsidian_resolve_address` |
 | Collision | `destination_occupied`, `already_exists` | No | Inspect occupant and prepare a new plan |
 | Concurrency | `rev_conflict` | No | Re-read and re-plan |
 | Integrity | `truncated_read` | No | The content is a cut read of a note longer than the read limit; edit the note by anchor within the read limit; never write the cut read back; for a whole rewrite, read the note whole first (`obsidian_read_note` with `full: true`) and write within ten minutes on the same connection with that read's rev |

@@ -134,7 +134,7 @@ interface VaultMcpSettings {
   /**
    * Scope-provider instances (scheme id + provider name + per-provider
    * config). Defaults to DEFAULT_SCHEMES, which is EMPTY: a fresh install has
-   * no scheme, so no `<id>:` addressing, no scheme tool and no scheme check
+   * no scheme, so no scheme tool and no scheme check
    * (01.33 pick A, step b). An install that predates the key keeps the one
    * "jd" instance it had, saved once (`schemesOnLoad`). Scheme semantics
    * are configuration, not hardwired (Nelson's ruling): only the default
@@ -1057,7 +1057,7 @@ export default class VaultMcpPlugin extends Plugin {
     // default-true semantics elsewhere (modules-mount.ts:
     // `settings.modules?.scheme?.enabled === false` is the disabled check, so
     // an absent settings row means on) — the pane is meaningless without
-    // scheme addressing configured. LIVE mount/unmount (governor#286): flipping
+    // a scheme configured. LIVE mount/unmount (governor#286): flipping
     // the toggle in settings mounts or unmounts it immediately, no
     // plugin reload, via `setSchemePanesMounted` below. The pane does not force a
     // leaf open on its own — the ribbon icon / command opens it on demand.

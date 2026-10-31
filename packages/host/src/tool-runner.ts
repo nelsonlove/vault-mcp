@@ -7,7 +7,7 @@
 // picked tool's zod schema, then a result modal. Invocation goes through
 // runCapturedTool → callCapturedTool — the exact path a code-mode MCP
 // connection's obsidian_call_tool takes — so the guard wrapper (read-only
-// mode, path allowlist, uid/scheme addressing, kernel queue/journal,
+// mode, path allowlist, uid addressing, the retired-scheme-ref refusal, kernel queue/journal,
 // accept-forbidden in the write primitives) binds identically. The runner adds
 // NO capability beyond what the MCP surface already exposes; it is the same
 // surface, human-triggered.

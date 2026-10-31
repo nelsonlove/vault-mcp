@@ -58,7 +58,7 @@ export interface ToolDoc {
   example?: string;
 }
 
-/** A non-tool surface: an address form (`jd:<address>`), a rule pack, or a
+/** A non-tool surface: an address form (such as `uid:<value>`), a rule pack, or a
  * kernel arg a module contributes. */
 export interface SurfaceDoc {
   name: string;
@@ -123,7 +123,7 @@ export interface ModuleManifest {
   directory?: {
     /** Agent-facing MCP tools. */
     tools?: ToolDoc[];
-    /** Non-tool surfaces this module recognizes, e.g. `jd:<address>`
+    /** Non-tool surfaces this module recognizes, e.g. `uid:<value>`
      * anywhere a path argument is accepted. */
     addressForms?: SurfaceDoc[];
     /** Unregistered rule-pack contributions (findings surfaced

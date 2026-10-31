@@ -1,7 +1,9 @@
 /**
  * scheme-registry.test.mjs — Task 3 of the scope-provider module: the
  * SchemeRegistry (multiple named scheme instances, each a provider + merged
- * config) and address-string resolution ("jd:06.11" -> a vault path).
+ * config) and ref parsing ("jd:06.11" -> {instance, addr}), which the address
+ * tools use. The `jd:` path syntax itself is retired; see
+ * scheme-ref-retired.test.mjs.
  *
  * The NOTES fixture mirrors scheme-jd-scopes.test.mjs's Task-2 listing.
  */
@@ -12,10 +14,7 @@ import {
   makeRegistry,
   DEFAULT_SCHEMES,
   SchemeRegistry,
-  AddressUnresolvedError,
-  AddressAmbiguousError,
   SchemeUnavailableError,
-  requireOneAddress,
 } from "../src/kernel/scheme/registry.js";
 import { DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.js";
 import { JD_SCHEMES } from "./scheme-fixture.mjs";
@@ -33,11 +32,11 @@ const NOTES = [
 // ── makeRegistry / instances / get ──────────────────────────────────────────
 
 describe("makeRegistry — building instances from config", () => {
-  test("the default config registers no scheme (addressing is opt-in)", () => {
+  test("the default config registers no scheme (schemes are opt-in)", () => {
     assert.deepEqual(DEFAULT_SCHEMES, []);
     const reg = makeRegistry(DEFAULT_SCHEMES);
     assert.equal(reg.instances().length, 0);
-    assert.equal(reg.parseRef("jd:06.11"), null, "with no scheme, jd:06.11 is an ordinary path string");
+    assert.equal(reg.parseRef("jd:06.11"), null, "with no scheme, jd:06.11 parses as no ref");
   });
 
   test("a plain jd row registers one 'jd' instance backed by the JD provider", () => {
@@ -357,47 +356,6 @@ describe("resolve — canonical-form address equality against a notes listing", 
     const notes = ["00-09 System/06 Agent tooling/06.11 First.md", "00-09 System/06 Agent tooling/06.11 Second.md"];
     const addr = jd.provider.parse("06.11");
     assert.deepEqual(reg.resolve(jd, addr, notes), notes);
-  });
-});
-
-// ── requireOneAddress ────────────────────────────────────────────────────────
-
-describe("requireOneAddress — throws on 0 or 2+ candidates, else returns the one path", () => {
-  const reg = makeRegistry(JD_SCHEMES);
-
-  test("resolves 'jd:06.11' against the NOTES listing to the one path", () => {
-    assert.equal(requireOneAddress(reg, "jd:06.11", NOTES), "00-09 System/06 Agent tooling/06.11 Vault MCP.md");
-  });
-
-  test("'jd:99.99' throws AddressUnresolvedError with code 'address_unresolved'", () => {
-    assert.throws(
-      () => requireOneAddress(reg, "jd:99.99", NOTES),
-      (err) => {
-        assert.ok(err instanceof AddressUnresolvedError);
-        assert.equal(err.code, "address_unresolved");
-        return true;
-      },
-    );
-  });
-
-  test("two notes sharing '06.11 *' throw AddressAmbiguousError naming both candidates", () => {
-    const notes = ["00-09 System/06 Agent tooling/06.11 First.md", "00-09 System/06 Agent tooling/06.11 Second.md"];
-    assert.throws(
-      () => requireOneAddress(reg, "jd:06.11", notes),
-      (err) => {
-        assert.ok(err instanceof AddressAmbiguousError);
-        assert.equal(err.code, "address_ambiguous");
-        assert.deepEqual(err.candidates, notes);
-        for (const path of notes) {
-          assert.ok(err.message.includes(path), `message should name candidate ${path}`);
-        }
-        return true;
-      },
-    );
-  });
-
-  test("a ref that isn't scheme-shaped (not registered / unparseable) also throws AddressUnresolvedError", () => {
-    assert.throws(() => requireOneAddress(reg, "nope:06.11", NOTES), AddressUnresolvedError);
   });
 });
 
