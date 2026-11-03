@@ -3,10 +3,10 @@
 //
 //   1. uid addressing — `uid:<value>` path arguments resolve to real paths
 //      through the uid index (slice 2.1), for READS and WRITES alike
-//   2. scheme addressing — `jd:<address>` (and other configured scheme ids)
-//      path arguments resolve to real paths through the scope-provider
-//      registry, AFTER uid resolution (uid: is reserved and takes
-//      precedence) and, like uid addressing, for READS and WRITES alike
+//   2. the retired scheme-address syntax — a path argument that starts with a
+//      configured scheme id and a colon (`jd:06.11`) is REFUSED
+//      (`scheme_ref_retired`), for READS and WRITES alike, after uid
+//      resolution (uid: is reserved); it is never read as a plain path
 //   3. guardCall  — read-only mode + path allowlist (pre-existing)
 //   4. kernel arguments — `if_rev` / `idempotency_key` are peeled off the args
 //      (kernel v0) so no tool handler ever sees them
@@ -37,13 +37,7 @@ import {
   type JournalEffects,
   type UidIndex,
 } from "../kernel/index.js";
-import {
-  AddressAmbiguousError,
-  AddressUnresolvedError,
-  SchemeUnavailableError,
-  resolveSchemeArgs,
-  type SchemeRegistry,
-} from "../kernel/scheme/registry.js";
+import { SchemeRefRetiredError, refuseSchemeRefs, type SchemeRegistry } from "../kernel/scheme/registry.js";
 import { OperationRefusedError, type OperationExecutor } from "../kernel/operations/executor.js";
 import { refusalCodeOf } from "@vault-mcp/core";
 import { extendInput, inputShapeOf, CHARACTER_LIMIT, REPLACE_TEXT_TOOL, cutReadError, wholeNoteOverwriteRefusal, wholeReadToken, normalizeWriteScope, writeScopeRefusal, NO_DIRECT_WRITES, type WholeReads } from "@vault-mcp/core";
@@ -269,11 +263,12 @@ export interface GuardedOpts {
   /** Whether anything (a note or a folder) is at a vault path: the write scope's "is this a create?" (write-scope.ts). Falls back to noteStat. */
   noteExists?: (path: string) => boolean;
   /**
-   * The scope-provider registry backing `jd:<address>` (and other configured
-   * scheme ids) addressing. Resolved PER CALL, like `getSettings`, so a
-   * scheme config edit lands live — mirrors `registerSchemeTools`'s own
-   * `registry()`. Absent ⇒ scheme addressing is skipped entirely and args
-   * pass through byte-identical (tests, bare embeds).
+   * The scope-provider registry whose configured ids the retired
+   * `<id>:<address>` path syntax is refused for. Resolved PER CALL, like
+   * `getSettings`, so a scheme config edit lands live — mirrors
+   * `registerSchemeTools`'s own `registry()`. Absent ⇒ no id is configured,
+   * nothing is refused, and args pass through byte-identical (tests, bare
+   * embeds).
    */
   schemes?: () => SchemeRegistry | null;
   /**
@@ -317,18 +312,6 @@ export interface GuardedOpts {
    */
   executor?: OperationExecutor | null;
   /**
-   * Vault markdown paths scheme addressing resolves an address against.
-   * Called LAZILY by resolveSchemeArgs — only once per call, on the first
-   * scheme-shaped value encountered, then reused for the rest of that call —
-   * so an ordinary call never pays for enumerating the vault. Same source
-   * `registerSchemeTools` uses. `opts.schemes` present without this ⇒ defaults
-   * to `() => []`, so a scheme-shaped value FAILS CLOSED as `address_unresolved`
-   * (0 candidates) rather than throwing — server.ts always wires both together,
-   * so this is a defensive default for a misconfigured embed, not a supported
-   * combination with its own test.
-   */
-  schemeNotes?: () => string[];
-  /**
    * The Sync guard (kernel/sync-guard.ts; 01.43, Nelson's pick A of
    * 2026-10-12), consulted after the protection check and BEFORE the write
    * queue: a wait for Obsidian Sync never holds the queue, and a refusal never
@@ -358,65 +341,38 @@ export interface GuardedOpts {
 // obsidian_resolve_uid reports, so looking a uid up and addressing by it agree.
 //
 // Resolved paths are ALSO folded back to their `uid:` form in the guard's
-// refusal text (addressSafe, below, extended for scheme addressing) —
+// refusal text (addressSafe, below) —
 // belt-and-suspenders against a future guardCall message naming more than the
 // one path it blocks on, not a hole open today.
 
-// ── scheme addressing ────────────────────────────────────────────────────────
+// ── the retired scheme-address syntax ────────────────────────────────────────
 //
-// `path: "jd:06.11"` (or any other configured scheme id) resolves through the
-// scope-provider registry to the real path, mirroring uid addressing exactly
-// and running immediately AFTER it — `uid:` is reserved (SchemeRegistry.parseRef
-// returns null for it), so uid resolution always gets first look, and by the
-// time scheme resolution runs no unresolved `uid:` value remains in the args:
-// it either became a real path or the call already refused above.
-//
-// Also runs BEFORE guardCall, for the identical reason: the allowlist must
-// check the RESOLVED path, not the address, or `jd:06.11` would be a sandbox
-// bypass. Resolution itself runs over the allowlist-VISIBLE notes only
-// (resolveSchemeArgs -> requireOneAddress over visiblePaths), so — exactly
-// like a resolved uid path above — a resolved scheme path is always already
-// inside the allowlist and can never be the path guardCall itself blocks on;
-// that visibility gate is the real disclosure control, not the fold-back.
-// What it actually buys: `address_ambiguous` can only ever name notes this
-// session could have named itself, and an address whose only claimant is
-// hidden reads as `address_unresolved` — never `out_of_allowlist`, which would
-// confirm the address exists. That is also what obsidian_resolve_address
-// reports, so looking an address up and addressing by it agree.
-//
-// Resolved scheme paths are ALSO folded back to their `jd:<address>` ref form
-// in the guard's refusal text (addressSafe, below) — the same
-// belt-and-suspenders as the uid case, combined into one pass rather than a
-// second copy of the loop.
-//
-// A value that isn't scheme-shaped at all — an ordinary path, or one that
-// merely contains a colon ("Notes/a:b.md") — is left untouched: parseRef
-// returns null and resolveSchemeArgs never calls requireOneAddress on it.
+// `path: "jd:06.11"` (or any other configured scheme id followed by a colon)
+// used to resolve here to the note at that address. The syntax is retired
+// (Nelson, 2026-10-30: "retire em"): such a value is refused with
+// `scheme_ref_retired`, after uid resolution and before guardCall, so it can
+// never reach a handler as a literal path. A value whose prefix is not a
+// configured id — an ordinary path, or one that merely contains a colon
+// ("Notes/a:b.md") — is left untouched. Looking an address up stays with
+// obsidian_resolve_address.
 
 /**
- * Put `uid:<value>` and `<scheme>:<address>` back where a resolved path
- * appears, so a refusal discloses neither. One pass over the combined
- * resolution lists — an allowlist refusal must hide everything either
- * addressing scheme resolved, not just whichever ran first.
+ * Put `uid:<value>` back where a resolved path appears, so a refusal does
+ * not disclose it.
  *
  * Exported so it can be tested DIRECTLY, independent of whether any given
  * guardCall message shape currently happens to route a resolved path through
- * it — see the "addressSafe" unit tests in scheme-addressing.test.mjs.
+ * it — see the "addressSafe" unit tests in scheme-ref-retired.test.mjs.
  */
-export function addressSafe(
-  message: string,
-  uidResolved: Array<{ uid: string; path: string }>,
-  schemeResolved: Array<{ ref: string; path: string }> = []
-): string {
+export function addressSafe(message: string, uidResolved: Array<{ uid: string; path: string }>): string {
   let out = message;
   for (const { uid, path } of uidResolved) out = out.split(path).join(`uid:${uid}`);
-  for (const { ref, path } of schemeResolved) out = out.split(path).join(ref);
   return out;
 }
 
 /**
- * Steps 1, 1b and 3 of the interception above — uid resolution, scheme
- * resolution, then guardCall (read-only + allowlist) — pulled out of the
+ * Steps 1, 2 and 3 of the interception above — uid resolution, the
+ * retired-scheme-ref refusal, then guardCall (read-only + allowlist) — pulled out of the
  * per-call wrapper below so a caller that must run its OWN pre-dispatch logic
  * against the RESOLVED, GUARD-CHECKED args can share the IDENTICAL resolution
  * and refusal `makeGuarded` itself applies, rather than a second
@@ -440,7 +396,7 @@ function resolveAndGuard(
   opts: GuardedOpts
 ):
   | { blocked: { code: string; message: string } }
-  | { args: Record<string, unknown>; uidResolved: Array<{ uid: string; path: string }>; schemeResolved: Array<{ ref: string; path: string }> } {
+  | { args: Record<string, unknown>; uidResolved: Array<{ uid: string; path: string }> } {
   const settings = opts.getSettings();
   // 1. uid addressing. A call using none is handed back the SAME args object,
   //    so nothing below can behave differently for an ordinary path call.
@@ -456,34 +412,26 @@ function resolveAndGuard(
     if (e instanceof UidUnresolvedError || e instanceof UidAmbiguousError) return { blocked: { code: e.code, message: e.message } };
     throw e;
   }
-  // 1b. scheme addressing (`jd:<address>`), over the possibly uid-rewritten
-  //     args. opts.schemes absent ⇒ skipped entirely, so callArgs stays the
-  //     SAME object resolveUidArgs handed back and behavior is unchanged.
-  let callArgs = addressed.args;
-  let schemeResolved: Array<{ ref: string; path: string }> = [];
+  // 2. the retired scheme-address syntax (`jd:<address>`), checked on the
+  //    caller's OWN arguments (a uid resolves to a real path, never to a
+  //    ref): refuse, and run nothing. opts.schemes absent ⇒ no id is
+  //    configured and nothing is refused.
+  const callArgs = addressed.args;
   if (opts.schemes) {
     try {
-      const schemed = resolveSchemeArgs(callArgs, opts.schemes(), opts.schemeNotes ?? (() => []), settings);
-      callArgs = schemed.args;
-      schemeResolved = schemed.resolved;
+      refuseSchemeRefs(args ?? {}, opts.schemes());
     } catch (e) {
-      // Unresolvable or ambiguous address, or a ref naming a SKIPPED
-      // instance (#88 — configured but no live instance, e.g. an unknown
-      // provider or invalid config): refuse, and run nothing — same
-      // contract as the uid case above.
-      if (e instanceof AddressUnresolvedError || e instanceof AddressAmbiguousError || e instanceof SchemeUnavailableError) {
-        return { blocked: { code: e.code, message: e.message } };
-      }
+      if (e instanceof SchemeRefRetiredError) return { blocked: { code: e.code, message: e.message } };
       throw e;
     }
   }
   const blocked = guardCall({ isMutating, args: callArgs, settings });
-  if (blocked) return { blocked: { code: blocked.code, message: addressSafe(blocked.message, addressed.resolved, schemeResolved) } };
-  return { args: callArgs, uidResolved: addressed.resolved, schemeResolved };
+  if (blocked) return { blocked: { code: blocked.code, message: addressSafe(blocked.message, addressed.resolved) } };
+  return { args: callArgs, uidResolved: addressed.resolved };
 }
 
 /**
- * Resolve `uid:<value>` / `<scheme>:<address>` addressing for a single PATH
+ * Resolve `uid:<value>` addressing (and refuse the retired scheme-ref syntax) for a single PATH
  * argument and check read-only + allowlist for it — the single-path form of
  * `resolveAndGuard`, for a caller that has only a path (not a full args
  * object) and needs the post-resolution, post-allowlist path BEFORE it does
@@ -602,19 +550,16 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // until its connection drops, and its journal/capture attribution keeps
   // naming the expired id — is accepted and stated rather than hidden.
   const isMutating = def?.annotations?.readOnlyHint === false;
-  // Steps 1/1b/3 (uid resolution, scheme resolution, read-only+allowlist)
+  // Steps 1/2/3 (uid resolution, the retired-scheme-ref refusal, read-only+allowlist)
   // live in resolveAndGuard so obsidian_write_notes can share the IDENTICAL
   // resolution and refusal via resolveGuardedPath — one implementation, not two.
   const resolved = resolveAndGuard(args ?? {}, isMutating, opts);
   if ("blocked" in resolved) return codedError(resolved.blocked.code, resolved.blocked.message);
   const callArgs = resolved.args;
   call.args = callArgs;
-  call.addressedAs = [
-    ...resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path })),
-    ...resolved.schemeResolved,
-  ];
+  call.addressedAs = resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path }));
   // Provenance is recorded from the RESOLVED arguments, never the raw ones. A
-  // caller may address a note as `uid:019f…` or `jd:06.11`; attributing a
+  // caller may address a note as `uid:019f…`; attributing a
   // captured payload to that literal string would record a source that is not
   // a path, and playback authorization — which asks whether the reader can see
   // the source PATH — would then refuse the payload forever.
@@ -720,10 +665,7 @@ async function runGuarded(opts: GuardedOpts, def: any, handler: any, name: strin
   // paired with what they resolved to at THIS interception — `target`
   // records what was touched; this records what was asked for, so a stale
   // or wrong index is visible in the record rather than silently absorbed.
-  const addressedAs = [
-    ...resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path })),
-    ...resolved.schemeResolved,
-  ];
+  const addressedAs = resolved.uidResolved.map(({ uid, path }) => ({ ref: `${UID_PREFIX}${uid}`, path }));
   // Taken once, at the top of the wrapper (callActor): the journal names this
   // actor, the operation record names its session, and the dequeue check
   // below judges that session, not whatever is current then.

@@ -134,6 +134,10 @@ A useful preview includes collisions, partial-scope behavior, dependencies, revi
 
 ## Mutate safely
 
+### Naming a note
+
+Name a note in a path argument by its vault-relative path or by `uid:<value>`. Do not use a scheme address such as `jd:06.11` as a path: that syntax is retired (2026-10-30), and when the scheme is configured the call is refused with `Error [scheme_ref_retired]` and nothing runs. To find the note at an address, call `obsidian_resolve_address` and use the path it returns.
+
 ### Renaming a heading
 
 `obsidian_write_note` takes frontmatter either inside `content` or as a `frontmatter` object, with `content` then the body below it (as an `obsidian_write_notes` item takes it); both at once is refused. An argument it does not name is refused with a validation error and nothing is written, never ignored (#500).

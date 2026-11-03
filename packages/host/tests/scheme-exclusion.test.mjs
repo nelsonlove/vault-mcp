@@ -13,10 +13,6 @@
  *     validation convention
  *   - makeRegistry — invalid excludedRoots skips the instance; a trailing
  *     slash is normalized, not refused
- *   - resolveSchemeArgs / jd: addressing — the 02.10 scenario: clean
- *     resolution with the archive excluded, address_unresolved (not
- *     disclosure) with the only claimant excluded, and the excluded note's
- *     own path still working as an ordinary (non-scheme) argument
  *   - schemeFindings — duplicate_address disappears, an excluded misfiled
  *     note produces nothing
  *   - the five read-only scheme tools — resolve_address's address:null +
@@ -32,9 +28,6 @@ import {
   makeRegistry,
   excludeRoots,
   validateExcludedRoots,
-  AddressUnresolvedError,
-  AddressAmbiguousError,
-  resolveSchemeArgs,
 } from "../src/kernel/scheme/registry.ts";
 import { jdProvider, DEFAULT_JD_CONFIG } from "../src/kernel/scheme/jd.ts";
 import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
@@ -272,42 +265,6 @@ describe("makeRegistry — excludedRoots", () => {
   });
 });
 
-// ── resolveSchemeArgs / jd: addressing — the 02.10 scenario ─────────────────
-
-describe("resolveSchemeArgs — excludedRoots (the 02.10 collision)", () => {
-  test("two claimants, one under an excluded root -> resolves CLEANLY to the live one", () => {
-    const reg = makeRegistry(JD_WITH_EXCLUSION);
-    const { args, resolved } = resolveSchemeArgs({ path: "jd:02.10" }, reg, () => NOTES_02_10);
-    assert.deepEqual(args, { path: LIVE_0210 });
-    assert.deepEqual(resolved, [{ ref: "jd:02.10", path: LIVE_0210 }]);
-  });
-
-  test("without exclusion configured, the SAME two claimants are ambiguous", () => {
-    const reg = makeRegistry([{ id: "jd", provider: "johnny-decimal" }]);
-    assert.throws(
-      () => resolveSchemeArgs({ path: "jd:02.10" }, reg, () => NOTES_02_10),
-      (e) => e instanceof AddressAmbiguousError
-    );
-  });
-
-  test("the ONLY claimant excluded -> address_unresolved, not a disclosure that it exists", () => {
-    const reg = makeRegistry(JD_WITH_EXCLUSION);
-    const onlyArchived = ["00-09 System/00.00 Index.md", ARCHIVE_0210];
-    assert.throws(
-      () => resolveSchemeArgs({ path: "jd:02.10" }, reg, () => onlyArchived),
-      (e) => e instanceof AddressUnresolvedError && e.code === "address_unresolved"
-    );
-  });
-
-  test("the excluded note's own path still works as a plain path argument (not scheme-shaped, untouched)", () => {
-    const reg = makeRegistry(JD_WITH_EXCLUSION);
-    const args = { path: ARCHIVE_0210 };
-    const out = resolveSchemeArgs(args, reg, () => NOTES_02_10);
-    assert.equal(out.args, args, "exclusion bounds SCHEME resolution, not general path access");
-    assert.deepEqual(out.resolved, []);
-  });
-});
-
 // ── schemeFindings — excludedRoots ───────────────────────────────────────────
 
 describe("schemeFindings — excludedRoots", () => {
@@ -533,7 +490,7 @@ describe("no-exclusion passthrough", () => {
     );
   });
 
-  test("excludeRoots identity: instance.excludedRoots absent hands back the SAME notes array in resolveSchemeArgs", () => {
+  test("excludeRoots identity: instance.excludedRoots absent leaves the registry's own resolve() unaffected", () => {
     const reg = makeRegistry([{ id: "jd", provider: "johnny-decimal" }]);
     // Exercise via the registry's own resolve(), confirming the candidate
     // list handed to it is unaffected in shape/order.

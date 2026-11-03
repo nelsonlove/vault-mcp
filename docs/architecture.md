@@ -168,7 +168,7 @@ Read actions use the same resolution, scope, operation, and receipt boundary but
 
 Literal paths remain useful but are not identity. Governor maintains a stable-identifier index from Obsidian's metadata cache and updates it from app events. A stable reference resolves to one visible note or refuses as unresolved/ambiguous.
 
-Configured scheme references, such as a Johnny Decimal address, use provider-defined grammars and capabilities. They resolve after the reserved stable-identity form and before scope checks. Scheme allocation may compute an open address but never claims that it is reserved.
+Configured schemes, such as Johnny Decimal, use provider-defined grammars and capabilities, read through the address tools. A scheme address is not a path argument: the `<id>:<address>` path form is retired and refused with `scheme_ref_retired` before scope checks. Scheme allocation may compute an open address but never claims that it is reserved.
 
 The journal records both resolved path and stable identity when available.
 

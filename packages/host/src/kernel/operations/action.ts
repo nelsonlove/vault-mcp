@@ -132,7 +132,7 @@ export interface AuthorityContract {
 export interface ScopeContract {
   /** Argument names carrying a vault path. Drives the allowlist check. */
   argumentKeys: string[];
-  /** Whether `uid:` / `<scheme>:` addressing resolves in those arguments. */
+  /** Whether `uid:` addressing resolves in those arguments (the `<scheme>:` form is retired and refused). */
   resolvesAddresses: boolean;
   /** `filter-before-read` for anything that enumerates the vault; scope must
    * bound the iteration BEFORE content is read. */

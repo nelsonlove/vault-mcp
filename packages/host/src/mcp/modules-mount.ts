@@ -140,8 +140,8 @@ function validateSchemeManifestConfig(config: Record<string, unknown>): string[]
 const SCHEME_MANIFEST: ModuleManifest = {
   summary:
     "Scope resolution and address allocation over the configured scheme (Johnny Decimal today; none on a fresh install, and with none these tools are not registered): resolve, allocate, " +
-    "validate a filename, and check placement; assigning, refiling and renumbering an address are switched off with it. `jd:` addressing in path arguments is kernel-level and stays " +
-    "available even when this module is disabled.",
+    "validate a filename, and check placement; assigning, refiling and renumbering an address are switched off with it. The `<id>:<address>` path syntax is retired: a path argument " +
+    "that starts with a configured scheme id and a colon is refused, whether this module is on or off.",
   config: {
     fields: SCHEME_CONFIG_FIELDS,
     validate: validateSchemeManifestConfig,
@@ -230,13 +230,6 @@ const SCHEME_MANIFEST: ModuleManifest = {
           "`expected_folder` is null when nothing in the vault establishes the container yet — `placed` is then " +
             "also null.",
         ],
-      },
-    ],
-    addressForms: [
-      {
-        name: "jd:<address>",
-        purpose: "Address a note by its scheme address anywhere a path argument is accepted, e.g. `jd:06.11`.",
-        caveats: ["Kernel-level like `uid:` — stays available even if this module itself is disabled."],
       },
     ],
   },
@@ -543,7 +536,7 @@ const SCHEME_ENABLED_BY_DEFAULT = true;
  * `obsidian_renumber_address`) are registered by hand in server.ts, not
  * through this mount, and server.ts gates them on this same answer, so the
  * toggle turns off all of the module's tools (01.28 rule 7; Nelson's pick A,
- * 2026-10-09). `jd:` addressing is kernel-level and stays on either way.
+ * 2026-10-09). The retired `jd:` path syntax is refused either way.
  * With no scheme configured (a fresh install, 01.33 pick A step b) the
  * answer is false whatever the toggle says: there is nothing to address.
  */
