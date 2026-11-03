@@ -100,6 +100,32 @@ describe("5. a saved schemes value that is not a list", () => {
     await h.p.saveSettings();
     assert.deepEqual(h.state.disk.schemes, PLAIN_JD);
   });
+
+  test("a saved null is kept by a save, so the next load does not turn JD on", async () => {
+    const h = harness({ ...BASE, schemes: null });
+    const warn = console.warn;
+    console.warn = () => {};
+    try {
+      await h.p.loadSettings();
+      assert.deepEqual(h.p.settings.schemes, []);
+      h.p.settings.readOnly = true;
+      await h.p.saveSettings();
+      assert.ok(Object.prototype.hasOwnProperty.call(h.state.disk, "schemes"), "the key is still on disk");
+      assert.equal(h.state.disk.schemes, null, "the saved null is written back as it was");
+      // The next load reads the same null: still no scheme, never the plain jd row.
+      const again = harness(h.state.disk);
+      await again.p.loadSettings();
+      assert.deepEqual(again.p.settings.schemes, [], "JD stays off");
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  test("schemesOnLoad hands back the unreadable value itself, null included", () => {
+    assert.equal(schemesOnLoad({ schemes: null }).raw, null);
+    assert.equal(schemesOnLoad(null, { schemes: 7 }).raw, 7);
+    assert.equal(schemesOnLoad({ schemes: [] }).raw, undefined);
+  });
 });
 
 describe("6. the settings page: a row only for a real value, and a plain on/off", () => {

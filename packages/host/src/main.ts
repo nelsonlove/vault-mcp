@@ -473,7 +473,7 @@ export default class VaultMcpPlugin extends Plugin {
     const schemesLoad = schemesOnLoad(own, seed);
     this.settings.schemes = schemesLoad.schemes;
     // A saved value that is not a list: warn, run with no scheme, and keep the saved value as it was on every save (below).
-    this.unreadableSchemes = schemesLoad.warning ? { raw: own?.schemes ?? seed?.schemes } : null;
+    this.unreadableSchemes = schemesLoad.warning ? { raw: schemesLoad.raw } : null;
     if (schemesLoad.warning) console.warn(`[vault-mcp] ${schemesLoad.warning}`);
     const rawHost = this.settings.host as unknown;
     this.settings.host = { ...(rawHost && typeof rawHost === "object" ? (rawHost as HostSettings) : DEFAULT_HOST_SETTINGS), autoRegisterClaude: autoRegisterLoad.value };

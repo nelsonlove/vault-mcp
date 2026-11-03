@@ -87,6 +87,8 @@ export interface SchemesOnLoad {
   schemes: SchemeInstanceConfig[];
   /** Set when the stored `schemes` is not a list: what the caller should warn about. The stored value is left as it is (persist is false), so a hand-edited file is never rewritten by the load. */
   warning?: string;
+  /** Set with `warning`: the stored value itself, `null` included, so a save can write it back unchanged. */
+  raw?: unknown;
   /** True when the stored settings did not hold the key (or came from the adoption source): save now, so the decision runs at most once per install. */
   persist: boolean;
 }
@@ -108,7 +110,7 @@ export function schemesOnLoad(own: unknown, adopted?: unknown): SchemesOnLoad {
   if (!Object.prototype.hasOwnProperty.call(stored, "schemes")) return { schemes: [{ ...JD_SCHEME_INSTANCE }], persist: true };
   const list = stored.schemes;
   if (!Array.isArray(list)) {
-    return { schemes: [], persist: false, warning: `the saved "schemes" setting is not a list (it is ${list === null ? "null" : typeof list}), so no scheme is on; the saved value is left as it is — fix it to a list of scheme rows` };
+    return { schemes: [], persist: false, raw: list, warning: `the saved "schemes" setting is not a list (it is ${list === null ? "null" : typeof list}), so no scheme is on; the saved value is left as it is — fix it to a list of scheme rows` };
   }
   return { schemes: structuredClone(list as SchemeInstanceConfig[]), persist: asObject(own) === null };
 }
