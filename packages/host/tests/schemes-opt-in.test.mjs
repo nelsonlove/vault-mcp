@@ -12,7 +12,7 @@ import { FIXTURE_JD_CONFIG } from "./scheme-fixture.mjs";
 installObsidianStub();
 const L = await import("../src/local-settings.ts");
 const VaultMcpPlugin = (await import("../src/main.ts")).default;
-const { makeRegistry, DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, resolveSchemeArgs, requireOneAddress } = await import("../src/kernel/scheme/registry.ts");
+const { makeRegistry, DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, refuseSchemeRefs } = await import("../src/kernel/scheme/registry.ts");
 const { DEFAULT_JD_CONFIG, jdProvider } = await import("../src/kernel/scheme/jd.ts");
 
 const LOC = { path: "/opt/example/state/local/settings.json", source: "default" };
@@ -50,11 +50,8 @@ describe("the shipped defaults", () => {
     assert.deepEqual({ ...JD_SCHEME_INSTANCE }, { id: "jd", provider: "johnny-decimal" }, "the opt-in row carries no config");
   });
 
-  test("with no scheme, a jd: string is an ordinary path, untouched", () => {
-    const args = { path: "jd:06.11" };
-    const out = resolveSchemeArgs(args, makeRegistry(DEFAULT_SCHEMES), () => NOTES, null);
-    assert.equal(out.args, args, "the same object back: no scheme addressing happened");
-    assert.deepEqual(out.resolved, []);
+  test("with no scheme, a jd: string is an ordinary path, not refused", () => {
+    assert.doesNotThrow(() => refuseSchemeRefs({ path: "jd:06.11" }, makeRegistry(DEFAULT_SCHEMES)));
   });
 });
 
@@ -146,16 +143,17 @@ describe("expansions from the machine-local override", () => {
     await h.p.loadSettings();
     const reg = makeRegistry(h.p.settings.schemes);
     const jd = reg.get("jd");
+    const lookUp = (addr) => reg.resolve(jd, jd.provider.parse(addr), NOTES);
     // Expanded area: 5-digit items and their fractal ids.
     assert.equal(jd.provider.parse("52021")?.kind, "expanded-item");
     assert.equal(jd.provider.parse("52021.10")?.kind, "fractal-id");
-    assert.equal(requireOneAddress(reg, "jd:52021.10", NOTES), "50-59 Projects/52 Builds/52021 Big thing/52021.10 Sub.md");
+    assert.deepEqual(lookUp("52021.10"), ["50-59 Projects/52 Builds/52021 Big thing/52021.10 Sub.md"]);
     // Expanded category: flat 5-digit items, and the next free one.
     assert.equal(jd.provider.parse("34001")?.kind, "expanded-item");
-    assert.equal(requireOneAddress(reg, "jd:34002", NOTES), "30-39 Home/34 Garden/34002 Tools.md");
+    assert.deepEqual(lookUp("34002"), ["30-39 Home/34 Garden/34002 Tools.md"]);
     assert.equal(jd.provider.format(jd.provider.nextFree({ kind: "category", token: "34" }, NOTES)), "34003");
     // Plain JD is unchanged.
-    assert.equal(requireOneAddress(reg, "jd:06.11", NOTES), "00-09 System/06 Tooling/06.11 Bridge.md");
+    assert.deepEqual(lookUp("06.11"), ["00-09 System/06 Tooling/06.11 Bridge.md"]);
     // Without the override the same synced row expands nothing.
     const bare = makeRegistry(synced.schemes).get("jd");
     assert.equal(bare.provider.parse("52021"), null);

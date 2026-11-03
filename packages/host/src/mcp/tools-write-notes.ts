@@ -75,14 +75,14 @@ export type GuardedWrite = (
 
 export interface WriteNotesDeps {
   /**
-   * Resolve `uid:<value>` / `<scheme>:<address>` addressing for one item's
+   * Resolve `uid:<value>` addressing (refusing the retired scheme-ref syntax) for one item's
    * `path` AND check read-only + allowlist for it — the SAME resolution and
    * refusal `guardedWrite`'s own dispatch applies (guarded.ts's
    * `resolveGuardedPath`), run here FIRST, before compose. Two reasons it has
    * to happen here rather than only inside `guardedWrite`:
    *
    *   1. `readExistingFrontmatter` below is keyed on a real vault path — the
-   *      metadata cache has no entry under a `uid:`/`jd:` reference — so stamp
+   *      metadata cache has no entry under a `uid:` reference — so stamp
    *      preservation (existing uid/created/acceptance-status) needs the
    *      RESOLVED path, not the caller's raw argument.
    *   2. The allowlist/read-only refusal must be the FIRST thing a hidden or
@@ -213,7 +213,7 @@ export function registerWriteNotesTool(
       const results: PerItemResult[] = [];
 
       for (const item of notes) {
-        // Resolve uid:/jd: addressing AND check read-only/allowlist FIRST —
+        // Resolve uid: addressing AND check read-only/allowlist FIRST —
         // the SAME resolution + refusal guardedWrite's own dispatch applies
         // below, run here BEFORE compose (see WriteNotesDeps.resolveTarget).
         // A blocked item never reaches compose: the allowlist refusal is the
@@ -232,7 +232,7 @@ export function registerWriteNotesTool(
         // Compose + accept-forbidden guard run OUTSIDE the queue: a rejected item
         // never dispatches, so it takes no slot and writes no journal record.
         // `existing` is keyed on the RESOLVED path — the metadata cache has no
-        // entry under a `uid:`/`jd:` reference, so a stamped write addressed
+        // entry under a `uid:` reference, so a stamped write addressed
         // that way now preserves uid/created/acceptance-status exactly like the
         // same write addressed by its plain path (Finding 3).
         let composed: ComposeResult;
@@ -262,7 +262,7 @@ export function registerWriteNotesTool(
         // Dispatch through the guarded single-writer: uid addressing, read-only,
         // allowlist, if_rev, idempotency, queue and journal all bind here, per
         // item. The path handed over is already RESOLVED (a no-op re-resolution
-        // inside guardedWrite, since it is no longer `uid:`/`jd:`-shaped) — the
+        // inside guardedWrite, since it is no longer `uid:`-shaped) — the
         // second allowlist check is defense-in-depth, not a second decision.
         try {
           // Each item is a single write_note under the 01.33 table ("write

@@ -199,7 +199,7 @@ export function composeNote(args: ComposeArgs): ComposeResult {
     // or default-away. This is the ONLY correct reading here because `existing`
     // must be keyed on the note's real on-disk path for it to mean anything —
     // an `existing` that is empty because the caller addressed the note by
-    // `uid:`/`jd:` and the lookup missed the resolved path is NOT "no existing
+    // `uid:` and the lookup missed the resolved path is NOT "no existing
     // acceptance-status", it is a wrong answer, and defaulting to `proposed` in
     // that case silently demotes a human's `accepted` (the bug this guards
     // against — see tools-write-notes.ts's resolveTarget wiring). This matches

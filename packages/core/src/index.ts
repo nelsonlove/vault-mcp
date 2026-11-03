@@ -216,6 +216,7 @@ export {
   parseOutlinks,
   deriveJdIdFromPath,
   fsJdModel,
+  fsSchemeRegistry,
   SCHEMES_ENV_VAR,
   IndexStore,
 } from "./fs-backend/index-store.js";
@@ -443,7 +444,7 @@ export type { ChangeClass } from "./action-contract.js";
 export { vaultSlug } from "./vault-slug.js";
 
 // ── Shared with the conformance and scheme satellites (2026-10-14) ─────────────
-// The JD scheme grammar and registry (jd: addressing stays in the host's guard),
+// The JD scheme grammar and registry (and the refusal of the retired `jd:` path syntax),
 // scheme findings, the argument-path walk, path identity and the env aliases:
 // published into core, as the vocab kernel was, so a satellite and the host read
 // one copy (suite split; Nelson, 2026-10-14: "the conformance and scheme features
@@ -451,8 +452,8 @@ export { vaultSlug } from "./vault-slug.js";
 export type { Capabilities, Address, Scope, Member, SchemeFinding, ScopeProvider } from "./scheme/provider.js";
 export { DEFAULT_JD_CONFIG, jdProvider, validateJdConfig } from "./scheme/jd.js";
 export type { JdConfig } from "./scheme/jd.js";
-export { DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, SchemeRegistry, validateExcludedRoots, excludeRoots, makeRegistry, AddressUnresolvedError, AddressAmbiguousError, SchemeUnavailableError, requireOneAddress, resolveSchemeArgs } from "./scheme/registry.js";
-export type { SchemesOnLoad, SchemeInstanceConfig, SchemeInstance, ParsedRef, SchemeAddressing } from "./scheme/registry.js";
+export { DEFAULT_SCHEMES, JD_SCHEME_INSTANCE, schemesOnLoad, SchemeRegistry, validateExcludedRoots, excludeRoots, makeRegistry, SchemeUnavailableError, SchemeRefRetiredError, refuseSchemeRefs } from "./scheme/registry.js";
+export type { SchemesOnLoad, SchemeInstanceConfig, SchemeInstance, ParsedRef } from "./scheme/registry.js";
 export { schemeFindings } from "./scheme/findings.js";
 export { intendedRealPath, sameFile, isInside } from "./path-identity.js";
 export { envAliased, envAliasNames } from "./env-alias.js";

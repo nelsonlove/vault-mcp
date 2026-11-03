@@ -1,11 +1,11 @@
-# Scope provider — `jd:` addressing
+# Scope provider — scheme addresses
 
 > **Deep reference for the shipped implementation.** Canonical concepts and the target design live in the [documentation corpus](README.md); what is shipped versus target is owned by [status-and-compatibility.md](status-and-compatibility.md).
 
 
 The scope provider is a [capability module](module-system.md) (id `scheme`, capabilities
 `["addressing", "allocation"]`) that gives an agent a **scheme-relative** way to name and place
-notes. A scheme is opt-in: a fresh install has none. The one provider today is **Johnny Decimal**, conventionally given the id `jd` and addressed `jd:` (see [Turning a scheme on](#turning-a-scheme-on)).
+notes. A scheme is opt-in: a fresh install has none. The one provider today is **Johnny Decimal**, conventionally given the id `jd` (see [Turning a scheme on](#turning-a-scheme-on)).
 
 Files: `packages/host/src/mcp/tools-scheme.ts` (five read tools), `packages/host/src/mcp/tools-scheme-write.ts`
 (three write tools), `packages/host/src/kernel/scheme/` (the pure engine: `registry.ts`, `jd.ts`,
@@ -13,34 +13,22 @@ Files: `packages/host/src/mcp/tools-scheme.ts` (five read tools), `packages/host
 **read-only** and Obsidian-import-free (headlessly testable); [the three write tools](#the-three-write-tools)
 are the module's mutating half and register differently — see below.
 
-## `jd:` as a path address
+## The `<id>:<address>` path syntax is retired
 
-Beside `uid:`, a path argument also accepts `<scheme>:<address>` — for the default
-configuration, **`jd:06.11`**. It resolves at the same interception point as uid addressing,
-**immediately after it** (`uid:` is reserved and always gets first look), so a call can freely
-mix the two:
+A path argument no longer accepts a scheme address. `jd:06.11` (or any `<id>:` prefix for a scheme id the `schemes` setting configures, live or skipped) used to resolve to the note at that address; it was retired on 2026-10-30 because nothing used it. Such a value is now refused on every road, read or write, on both servers, before anything runs, and it is never read as a plain path that happens to start with that text:
 
-```jsonc
-{"path": "jd:06.11", "content": "…"}                    // obsidian_write_note
-{"from": "jd:06.11", "to": "jd:06.12"}                   // any path argument
+```text
+Error [scheme_ref_retired]: "jd:06.11" uses the scheme-address path syntax ("jd:<address>"), which is retired; name the note by a vault-relative path or a uid:<value> ref
 ```
 
-Resolution runs over **allowlist-visible notes only** (`registry.ts`, wired at `guarded.ts`), so
-it sees exactly the candidates `obsidian_resolve_address` would report:
+Name the note by its path or by `uid:`. To learn the path at an address, call `obsidian_resolve_address`. A colon after an id that is not configured (`Notes/a:b.md`, `nope:1`) is an ordinary path, and with no scheme configured nothing is refused. `uid:` is reserved and never a scheme id.
 
-- `Error [address_unresolved]` — no note *you can reach* carries the address (even if a hidden
-  note does).
-- `Error [address_ambiguous]` — two or more visible notes claim it; the error names only the
-  candidates you could have named yourself (capped at 10).
-
-`jd` is the **id** of a Johnny-Decimal instance, not a hardwired prefix: the top-level
-`schemes` setting lists the instances, and `DEFAULT_SCHEMES` is empty. The ref grammar is
-`<scheme-id>:<address>`; `uid:` is explicitly never treated as a scheme ref.
+`jd` is the **id** of a Johnny-Decimal instance, not a hardwired prefix: the top-level `schemes` setting lists the instances, and `DEFAULT_SCHEMES` is empty.
 
 ## Turning a scheme on
 
 A fresh install (no `data.json`, none adopted from the pre-split plugin) gets `schemes: []`: no
-`<id>:` addressing (a `jd:06.11` argument is an ordinary path), no scheme tool registered (the five
+retired-ref refusal (a `jd:06.11` argument is an ordinary path), no scheme tool registered (the five
 read tools and the three write tools), and no scheme check in the conformance rail. `uid:` and
 paths work as before. An install whose saved settings predate the key keeps the one plain
 instance it had, `{ "id": "jd", "provider": "johnny-decimal" }`, and the plugin writes it once at
@@ -83,8 +71,7 @@ the read-only mount gate).
 
 - **`invalid_scope`** (coded) — a scope token that doesn't parse, from `obsidian_next_address`
   and `obsidian_list_scope`.
-- **`address_unresolved`** / **`address_ambiguous`** — thrown by the addressing layer
-  (`registry.ts`) during universal `jd:` path-argument rewriting, rendered as typed tool errors.
+- **`scheme_ref_retired`** — not from these tools but from the guard: a path argument in the retired `<id>:<address>` form (see [above](#the-idaddress-path-syntax-is-retired)).
 - Argument-shape refusals (both/neither of `address`/`path`, no scheme configured, multiple
   instances with no `scheme` specified, unknown scheme id) are **uncoded** `Error: …` messages.
 

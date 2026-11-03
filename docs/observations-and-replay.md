@@ -122,7 +122,7 @@ The operation kernel enforces read access before content or derived information 
 1. resolve the registered action and surface;
 2. derive actor, connection, session, and mandate bindings;
 3. compute the effective scope from human settings and narrower active bounds;
-4. resolve stable/scheme references only over visible candidates;
+4. resolve stable references only over visible candidates, and refuse the retired scheme-ref path form;
 5. filter enumerations before reading bodies or computing counts;
 6. refuse actions whose discovery cannot be bounded honestly;
 7. execute the read adapter;

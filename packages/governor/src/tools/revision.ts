@@ -119,7 +119,7 @@ export function buildRevisionTools(source: RevisionSource, listing: RevisionList
         "review pane, never an API call. Pass `intent` (the standard kernel argument) if you want the write " +
         "journal to carry your summary of why.",
       inputSchema: {
-        path: z.string().describe("Vault-relative path of the revising note (uid:/jd: addressing works)."),
+        path: z.string().describe("Vault-relative path of the revising note (uid: addressing works)."),
         summary: z
           .string()
           .min(1)

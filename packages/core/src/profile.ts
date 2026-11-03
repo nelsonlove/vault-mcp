@@ -133,7 +133,7 @@ export function profileAllows(profile: ConnProfile, tool: string): boolean {
 /**
  * The call-time refusal, or null: the second check behind registration. A tool outside the
  * profile is refused; a mutating call is checked against the profile's own write scope on its RAW
- * arguments (an address such as `uid:` or `jd:` matches no glob, so it is refused, never widened).
+ * arguments (an address such as `uid:` matches no glob, so it is refused, never widened).
  */
 export function profileCallRefusal(
   profile: ConnProfile,

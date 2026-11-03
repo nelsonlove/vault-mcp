@@ -46,7 +46,7 @@ Review full mode, compact code mode, in-app tool runner, batch operations, inter
 
 ### 4. Scope
 
-Review normalization, traversal, segment boundaries, source/destination checks, batch items, stable/scheme references, discovery filtering, hidden counts, pending index, backlinks, and discovered-blast-radius operations. (Base-row filtering left this bundle at S7 with the `vaultmcp-bases` satellite. What replaces it here is the external-publisher gate: a published tool's read-only claim is distrusted unless its plugin id is in `trustedReadOnlyPlugins`, and under an active path allowlist a published tool whose call arguments carry no recognized path key is refused outright.)
+Review normalization, traversal, segment boundaries, source/destination checks, batch items, stable references, the refusal of retired scheme references, discovery filtering, hidden counts, pending index, backlinks, and discovered-blast-radius operations. (Base-row filtering left this bundle at S7 with the `vaultmcp-bases` satellite. What replaces it here is the external-publisher gate: a published tool's read-only claim is distrusted unless its plugin id is in `trustedReadOnlyPlugins`, and under an active path allowlist a published tool whose call arguments carry no recognized path key is refused outright.)
 
 Tools that cannot be path-scoped honestly should refuse under scope or remain absent publicly.
 
