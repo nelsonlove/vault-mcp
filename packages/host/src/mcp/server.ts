@@ -511,11 +511,10 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
     executor,
     sessionRefusal,
     sessionRefresh,
-    // `jd:<address>` addressing at the interception point: same per-call
-    // freshness as registerSchemeTools's own registry() below (a scheme
-    // config edit lands live), and the same notes() source it uses.
+    // The retired `<id>:<address>` path syntax is refused at the interception
+    // point for every configured id: same per-call freshness as
+    // registerSchemeTools's own registry() below (a scheme config edit lands live).
     schemes: () => makeRegistry(ctx.getSettings().schemes ?? DEFAULT_SCHEMES),
-    schemeNotes: () => app.vault.getMarkdownFiles().map((f) => f.path),
     // The whole-note-overwrite rule (#441): the note's length as core's
     // noteLengthFrom computes it (the byte size when that cannot exceed the
     // limit, else the character count from the cache).
@@ -686,16 +685,16 @@ export function buildMcpServer(app: App, ctx: ServerCtx, opts: BuildOpts = {}): 
   // Cannot go through mountModules below: that host's registerAll gate refuses
   // any tool whose readOnlyHint !== true (its own header comment), and these
   // three mutate by design. Registered directly, same shape as
-  // registerVaultWriteTools above. Reuses guardedOpts.schemes/schemeNotes
-  // rather than building a third `makeRegistry(...)` closure identical to the
-  // one guardedOpts already constructed above — same per-call freshness (a
+  // registerVaultWriteTools above. Reuses guardedOpts.schemes rather than
+  // building a third `makeRegistry(...)` closure identical to the one
+  // guardedOpts already constructed above — same per-call freshness (a
   // scheme config edit lands live, no reconnect needed), one expression.
   // The scheme module's toggle gates these three too (01.28 rule 7, pick A of
   // 2026-10-09): read once per connection, as mountModules reads it below.
   if (schemeModuleEnabled(ctx.getSettings())) {
     registerSchemeWriteTools(server, app, {
       registry: guardedOpts.schemes,
-      notes: guardedOpts.schemeNotes,
+      notes: () => app.vault.getMarkdownFiles().map((f) => f.path),
       getSettings: () => ctx.getSettings(),
       recordIdentification,
     });

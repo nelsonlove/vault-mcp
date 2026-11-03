@@ -46,13 +46,13 @@ function fakeAdapter() {
  * the registered obsidian_write_notes handler.
  *
  * `settings` (readOnly/allowlist), `uidSource` ({paths, uidOf}) and
- * `schemes`/`schemeNotes` are all optional so the SAME harness can pin the
- * plain-path behavior (nothing passed — byte-identical to before) and the
- * uid:/jd: address-form-independence + allowlist-ordering fixes (Findings 3
+ * `schemes` are all optional so the SAME harness can pin the
+ * plain-path behavior (nothing passed — byte-identical to before), the
+ * refusal of the retired jd: syntax, and the uid: address-form-independence + allowlist-ordering fixes (Findings 3
  * and 5), by wiring the identical resolveGuardedPath/guardedOpts server.ts
  * wires — not a reimplementation of resolution for the test's own sake.
  */
-function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, schemes, schemeNotes, wholeReads, syncGuard } = {}) {
+function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, schemes, wholeReads, syncGuard } = {}) {
   const vault = new Map();        // path -> { content, rev }
   const existingFm = new Map();   // path -> parsed frontmatter (metadata cache stand-in)
   let clock = 100;
@@ -96,7 +96,7 @@ function harness({ existing = new Map(), settings = OPEN_SETTINGS, uidSource, sc
     noteLength: async (path) => vault.get(path)?.content.length,
     ...(wholeReads ? { wholeReads, noteStat: (path) => (vault.has(path) ? { mtime: vault.get(path).rev, size: vault.get(path).content.length } : undefined) } : {}),
     ...(uids ? { uids } : {}),
-    ...(schemes ? { schemes: () => schemes, schemeNotes: () => schemeNotes ?? [] } : {}),
+    ...(schemes ? { schemes: () => schemes } : {}),
     ...(syncGuard ? { syncGuard } : {}),
   };
   const guarded = makeGuarded(guardedOpts);
@@ -355,7 +355,7 @@ describe("obsidian_write_notes — stamp end-to-end", () => {
   });
 
   // Finding 3 — before the fix, readExistingFrontmatter was keyed on the
-  // caller's RAW `path` argument. For a uid:/jd:-addressed item that key is
+  // caller's RAW `path` argument. For a uid:-addressed item that key is
   // never in the metadata cache (it is indexed by real path), so the lookup
   // silently missed: the stamped write treated an EXISTING note as new,
   // minted a fresh uid, reset `created`, and demoted `acceptance-status:
@@ -387,25 +387,21 @@ describe("obsidian_write_notes — stamp end-to-end", () => {
     assert.equal(typeof structured(res).written[0].rev, "number", "rev is reported off the RESOLVED path too");
   });
 
-  test("jd:-addressed stamp preserves uid/created/acceptance the same way", async () => {
+  test("a jd:-addressed item is refused (the syntax is retired) and nothing is written", async () => {
     const path = "00-09 System/06 Agent tooling/06.11 Vault MCP.md";
-    const existing = new Map([
-      [path, { rev: 100, content: "old", frontmatter: { uid: "JD-UID", created: "2019-02-02T00:00:00", "acceptance-status": "accepted" } }],
-    ]);
-    const schemes = makeRegistry(JD_SCHEMES);
-    const { call, vault } = harness({ existing, schemes, schemeNotes: [path] });
+    const existing = new Map([[path, { rev: 100, content: "old", frontmatter: { uid: "JD-UID" } }]]);
+    const { call, vault } = harness({ existing, schemes: makeRegistry(JD_SCHEMES) });
     const res = await call({ notes: [{ path: "jd:06.11", frontmatter: { name: "V" }, body: "rewritten", if_rev: 100 }], stamp: true });
-    const content = vault.get(path).content;
-    assert.equal(structured(res).error_count, 0);
-    assert.match(content, /uid: "JD-UID"/, "existing uid preserved");
-    assert.match(content, /created: "2019-02-02T00:00:00"/, "existing created preserved");
-    assert.match(content, /acceptance-status: "accepted"/, "existing acceptance-status preserved — no silent demotion");
+    assert.equal(structured(res).error_count, 1);
+    assert.equal(structured(res).errors[0].code, "scheme_ref_retired");
+    assert.equal(vault.get(path)?.content ?? "old", "old", "the note at the address is untouched");
+    assert.equal(vault.has("jd:06.11"), false, "nothing written under the literal ref");
   });
 
   // Demotion rule (matches the shared accept-guard convention —
   // acceptTransitionReason, see write-notes-compose.ts): stamping's SILENT
   // default (payload omits acceptance-status) must PRESERVE an existing
-  // accepted-family value — pinned above via uid:/jd: addressing, the exact
+  // accepted-family value — pinned above via uid: addressing, the exact
   // case the bug broke. An EXPLICIT, TYPED non-accepted value in the payload
   // is a different case — a caller's own content edit — and the shared rule
   // does not refuse it (only introducing/changing INTO the accepted family is

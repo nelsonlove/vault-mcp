@@ -60,8 +60,12 @@ describe("checkFsSchemes — the startup check", () => {
   });
 });
 
-describe("a move while the index is in error", () => {
-  test("refuses with index_unavailable and moves nothing; update_backlinks: false still moves", async () => {
+describe("a bad VAULT_MCP_SCHEMES after startup", () => {
+  // The startup check (above) stops the server on a bad value, and a process's
+  // env does not change after start, so this is reached only in a test. Since
+  // #627 every path argument is checked against the scheme ids first, so a
+  // bad value refuses every path call, naming the variable, and moves nothing.
+  test("a move is refused with an error that names the variable, and nothing moves, update_backlinks: false included", async () => {
     const core = await import("@vault-mcp/core");
     process.env.VAULT_MCP_SCHEMES = "{not json";
     await core.buildIndex();
@@ -71,14 +75,13 @@ describe("a move while the index is in error", () => {
     await server.connect(b);
     const c = new Client({ name: "t", version: "0" });
     await c.connect(a);
-    const r = (await c.callTool({ name: "obsidian_move_note", arguments: { from: "Notes/A.md", to: "Notes/B.md", idempotency_key: "k1" } })) as { isError?: boolean; content: Array<{ text: string }> };
-    assert.equal(r.isError, true);
-    assert.match(r.content[0].text, /index_unavailable/);
-    assert.ok(existsSync(path.join(vault, "Notes", "A.md")), "nothing was moved");
-    assert.ok(!existsSync(path.join(vault, "Notes", "B.md")));
-    const ok = (await c.callTool({ name: "obsidian_move_note", arguments: { from: "Notes/A.md", to: "Notes/C.md", update_backlinks: false, idempotency_key: "k2" } })) as { isError?: boolean };
-    assert.notEqual(ok.isError, true);
-    assert.ok(existsSync(path.join(vault, "Notes", "C.md")));
+    for (const [key, args] of [["k1", {}], ["k2", { update_backlinks: false }]] as const) {
+      const r = (await c.callTool({ name: "obsidian_move_note", arguments: { from: "Notes/A.md", to: "Notes/B.md", ...args, idempotency_key: key } })) as { isError?: boolean; content: Array<{ text: string }> };
+      assert.equal(r.isError, true, key);
+      assert.match(r.content[0].text, /VAULT_MCP_SCHEMES/, key);
+      assert.ok(existsSync(path.join(vault, "Notes", "A.md")), `nothing was moved (${key})`);
+      assert.ok(!existsSync(path.join(vault, "Notes", "B.md")), key);
+    }
     await c.close();
     delete process.env.VAULT_MCP_SCHEMES;
   });

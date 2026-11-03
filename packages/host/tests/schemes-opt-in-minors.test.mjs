@@ -12,7 +12,8 @@ installObsidianStub();
 const VaultMcpPlugin = (await import("../src/main.ts")).default;
 const { ObsidianBackend } = await import("../src/mcp/obsidian-backend.ts");
 const { builtinModules, setSchemeOn, schemeModuleEnabled } = await import("../src/mcp/modules-mount.ts");
-const { jdModelFromSchemes, schemesOnLoad } = await import("@vault-mcp/core");
+const core = await import("@vault-mcp/core");
+const { jdModelFromSchemes, schemesOnLoad } = core;
 
 const LOC = { path: "/opt/example/state/local/settings.json", source: "default" };
 function harness(data) {
@@ -251,3 +252,22 @@ describe("7. the scheme panes and command follow whether a scheme exists", () =>
   });
 });
 
+
+describe("merge with #627: a row turned off", () => {
+  const { makeRegistry, fsJdModel, fsSchemeRegistry } = core;
+  const OFF = [{ id: "jd", provider: "johnny-decimal", enabled: false, config: { expandedAreas: ["50-59"] } }];
+
+  test("VAULT_MCP_SCHEMES with a row turned off does not stop the FS server, and gives no JD model", () => {
+    const env = { VAULT_MCP_SCHEMES: JSON.stringify(OFF) };
+    assert.doesNotThrow(() => fsJdModel(env));
+    assert.equal(fsJdModel(env), null);
+    assert.equal(fsSchemeRegistry(env).instances().length, 0);
+  });
+
+  test("an id whose row is turned off is still refused as a path prefix", () => {
+    const reg = makeRegistry(OFF);
+    assert.equal(reg.refId("jd:06.11"), "jd");
+    assert.equal(fsSchemeRegistry({ VAULT_MCP_SCHEMES: JSON.stringify(OFF) }).refId("jd:06.11"), "jd");
+    assert.equal(reg.refId("other:1"), null, "an id that is not configured is a plain path");
+  });
+});

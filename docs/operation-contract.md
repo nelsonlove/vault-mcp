@@ -59,7 +59,7 @@ The action/surface pair is resolved before arguments reach an implementation han
 
 ## Read boundary
 
-Every path-taking operation accepts vault-relative paths and may accept registered stable or scheme addresses. Governor resolves an address before scope enforcement so indirection cannot bypass the boundary.
+Every path-taking operation accepts vault-relative paths and may accept registered stable addresses (`uid:`); the scheme-address path form (`jd:06.11`) is retired and refused. Governor resolves an address before scope enforcement so indirection cannot bypass the boundary.
 
 Enumeration filters before reading. Counts and excerpts describe visible data only. A hidden direct target normally becomes unresolved. Operations that cannot be honestly bounded by path scope are refused while a scope is active or excluded publicly.
 

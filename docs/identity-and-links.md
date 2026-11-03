@@ -108,7 +108,7 @@ A heading is part of every link that names it (`[[Note#Heading]]`), so changing 
 
 Every tool that reads or enumerates the vault is bounded by the **path allowlist** (one
 vault-relative prefix per line; empty = whole vault). Every path a call *names* is checked —
-including inside batches and behind `uid:`/`jd:` addressing, which resolve *before* the check
+including inside batches and behind `uid:` addressing, which resolves *before* the check
 so they can't be a way around it — and every enumerating tool bounds its own iteration by the
 same rule, **filtering before it reads rather than after**. The full per-surface table
 (search, listings, backlinks, resolve, tags, bookmarks, Dataview/CLI refusal, and the four

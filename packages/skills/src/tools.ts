@@ -357,7 +357,7 @@ export function buildSkillsTools(source: SkillsBackend, ctx: SkillsToolsCtx): Sd
         if (name) {
           const entry = p.entries.find((x) => x.name === name || x.relOut === name || x.from === name);
           // A hidden source reads as NOT FOUND rather than refused, matching how
-          // uid/scheme addressing decides (0 visible candidates ⇒ unresolved):
+          // uid addressing decides (0 visible candidates ⇒ unresolved):
           // a distinct "forbidden" answer would confirm the note exists.
           if (!entry || !sourceVisible(entry)) {
             throw new Error(`no preview entry matches "${name}" — try a generated name, output path, or source note path`);
