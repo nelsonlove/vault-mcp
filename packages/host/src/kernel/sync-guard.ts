@@ -29,6 +29,7 @@
 import { MCP_SURFACE_INVENTORY, type SyncKindSpec } from "./operations/inventory-mcp.js";
 import { collectPaths } from "../guard.js";
 import type { DeclaredSync } from "./tool-declaration.js";
+import { SLOT_ADDRESS_RE } from "./slot-address.js";
 
 // ── settings ─────────────────────────────────────────────────────────────────
 
@@ -290,16 +291,27 @@ export function syncKindOf(tool: string, args: Record<string, unknown>, declared
 
 // ── the decision ─────────────────────────────────────────────────────────────
 
-/** The paths a call writes: its path arguments, and for obsidian_create_note (#531) the note its `folder` and `title` name. */
+/** A path as the vault names it: repeated slashes collapsed, no leading or trailing slash (as Obsidian's normalizePath). */
+function vaultPathOf(p: string): string {
+  return p.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+}
+
+/**
+ * The paths a call writes: its path arguments, and for obsidian_create_note (#531) the note its `folder` and
+ * `title` name, built as the tool builds it (the title and the folder trimmed, slashes stripped). A bare
+ * slot address as the title is renamed by the tool from the slot class, so the guard cannot know the final
+ * name: the folder itself is a target too, and any server change waiting in it holds the create.
+ */
 function targetsOf(tool: string, args: Record<string, unknown>): string[] {
   const paths = collectPaths(args);
   if (tool === "obsidian_create_note" && typeof args.folder === "string") {
     const values = (args.values ?? {}) as Record<string, unknown>;
-    const title = typeof args.title === "string" ? args.title : typeof values.title === "string" ? values.title : "";
-    const folder = args.folder.replace(/^\/+|\/+$/g, "");
+    const title = String(typeof args.title === "string" ? args.title : values.title ?? "").trim();
+    const folder = vaultPathOf(args.folder.trim());
     paths.push(title ? (folder ? `${folder}/${title}.md` : `${title}.md`) : folder);
+    if (title && SLOT_ADDRESS_RE.test(title)) paths.push(folder);
   }
-  return paths.filter(Boolean);
+  return paths.map(vaultPathOf).filter(Boolean);
 }
 
 /** The code a refusal carries. */

@@ -1096,7 +1096,7 @@ export class VaultMcpSettingTab extends PluginSettingTab {
       .setDesc(
         "When Sync is behind only because of its link to the server (disconnected, paused, not ready, or silent). " +
           "Go on with a warning: a new note goes on at once, unless a server change waits at its own path. " +
-          "Hold: a create follows the mode above, like a rename, move or delete. Renames, moves and deletes are held either way."
+          "Hold: a create follows the mode above, like a rename, move or delete. This setting does not change renames, moves and deletes: they always follow the mode above."
       )
       .addDropdown((d) =>
         d

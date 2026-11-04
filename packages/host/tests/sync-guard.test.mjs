@@ -693,3 +693,30 @@ describe("createMode warn: creates go on while only the link is behind; renames,
     assert.equal(moved.ran, false);
   });
 });
+
+// #632 review 2: the create's own path is built as the tool builds it, so the path check (the only hold on a
+// create while the link is down) meets a server change at the note's real path.
+describe("the create's own path is the path the tool writes", () => {
+  const down = (pending) => synced({ socketOpen: false, pendingPaths: pending });
+  const held = async (tool, args, pending = ["Inbox/N.md"]) => (await decideSync(tool, args, clock([down(pending)]).deps({ waitSeconds: 0 })))?.refuse?.code;
+  test("control: create_note at Inbox/N.md is held while a change waits there", async () => {
+    assert.equal(await held("obsidian_create_note", { class: "X", folder: "Inbox", title: "N" }), SYNC_BEHIND);
+  });
+  test("a title with spaces around it is trimmed, as the tool trims it", async () => {
+    assert.equal(await held("obsidian_create_note", { class: "X", folder: "Inbox", title: "N " }), SYNC_BEHIND);
+    assert.equal(await held("obsidian_create_note", { class: "X", folder: "Inbox", values: { title: "  N" } }), SYNC_BEHIND);
+  });
+  test("a folder with spaces or slashes around it is trimmed and stripped, as the tool does", async () => {
+    assert.equal(await held("obsidian_create_note", { class: "X", folder: " Inbox", title: "N" }), SYNC_BEHIND);
+    assert.equal(await held("obsidian_create_note", { class: "X", folder: "/Inbox/", title: "N" }), SYNC_BEHIND);
+  });
+  test("a bare slot address as the title: the tool renames it, so a change anywhere in the folder holds it", async () => {
+    assert.equal(await held("obsidian_create_note", { class: "Meta/Slot/Audit", folder: "Inbox", title: "00.08" }, ["Inbox/00.08 Audits.md"]), SYNC_BEHIND);
+    assert.ok((await decideSync("obsidian_create_note", { class: "X", folder: "Inbox", title: "Plain" }, clock([down(["Inbox/Other.md"])]).deps({}))).warn, "a plain title is held only at its own path");
+  });
+  test("a path with a leading slash or a doubled slash meets the change at its vault path", async () => {
+    assert.equal(await held("obsidian_write_note", { path: "/Inbox/N.md", content: "x" }), SYNC_BEHIND);
+    assert.equal(await held("obsidian_write_note", { path: "Inbox//N.md", content: "x" }), SYNC_BEHIND);
+    assert.equal(await held("obsidian_write_notes", { path: "/Inbox/N.md", create_only: true }), SYNC_BEHIND);
+  });
+});
