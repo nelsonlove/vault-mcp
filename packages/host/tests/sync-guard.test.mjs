@@ -542,7 +542,7 @@ describe("a rename, move or delete polls up to strictWaitSeconds (120 s) for a F
   });
 });
 
-// Nelson, 2026-11-04 (relayed by [coordinator-pro] system): "make that change. That is, let creates through."
+// The owner's ruling, 2026-11-04: "make that change. That is, let creates through."
 // A create that finds Sync behind only because of its link to the server goes on at once with a warning
 // (`createMode: "warn"`, the default), unless a server change waits at its own path. Renames, moves,
 // deletes and trashes stay held.
