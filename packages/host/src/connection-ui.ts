@@ -1091,6 +1091,22 @@ export class VaultMcpSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+    this.lock(new Setting(containerEl), "syncGuard.createMode")
+      .setName("Creates while Sync is behind")
+      .setDesc(
+        "When Sync is behind only because of its link to the server (disconnected, paused, not ready, or silent). " +
+          "Go on with a warning: a new note goes on at once, unless a server change waits at its own path. " +
+          "Hold: a create follows the mode above, like a rename, move or delete. This setting does not change renames, moves and deletes: they always follow the mode above."
+      )
+      .addDropdown((d) =>
+        d
+          .addOptions({ warn: "Go on with a warning", hold: "Hold" })
+          .setValue(sg.createMode)
+          .onChange(async (v) => {
+            this.plugin.settings.syncGuard.createMode = v === "hold" ? "hold" : "warn";
+            await this.plugin.saveSettings();
+          })
+      );
 
     // ── obsidian_create_note (#531) ───────────────────────────────────────────
     this.lock(new Setting(containerEl), "createNoteFlow")

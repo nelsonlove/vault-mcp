@@ -29,11 +29,19 @@
 import { MCP_SURFACE_INVENTORY, type SyncKindSpec } from "./operations/inventory-mcp.js";
 import { collectPaths } from "../guard.js";
 import type { DeclaredSync } from "./tool-declaration.js";
+import { SLOT_ADDRESS_RE } from "./slot-address.js";
 
 // ── settings ─────────────────────────────────────────────────────────────────
 
 export type SyncGuardMode = "refuse" | "wait" | "warn";
 export type SyncGuardOnUnknown = "warn" | "refuse";
+/**
+ * How a create (a structure write that is not a rename, move or delete) is treated when Sync is behind only
+ * because of the link to the server (not ready, an error, paused, disconnected, or no recent message):
+ * `warn` lets it go on at once with a warning; `hold` treats it as every other structure write (`mode`).
+ * A create that meets a server change waiting at its own path is held in both.
+ */
+export type SyncGuardCreateMode = "warn" | "hold";
 
 export interface SyncGuardSettings {
   /** Off when the plugin ships, so no other vault changes. */
@@ -54,6 +62,12 @@ export interface SyncGuardSettings {
   strictWaitSeconds: number;
   /** When the Sync object is missing or its fields have changed shape. */
   onUnknown: SyncGuardOnUnknown;
+  /**
+   * How a create is treated when only the link to the Sync server is behind (see `SyncGuardCreateMode`).
+   * `warn` by default: a new note at a path no server change touches cannot become a twin by itself, and
+   * holding every create through a Sync outage stops every new note for as long as the outage lasts.
+   */
+  createMode: SyncGuardCreateMode;
 }
 
 export const DEFAULT_SYNC_GUARD: Readonly<SyncGuardSettings> = Object.freeze({
@@ -62,6 +76,7 @@ export const DEFAULT_SYNC_GUARD: Readonly<SyncGuardSettings> = Object.freeze({
   waitSeconds: 30,
   strictWaitSeconds: 120,
   onUnknown: "warn",
+  createMode: "warn",
 });
 
 /** The longest wait the setting accepts, so a typo cannot hold a write for hours. */
@@ -72,6 +87,7 @@ export function normalizeSyncGuard(v: unknown): SyncGuardSettings {
   const o = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   const mode = o.mode === "refuse" || o.mode === "wait" || o.mode === "warn" ? o.mode : DEFAULT_SYNC_GUARD.mode;
   const onUnknown = o.onUnknown === "warn" || o.onUnknown === "refuse" ? o.onUnknown : DEFAULT_SYNC_GUARD.onUnknown;
+  const createMode = o.createMode === "warn" || o.createMode === "hold" ? o.createMode : DEFAULT_SYNC_GUARD.createMode;
   const seconds = (x: unknown, dflt: number) => Math.min(MAX_WAIT_SECONDS, Math.max(0, typeof x === "number" && Number.isFinite(x) ? x : dflt));
   return {
     enabled: o.enabled === true,
@@ -79,6 +95,7 @@ export function normalizeSyncGuard(v: unknown): SyncGuardSettings {
     waitSeconds: seconds(o.waitSeconds, DEFAULT_SYNC_GUARD.waitSeconds),
     strictWaitSeconds: seconds(o.strictWaitSeconds, DEFAULT_SYNC_GUARD.strictWaitSeconds),
     onUnknown,
+    createMode,
   };
 }
 
@@ -274,16 +291,27 @@ export function syncKindOf(tool: string, args: Record<string, unknown>, declared
 
 // ── the decision ─────────────────────────────────────────────────────────────
 
-/** The paths a call writes: its path arguments, and for obsidian_create_note (#531) the note its `folder` and `title` name. */
+/** A path as the vault names it: repeated slashes collapsed, no leading or trailing slash (as Obsidian's normalizePath). */
+function vaultPathOf(p: string): string {
+  return p.replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+}
+
+/**
+ * The paths a call writes: its path arguments, and for obsidian_create_note (#531) the note its `folder` and
+ * `title` name, built as the tool builds it (the title and the folder trimmed, slashes stripped). A bare
+ * slot address as the title is renamed by the tool from the slot class, so the guard cannot know the final
+ * name: the folder itself is a target too, and any server change waiting in it holds the create.
+ */
 function targetsOf(tool: string, args: Record<string, unknown>): string[] {
   const paths = collectPaths(args);
   if (tool === "obsidian_create_note" && typeof args.folder === "string") {
     const values = (args.values ?? {}) as Record<string, unknown>;
-    const title = typeof args.title === "string" ? args.title : typeof values.title === "string" ? values.title : "";
-    const folder = args.folder.replace(/^\/+|\/+$/g, "");
+    const title = String(typeof args.title === "string" ? args.title : values.title ?? "").trim();
+    const folder = vaultPathOf(args.folder.trim());
     paths.push(title ? (folder ? `${folder}/${title}.md` : `${title}.md`) : folder);
+    if (title && SLOT_ADDRESS_RE.test(title)) paths.push(folder);
   }
-  return paths.filter(Boolean);
+  return paths.map(vaultPathOf).filter(Boolean);
 }
 
 /** The code a refusal carries. */
@@ -308,6 +336,23 @@ export interface SyncGuardDeps {
 }
 
 /**
+ * The path cause alone: a server change waiting at one of `targets` (or anywhere, for a tool that does not
+ * name where it writes), read from a snapshot's pending list whatever the link's state. Null when none, or
+ * when the snapshot holds no readable list.
+ */
+function pendingAtTargets(s: SyncSnapshot, targets: readonly string[], anyPending: boolean): SyncVerdict | null {
+  if (s.state !== "fields" || !Array.isArray(s.fields.pendingPaths)) return null;
+  const pending = s.fields.pendingPaths as string[];
+  if (anyPending && pending.length > 0) {
+    return { kind: "behind", status: `${pending.length} server change(s) not yet pulled, and this tool does not name where it writes`, scope: "path" };
+  }
+  for (const t of targets) {
+    if (pending.some((p) => pendingTouches(p, t))) return { kind: "behind", status: `a server change at or under '${t}' is not yet pulled`, scope: "path" };
+  }
+  return null;
+}
+
+/**
  * Decide one call. Waits first (unless the structure mode is `warn`), up to
  * `waitSeconds` (`strictWaitSeconds` for a rename, move or delete), looking
  * again every `pollMs`, for the Sync state to be synced, and goes on at the
@@ -326,7 +371,27 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
   // A structure write that does not name where it writes checks every pending change.
   const anyPending = kind === "structure" && (targets.length === 0 || DESTINATION_UNNAMED.has(tool) || own?.destinationUnnamed === true);
   const strictStatus = kind === "structure" && (STATUS_STRICT.has(tool) || own?.strictStatus === true);
-  let v = judgeSync(deps.read(), deps.now(), targets, anyPending, strictStatus);
+  // A create that meets only a link cause goes on (`createMode: "warn"`, Nelson 2026-11-04: "let creates
+  // through"), unless a server change waits at its own path: that path cause is judged from the pending list
+  // whatever the link's state, and waits and refuses as before. Applied to the first look and to every look
+  // during a wait, so a create held for its path goes on once that change is pulled, even while the link is down.
+  // A create: a structure tool of the host's own that is not a rename, move or delete (the inventory test pins that
+  // STATUS_STRICT is every structure row that is not a create), or a satellite tool that declares `create: true`.
+  // A satellite structure tool without the flag is not assumed to be a create: it may be a move.
+  const isCreate = kind === "structure" && !strictStatus && (KIND_BY_TOOL.has(tool) || own?.create === true);
+  const createRelief = isCreate && settings.createMode === "warn";
+  const judge = (snap: SyncSnapshot): SyncVerdict | { kind: "create-goes-on"; status: string } => {
+    const j = judgeSync(snap, deps.now(), targets, anyPending, strictStatus);
+    if (createRelief && j.kind === "behind" && j.scope === "connection") return pendingAtTargets(snap, targets, anyPending) ?? { kind: "create-goes-on", status: j.status };
+    return j;
+  };
+  const createWarning = (status: string): SyncDecision => ({
+    warn: `Obsidian Sync on this Mac is behind (${status}); the create went on, because no server change waits at its path. (vault-mcp setting: Sync guard, "Creates while Sync is behind".)`,
+    code: SYNC_BEHIND,
+  });
+  const first = judge(deps.read());
+  if (first.kind === "create-goes-on") return createWarning(first.status);
+  let v: SyncVerdict = first;
   if (v.kind === "off" || v.kind === "synced") return null;
   if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);
   // The hold skips the wait only for a cause every write meets; a path cause still waits (#529 review 2).
@@ -340,7 +405,9 @@ export async function decideSync(tool: string, args: Record<string, unknown>, de
     const poll = Math.max(50, deps.pollMs ?? 500);
     while (v.kind === "behind" && deps.now() < deadline) {
       await deps.sleep(Math.min(poll, Math.max(0, deadline - deps.now())));
-      v = judgeSync(deps.read(), deps.now(), targets, anyPending, strictStatus);
+      const next = judge(deps.read());
+      if (next.kind === "create-goes-on") return createWarning(next.status);
+      v = next;
     }
     if (v.kind === "off" || v.kind === "synced") return null;
     if (v.kind === "unknown") return unknownDecision(tool, v.why, settings);

@@ -32,6 +32,7 @@
 // 2026-10-03). With it empty the tool is not registered.
 
 import { z } from "zod";
+import { SLOT_ADDRESS_RE } from "../kernel/slot-address.js";
 import * as nodePath from "path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { moment, normalizePath, parseYaml, stringifyYaml, type App } from "obsidian";
@@ -62,7 +63,6 @@ export interface FlowModules {
 }
 
 /** A slot's address alone, `<AC>.<NN>` (e.g. `00.08`): the title a caller passes to have the slot named for it. */
-const SLOT_ADDRESS_RE = /^[A-Z0-9]{2}\.\d{2}$/;
 
 /** The slot name for a class, from its note's frontmatter: `slot-title`, else the part after `Meta/Slot/`. */
 export function slotNameOf(className: string, frontmatter: Record<string, unknown> | undefined): string | undefined {

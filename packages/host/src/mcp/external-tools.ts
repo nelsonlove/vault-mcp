@@ -56,6 +56,9 @@ export interface SyncDeclaration {
   strictStatus?: boolean;
   /** The tool does not name where it writes: a server change waiting anywhere in the vault counts. Structure only. */
   destinationUnnamed?: boolean;
+  /** A create (it makes a new note or file, never renames, moves or deletes one): under the host's
+   *  `syncGuard.createMode: "warn"` it goes on with a warning when only Sync's link is behind. Structure only; not with `strictStatus`. */
+  create?: boolean;
 }
 
 // ── apiVersion 2 members (#402 step B; the SDK carried them since 1.1.0) ─────
@@ -372,8 +375,8 @@ export function validateDeclaration(spec: ExternalToolSpec): ToolDeclaration | u
   if (has("sync")) {
     if (claimsReadOnly) bad("a tool that claims readOnlyHint cannot declare sync (the Sync guard checks writes)");
     const sy = raw.sync;
-    if (!plainObject(sy)) return bad("sync must be { kind, strictStatus?, destinationUnnamed? }");
-    onlyKeys(sy, ["kind", "strictStatus", "destinationUnnamed"], "sync");
+    if (!plainObject(sy)) return bad("sync must be { kind, strictStatus?, destinationUnnamed?, create? }");
+    onlyKeys(sy, ["kind", "strictStatus", "destinationUnnamed", "create"], "sync");
     let kind: DeclaredSync["kind"];
     if (typeof sy.kind === "string") {
       if (!SYNC_KINDS.has(sy.kind)) bad("sync.kind must be structure, content, or { arg, values, otherwise }");
@@ -383,15 +386,17 @@ export function validateDeclaration(spec: ExternalToolSpec): ToolDeclaration | u
     } else {
       return bad("sync.kind is required: structure, content, or { arg, values, otherwise }");
     }
-    for (const f of ["strictStatus", "destinationUnnamed"] as const) {
+    for (const f of ["strictStatus", "destinationUnnamed", "create"] as const) {
       if (sy[f] !== undefined && typeof sy[f] !== "boolean") bad(`sync.${f} must be a boolean`);
     }
     const strictStatus = sy.strictStatus === true;
     const destinationUnnamed = sy.destinationUnnamed === true;
-    if (kind === "content" && (strictStatus || destinationUnnamed)) {
-      bad("sync.strictStatus and sync.destinationUnnamed apply to a structure write; this tool's kind is content");
+    const create = sy.create === true;
+    if (kind === "content" && (strictStatus || destinationUnnamed || create)) {
+      bad("sync.strictStatus, sync.destinationUnnamed and sync.create apply to a structure write; this tool's kind is content");
     }
-    out.sync = Object.freeze({ kind, strictStatus, destinationUnnamed });
+    if (strictStatus && create) bad("sync.create and sync.strictStatus cannot both be set: a create does not rename, move or delete");
+    out.sync = Object.freeze({ kind, strictStatus, destinationUnnamed, create });
   }
 
   if (has("paths")) {

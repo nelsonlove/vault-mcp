@@ -228,6 +228,9 @@ describe("registration fails closed on a malformed declaration", () => {
     throwsFor({ protection: "key", sync: { kind: "structure", strictstatus: true } }, /unknown key 'strictstatus'/);
     throwsFor({ protection: "key", sync: { kind: "structure", strictStatus: "yes" } }, /sync\.strictStatus must be a boolean/);
     throwsFor({ protection: "key", sync: { kind: "content", strictStatus: true } }, /apply to a structure write/);
+    throwsFor({ protection: "key", sync: { kind: "content", create: true } }, /apply to a structure write/);
+    throwsFor({ protection: "key", sync: { kind: "structure", create: "yes" } }, /sync\.create must be a boolean/);
+    throwsFor({ protection: "key", sync: { kind: "structure", create: true, strictStatus: true } }, /sync\.create and sync\.strictStatus cannot both be set/);
     throwsFor({ protection: "key", paths: "path" }, /paths must be an array/);
     throwsFor({ protection: "key", paths: ["address"] }, /'address' is not a path key the host recognizes/);
     throwsFor({ protection: "key", paths: ["path", "path"] }, /listed twice/);
@@ -243,7 +246,7 @@ describe("registration fails closed on a malformed declaration", () => {
     reg.registerTools(OWNER, [tool("look", { annotations: { readOnlyHint: true }, paths: ["path"] }), tool("assign", V3_ASSIGN)]);
     const [look, assign] = reg.entries();
     assert.deepEqual(look.declaration, { paths: ["path"] });
-    assert.deepEqual(assign.declaration, { protection: "key", sync: { kind: "structure", strictStatus: true, destinationUnnamed: true }, paths: ["path"] });
+    assert.deepEqual(assign.declaration, { protection: "key", sync: { kind: "structure", strictStatus: true, destinationUnnamed: true, create: false }, paths: ["path"] });
     assert.ok(Object.isFrozen(assign.declaration) && Object.isFrozen(assign.declaration.sync) && Object.isFrozen(assign.declaration.paths));
     // A later edit of the publisher's spec object changes nothing the host enforces.
     assign.spec.protection = "exempt";

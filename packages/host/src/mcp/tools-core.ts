@@ -190,6 +190,7 @@ function syncGuardReport(settings: SyncGuardSettings, snap: SyncSnapshot, v: Syn
     wait_seconds: settings.waitSeconds,
     strict_wait_seconds: settings.strictWaitSeconds,
     on_unknown: settings.onUnknown,
+    create_mode: settings.createMode,
     sync: v.kind,
     ...(v.kind === "behind" ? { status: v.status } : {}),
     ...(v.kind === "unknown" ? { why: v.why } : {}),
