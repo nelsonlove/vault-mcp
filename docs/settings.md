@@ -192,9 +192,10 @@ Playback access is checked against the current human/operator authorization as w
 | Key | `schemes` |
 | Default | Empty on a fresh install: no scheme, so no scheme tool and no scheme check. An install whose saved settings predate the key keeps the one plain Johnny Decimal instance, `{"id": "jd", "provider": "johnny-decimal"}`, written once at its next load. A saved list is kept |
 | Effect | Each row is one addressing scheme: an id (the address prefix, such as `jd`), a provider (`johnny-decimal` today) and an optional provider `config`. With a row, the scheme module's tools register on the next connect, and a path argument in the retired `<id>:<address>` form is refused (`scheme_ref_retired`) |
+| Turning a scheme on and off | The scheme section's "Use a scheme (Johnny Decimal)" switch. Off keeps every row and marks it `"enabled": false`: no scheme tool and no scheme check, exactly as with no rows. A row with `enabled: false` is taken but off, and its id is still refused as a path prefix (`scheme_ref_retired`), so turning a scheme off and on never changes what a `<id>:` path means. On takes the mark off, so the rows come back as they were; with no row at all it adds `{"id": "jd", "provider": "johnny-decimal"}`. A row without `enabled` is on. The switch is locked while the machine-local override sets `schemes` |
 | Turning JD on | Add `{"id": "jd", "provider": "johnny-decimal"}` to the list, or fill in a field of the scheme section on this page. The provider expands no area or category by default; name yours in `config`, for example `{"expandedAreas": ["50-59"], "expandedCategories": ["34"]}` (made-up values) |
-| Takes effect | Addressing at once; the tools on the next connect |
-| Risk | Removing a scheme turns its addresses into ordinary paths and its tools off; the conformance rail then refuses a run whose baseline holds that scheme's debt |
+| Takes effect | The tools on the next connect |
+| Risk | Removing a scheme turns its tools off; the conformance rail then refuses a run whose baseline holds that scheme's debt |
 | Recovery | Put the row back |
 
 ### Scheme exclusions

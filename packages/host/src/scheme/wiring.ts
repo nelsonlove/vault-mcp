@@ -39,12 +39,12 @@
 // leaf pointing at a torn-down mount. Commands are the one piece that stays
 // OUTSIDE the component: Obsidian's public API has no `removeCommand`, so
 // (matching every other wiring file in this plugin — none live-unregisters
-// a command) they register once, unconditionally, at onload, and each
-// callback checks the CURRENT enabled state before activating — a stale
-// command while the module is off shows a Notice instead of silently
-// trying to open an unregistered view type.
+// a command) they register once, at onload, as a `checkCallback` on the
+// CURRENT state (module on and a scheme configured) — while it is off the
+// command is simply not offered, so it never tries to open an unregistered
+// view type.
 
-import { type App, Component, type Plugin, type ViewCreator, Notice, TFolder } from "obsidian";
+import { type App, Component, type Plugin, type ViewCreator, TFolder } from "obsidian";
 import { makeRegistry, excludeRoots, type SchemeInstanceConfig } from "../kernel/scheme/registry.js";
 import { INBOX_VIEW_TYPE, InboxPaneView, type InboxPaneController } from "./inbox-pane.js";
 
@@ -149,17 +149,21 @@ export function wireSchemePanes(plugin: Plugin, opts: WireSchemePanesOpts): Comp
   return component;
 }
 
-/** Registered once, unconditionally, regardless of live mount state —
- *  Obsidian's public API has no `removeCommand`, so (matching every other
- *  wiring file in this plugin) these are never live-unregistered. Each
- *  callback checks `isEnabled()` itself before activating, so a command
- *  invoked while the module is off degrades to a Notice instead of trying
- *  to open a view type that isn't currently registered. */
+/** Registered once, regardless of live mount state — Obsidian's public API
+ *  has no `removeCommand`, so (matching every other wiring file in this
+ *  plugin) these are never live-unregistered. Each is a `checkCallback` on
+ *  `isEnabled()` (the module on AND a scheme configured), so while there is
+ *  no scheme the command is not offered in the palette at all, and it appears
+ *  the moment one is added — no reload. */
 export function registerSchemeCommands(plugin: Plugin, isEnabled: () => boolean): void {
   const app = plugin.app;
-  const guarded = (viewType: string, label: string) => async (): Promise<void> => {
-    if (!isEnabled()) { new Notice(`Vault MCP: the scheme module is disabled — enable it in settings to open ${label}.`); return; }
-    await activateView(app, viewType);
-  };
-  plugin.addCommand({ id: "scheme-inbox-open", name: "Scheme: open JD inboxes", callback: () => void guarded(INBOX_VIEW_TYPE, "JD inboxes")() });
+  plugin.addCommand({
+    id: "scheme-inbox-open",
+    name: "Scheme: open JD inboxes",
+    checkCallback: (checking: boolean) => {
+      if (!isEnabled()) return false;
+      if (!checking) void activateView(app, INBOX_VIEW_TYPE);
+      return true;
+    },
+  });
 }

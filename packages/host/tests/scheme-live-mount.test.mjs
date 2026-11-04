@@ -34,7 +34,8 @@ describe("scheme panes: live-mount wiring (#286)", () => {
     assert.doesNotMatch(body, /acceptance/);
     assert.match(
       body,
-      /moduleId === "scheme"[\s\S]*setSchemePanesMounted\(enabled\)/,
+      // Since #621's follow-up the toggle alone is not enough: no scheme configured, no panes.
+      /moduleId === "scheme"[\s\S]*setSchemePanesMounted\(enabled && schemeModuleEnabled\(this\.settings\)\)/,
       "toggling the scheme module must drive the panes live — the #286 bug was that it did not",
     );
   });

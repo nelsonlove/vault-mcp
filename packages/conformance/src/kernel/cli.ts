@@ -18,7 +18,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 // extraction (suite split, S7) — this rail is one of its two consumers, the
 // `vaultmcp-vocab` satellite's four tools being the other.
 import { VocabRegistry, DEFAULT_VOCABULARIES, type VocabInstanceSettings } from "@vault-mcp/core";
-import { makeRegistry, schemesOnLoad, type SchemeInstanceConfig } from "@vault-mcp/core";
+import { makeRegistry, schemesOnLoad, splitSettings, allSchemeRowsTaken, type SchemeInstanceConfig } from "@vault-mcp/core";
 import { homedir } from "node:os";
 import { buildSnapshot, DEFAULT_SKIP, type SkippedTerritory } from "./snapshot.js";
 import { envAliased } from "@vault-mcp/core";
@@ -836,6 +836,9 @@ export function pluginBaselineRel(root: string, env: Record<string, string | und
   }
 }
 
+/** The pre-split plugin's folder, whose data.json the host adopts settings from when it has none of its own. */
+export const PRE_SPLIT_PLUGIN_DIR = "governor";
+
 /** The environment variable that names the host's machine-local settings override (#579). */
 export const LOCAL_SETTINGS_ENV = "VAULT_MCP_LOCAL_SETTINGS";
 
@@ -851,9 +854,13 @@ export const LOCAL_SETTINGS_ENV = "VAULT_MCP_LOCAL_SETTINGS";
  *      As in the host, a file that is there but cannot be read, or a named one
  *      that is missing, is an error, never a quiet fall-back to the synced
  *      value.
+ *      Its rows go through the same registry check the host makes: a row the
+ *      registry would skip is an error here too.
  *   2. Else the host's data.json in this vault, by the host's own load rule
- *      (`schemesOnLoad`): no data.json, none; a data.json without the key, the
- *      plain jd instance; else the saved list.
+ *      (`schemesOnLoad`): a data.json without the key, the plain jd instance;
+ *      a saved list, that list. With no data.json of its own, the host adopts
+ *      the host half of the pre-split plugin's data.json (`governor`), and so
+ *      does this; with neither, none.
  *
  * Read-only. None found ⇒ no scheme pack, and a baseline that holds scheme
  * debt is refused by the coverage check rather than read as CLEARED.
@@ -882,16 +889,35 @@ export function cliSchemes(root: string, env: Record<string, string | undefined>
     const schemes = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).schemes : undefined;
     if (schemes !== undefined) {
       if (!Array.isArray(schemes)) throw new Error(`the Vault MCP settings override ${overridePath}: schemes must be a list`);
+      // The host refuses to serve on a row its registry would skip (local-settings.ts useTimeProblems); so does this.
+      if (!allSchemeRowsTaken(schemes)) {
+        throw new Error(
+          `the Vault MCP settings override ${overridePath}: schemes holds a row the scheme registry does not take (not an object, an unknown provider, a config the provider refuses, a bad excludedRoots entry, or a repeated id)`,
+        );
+      }
       return schemes as SchemeInstanceConfig[];
     }
   }
-  let data: unknown = null;
-  try {
-    data = JSON.parse(readFileSync(join(resolve(root), ".obsidian", "plugins", CONVENTIONS_PLUGIN_DIRS[1], "data.json"), "utf8"));
-  } catch {
-    data = null;
+  const readJson = (dir: string): unknown => {
+    try {
+      return JSON.parse(readFileSync(join(resolve(root), ".obsidian", "plugins", dir, "data.json"), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  const own = readJson(CONVENTIONS_PLUGIN_DIRS[1]);
+  let adopted: unknown = null;
+  if (!own) {
+    const legacy = readJson(PRE_SPLIT_PLUGIN_DIR);
+    if (legacy) {
+      try {
+        adopted = splitSettings(legacy).host;
+      } catch {
+        adopted = null;
+      }
+    }
   }
-  return schemesOnLoad(data).schemes;
+  return schemesOnLoad(own, adopted).schemes;
 }
 
 /**

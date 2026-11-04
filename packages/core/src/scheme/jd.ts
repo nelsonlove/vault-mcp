@@ -14,11 +14,11 @@
 // DEFAULT_JD_CONFIG). See that file's header for the full shape catalogue and
 // the three predecessors it reconciles:
 //
-//   - area          XX-YY            e.g. 00-09, 90-99   (hyphen, not en-dash)
+//   - area          XX-YY            e.g. 00-09, 50-59   (hyphen, not en-dash)
 //   - category      XX               e.g. 06, 72
 //   - id            XX.YY / XX.YYY   e.g. 06.11, 06.110
-//   - expanded-item NNNNN            e.g. 92021 (expanded area) or 27001 (expanded category)
-//   - fractal-id    NNNNN.YY         e.g. 92021.10 (inside an expanded area)
+//   - expanded-item NNNNN            e.g. 52021 (expanded area) or 34001 (expanded category)
+//   - fractal-id    NNNNN.YY         e.g. 52021.10 (inside an expanded area)
 //
 // Everything else (e.g. "26 2.18") is malformed.
 //
@@ -77,13 +77,13 @@ interface ParsedId {
   decimal: string | null;
 }
 
-/** The area band (e.g. "90-99") that a 2-digit category (e.g. "92") belongs to. */
+/** The area band (e.g. "50-59") that a 2-digit category (e.g. "52") belongs to. */
 function areaOfCategory(cat: string): string {
   const d = cat[0];
   return `${d}0-${d}9`;
 }
 
-const RE_AREA = /^([0-9])0-([0-9])9$/; // 00-09, 10-19, ... 90-99 (digits must match)
+const RE_AREA = /^([0-9])0-([0-9])9$/; // 00-09, 10-19, ... 50-59 (digits must match)
 const RE_CATEGORY = /^[0-9]{2}$/;
 const RE_ID = /^([0-9]{2})\.([0-9]{2,3})$/; // widened to 2–3 digit decimal (survey)
 const RE_FRACTAL = /^([0-9]{5})\.([0-9]{2})$/;
@@ -128,7 +128,7 @@ function parseJdId(raw: string, cfg: JdConfig): ParsedId | null {
 
 /**
  * The 2-digit category of any JD id form, config-agnostic (dashboard semantics):
- *   06.12 -> 06, 06.110 -> 06, 92001 -> 92, 92021.10 -> 92, 00-09 -> 00, 06 -> 06.
+ *   06.12 -> 06, 06.110 -> 06, 52001 -> 52, 52021.10 -> 52, 00-09 -> 00, 06 -> 06.
  * A leading `+SUFFIX` (Extend-the-End) and any trailing title are stripped first.
  * Returns null when the token is not a recognizable JD id shape.
  * NOTE: a non-null result does NOT imply parseJdId accepts the token — categoryOf
@@ -509,20 +509,20 @@ export function jdProvider(cfg: JdConfig): ScopeProvider {
       // always the 2-digit CATEGORY — every kind here (bare category, id,
       // expanded-item, fractal-id) sits under one, and keying on it is what
       // lets an expanded category's members collate alongside their numeric
-      // neighbors within the enclosing area — e.g. area 20-29 with category
-      // 27 expanded: 27001/27002 must sort between 26.x and 28.x, not after
-      // 28.x/29.x the way comparing a raw 5-digit value against a bare 28
+      // neighbors within the enclosing area — e.g. area 30-39 with category
+      // 34 expanded: 34001/34002 must sort between 33.x and 35.x, not after
+      // 35.x/39.x the way comparing a raw 5-digit value against a bare 35
       // would put them (item 2 bug fix).
       //
       // `secondary` is scaled by 1000 so an expanded-item's own fractal
-      // children (kind "fractal-id", e.g. "92021.10" under item "92021")
+      // children (kind "fractal-id", e.g. "52021.10" under item "52021")
       // sort immediately after their parent and before the next item, not
       // detached from it by comparing the fractal's full 5-digit-item value
       // against a DIFFERENT scale than its parent uses (a post-merge
       // regression this reintroduced when item 2 first fixed the collation
       // above: keying a fractal-id on its raw item number instead of
       // matching its parent's [category, item] scale reordered
-      // ["92021","92021.10","92022"] to ["92021","92022","92021.10"]).
+      // ["52021","52021.10","52022"] to ["52021","52022","52021.10"]).
       // A bare item's secondary is itemNumber * 1000 (no remainder); a
       // fractal child's is itemNumber * 1000 + 1 + decimal (decimal is
       // 0-99, so the +1..+100 range never reaches the next item's bare
@@ -601,13 +601,13 @@ export function jdProvider(cfg: JdConfig): ScopeProvider {
     // expanded area / expanded category: next 5-digit sequential id.
     //   Convention (see JdConfig / task brief): the numeric space for an
     //   expanded AREA is <band-first-digit><4-digit sequence> (e.g. band
-    //   "90-99" -> 90000..99999, starting at 90001 when empty); for an
+    //   "50-59" -> 50000..59999, starting at 50001 when empty); for an
     //   expanded CATEGORY it's <2-digit category><3-digit sequence> (e.g.
-    //   category "27" -> 27000..27999, starting at 27001 when empty). Both
+    //   category "34" -> 34000..34999, starting at 34001 when empty). Both
     //   allocate strictly max(used)+1, not lowest-unused — a used id is
     //   never reclaimed by a later gap.
-    // expanded-item scope (e.g. "92021", allocating fractal sub-ids like
-    //   "92021.11"): not part of v1's allocate surface, so null — same
+    // expanded-item scope (e.g. "52021", allocating fractal sub-ids like
+    //   "52021.11"): not part of v1's allocate surface, so null — same
     //   "allocate ids, not categories" boundary as the plain-area case.
     nextFree(scope: Scope, notes: string[]): Address | null {
       if (scope.kind === "category" && cfg.expandedCategories.includes(scope.token)) {
@@ -625,10 +625,10 @@ export function jdProvider(cfg: JdConfig): ScopeProvider {
       }
       if (scope.kind === "category" && cfg.expandedAreas.includes(areaOfCategory(scope.token))) {
         // Item 1 bug fix: a category folded into an expanded AREA's band
-        // (e.g. "92" under band "90-99") has no per-category decimal space
+        // (e.g. "52" under band "50-59") has no per-category decimal space
         // of its own — the whole band uses 5-digit band-sequential ids
-        // instead. Allocating "92.10" here would be an invalid id; the band
-        // scope itself (kind "area", token "90-99") is where allocation
+        // instead. Allocating "52.10" here would be an invalid id; the band
+        // scope itself (kind "area", token "50-59") is where allocation
         // happens. See `allocatable` below for the structural (config-only)
         // version of this same judgment, which the tool layer uses to
         // report this as "never allocatable" rather than "exhausted".
@@ -747,7 +747,7 @@ export function validateJdConfig(config: unknown): string[] {
   if ("expandedCategories" in c && c.expandedCategories !== undefined) {
     const v = c.expandedCategories;
     if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
-      problems.push("expandedCategories must be an array of strings (e.g. [\"27\"])");
+      problems.push("expandedCategories must be an array of strings (e.g. [\"34\"])");
     } else {
       for (const token of v) {
         if (!isValidCategoryToken(token)) problems.push(`expandedCategories: "${token}" is not a valid category token (expected e.g. "34")`);

@@ -45,6 +45,17 @@ describe("the rail with no scheme", () => {
     }
   });
 
+  test("rows turned off (enabled: false) run no scheme pack and give no scheme finding, as no rows do", async () => {
+    const root = await vault();
+    try {
+      const res = await run(root, [{ ...JD[0], enabled: false }]);
+      assert.deepEqual(schemeFindings(res), []);
+      assert.ok(!res.coveredPackIds.includes(SCHEME_PACK_ID));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("a scheme's expansions change what it finds", async () => {
     const root = await vault();
     try {

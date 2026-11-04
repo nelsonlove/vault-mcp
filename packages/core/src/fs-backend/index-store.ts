@@ -238,7 +238,7 @@ function parseFrontmatter(text: string): { aliases: string[]; full: Record<strin
 // The scheme setting (`VAULT_MCP_SCHEMES`) is read in schemes-env.ts, which
 // vault.ts also reads (for the retired-scheme-ref refusal) without importing
 // this module; re-exported here so no importer moved.
-export { SCHEMES_ENV_VAR, fsJdModel, fsSchemeRegistry } from "./schemes-env.js";
+export { SCHEMES_ENV_VAR, fsJdModel, fsSchemeRegistry, jdModelFromSchemes } from "./schemes-env.js";
 export type { FsJdModel } from "./schemes-env.js";
 
 /**
@@ -249,7 +249,7 @@ export type { FsJdModel } from "./schemes-env.js";
  *   - area folder note      ("00-09 System/00-09 System.md")          → "00-09"
  *   - category folder note  ("…/00 System management/00 System …")    → "00.00"
  *   - id note               ("04.18 obsidian-execute-code.md")        → "04.18"
- *   - project note          ("92208 Concept note.md")                 → "92208"
+ *   - project note          ("52208 Concept note.md")                 → "52208"
  * A 5-digit prefix only counts inside an expanded area/category (the model's
  * expansions: a 5-digit filename prefix elsewhere is just a title that happens
  * to start with digits — "10000 Hours.md" is NOT id 10000); "NN.NN"-prefixed
