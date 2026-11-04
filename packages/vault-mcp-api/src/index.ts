@@ -71,6 +71,10 @@ export interface SyncDeclaration {
   /** The destination-unnamed list: the tool does not name where it writes, so a
    *  server change waiting anywhere in the vault counts. Structure only. */
   destinationUnnamed?: boolean;
+  /** A create: the tool makes a new note or file and never renames, moves or deletes one. Under the
+   *  host's `syncGuard.createMode: "warn"` (its default) it goes on with a warning when only Sync's
+   *  link to its server is behind. Structure only; not with `strictStatus`. */
+  create?: boolean;
 }
 
 /** Whether a spec carries any apiVersion-3 declaration. */

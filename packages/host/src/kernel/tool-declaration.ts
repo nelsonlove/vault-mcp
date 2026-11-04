@@ -39,6 +39,8 @@ export interface DeclaredSync {
   strictStatus: boolean;
   /** On the destination-unnamed list: a server change waiting anywhere in the vault counts. */
   destinationUnnamed: boolean;
+  /** A create: under `syncGuard.createMode: "warn"` it goes on with a warning when only Sync's link is behind. Absent on a declaration made before the flag: not a create. */
+  create?: boolean;
 }
 
 /** What the host enforces for one registered satellite tool. Every field absent means "a v2 tool". */

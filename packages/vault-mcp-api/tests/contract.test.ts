@@ -242,10 +242,25 @@ test("a v3 declaration crosses the real host registry intact and is frozen on th
   // The host keeps the value map without a prototype (#553 review 2), so the expected map has none either.
   assert.deepEqual(entry.declaration, {
     protection: { arg: "dry_run", values: Object.assign(Object.create(null), { true: "exempt" }), otherwise: "key" },
-    sync: { kind: "structure", strictStatus: true, destinationUnnamed: true },
+    sync: { kind: "structure", strictStatus: true, destinationUnnamed: true, create: false },
     paths: ["path"],
   });
   assert.ok(Object.isFrozen(entry.declaration));
+});
+
+test("a v3 create declaration (sync.create) crosses the real host registry intact", () => {
+  const { registry, plugin } = hostWorld();
+  publishTools(plugin, [{
+    name: "make",
+    description: "make a new note",
+    inputSchema: { path: z.string() },
+    protection: "key",
+    sync: { kind: "structure", create: true },
+    paths: ["path"],
+    handler: () => ({}),
+  }]);
+  const [entry] = registry.entries();
+  assert.deepEqual(entry.declaration?.sync, { kind: "structure", strictStatus: false, destinationUnnamed: false, create: true });
 });
 
 test("a malformed v3 declaration is refused by the real host: publishTools registers nothing and the host throws", () => {
