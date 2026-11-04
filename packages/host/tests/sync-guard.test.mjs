@@ -26,8 +26,8 @@ const synced = (over = {}) => ({ state: "fields", fields: { ready: true, error: 
 const behind = () => synced({ socketOpen: false });
 
 describe("settings", () => {
-  test("ships off, refuse, 30 s (120 s for a rename, move or delete), warn on unknown", () => {
-    assert.deepEqual({ ...DEFAULT_SYNC_GUARD }, { enabled: false, mode: "refuse", waitSeconds: 30, strictWaitSeconds: 120, onUnknown: "warn" });
+  test("ships off, refuse, 30 s (120 s for a rename, move or delete), warn on unknown, creates go on with a warning", () => {
+    assert.deepEqual({ ...DEFAULT_SYNC_GUARD }, { enabled: false, mode: "refuse", waitSeconds: 30, strictWaitSeconds: 120, onUnknown: "warn", createMode: "warn" });
     assert.deepEqual(normalizeSyncGuard(undefined), { ...DEFAULT_SYNC_GUARD });
   });
   test("a hand-edited value is coerced, never a crash; enabled only on a literal true; the wait is clamped", () => {
@@ -40,6 +40,9 @@ describe("settings", () => {
     assert.equal(normalizeSyncGuard({ waitSeconds: 1e9 }).waitSeconds, MAX_WAIT_SECONDS);
     assert.equal(normalizeSyncGuard({ mode: "warn", onUnknown: "refuse" }).mode, "warn");
     assert.equal(normalizeSyncGuard({ mode: "warn", onUnknown: "refuse" }).onUnknown, "refuse");
+    assert.equal(normalizeSyncGuard({ createMode: "hold" }).createMode, "hold");
+    assert.equal(normalizeSyncGuard({ createMode: "refuse" }).createMode, "warn", "an unknown value is the default");
+    assert.equal(normalizeSyncGuard({ enabled: true }).createMode, "warn", "a saved value without the key gets the default");
   });
 });
 
@@ -186,7 +189,8 @@ describe("createSyncGuard — one wait for a burst, not one per call", () => {
     let state = behind();
     const sleeps = [];
     const guard = createSyncGuard(() => ({
-      settings: normalizeSyncGuard({ enabled: true, waitSeconds: 10 }),
+      // createMode hold: this test is about the hold, which a create meets only when it is held (a create under warn does not wait).
+      settings: normalizeSyncGuard({ enabled: true, waitSeconds: 10, createMode: "hold" }),
       read: () => state,
       now: () => t,
       sleep: async (ms) => { sleeps.push(ms); t += ms; },
@@ -503,7 +507,7 @@ describe("a rename, move or delete polls up to strictWaitSeconds (120 s) for a F
   });
   test("every other caller keeps waitSeconds: a create and a content write wait 30 s, not 120 s", async () => {
     const off = synced({ socketOpen: false });
-    const create = timed(() => off);
+    const create = timed(() => off, { createMode: "hold" });
     assert.equal((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, create.deps)).refuse.code, SYNC_BEHIND);
     assert.equal(create.elapsed(), 30_000);
     const append = timed(() => off);
@@ -535,5 +539,157 @@ describe("a rename, move or delete polls up to strictWaitSeconds (120 s) for a F
     t += 40_000;
     await guard("obsidian_move_note", { from: "A.md", to: "B.md" });
     assert.ok(sleeps.length > n, "a connection hold lasts 30 s, as before, even after a 120 s wait");
+  });
+});
+
+// Nelson, 2026-11-04 (relayed by [coordinator-pro] system): "make that change. That is, let creates through."
+// A create that finds Sync behind only because of its link to the server goes on at once with a warning
+// (`createMode: "warn"`, the default), unless a server change waits at its own path. Renames, moves,
+// deletes and trashes stay held.
+describe("createMode warn: creates go on while only the link is behind; renames, moves and deletes stay held", () => {
+  const LINK_CAUSES = {
+    disconnected: synced({ socketOpen: false }),
+    "not ready": synced({ ready: false }),
+    error: synced({ error: true }),
+    paused: synced({ pause: true }),
+    silent: synced({ lastMessageTs: NOW - STALE_SERVER_MS - 1000 }),
+  };
+  const CREATES = [
+    ["obsidian_create_note", { class: "Note", folder: "Inbox", title: "N" }],
+    ["obsidian_create_note_from_template", { template_path: "T.md", target_path: "Inbox/N.md" }],
+    ["obsidian_write_note", { path: "Inbox/N.md", content: "x", overwrite: false }],
+    ["obsidian_write_note", { path: "Inbox/N.md", content: "x" }],
+    ["obsidian_write_file", { path: "Inbox/N.base", content: "x" }],
+    ["obsidian_write_notes", { path: "Inbox/N.md", create_only: true }],
+    ["obsidian_periodic_note", { period: "daily" }],
+    ["obsidian_base_create", { path: "Bases/X.base", name: "N" }],
+  ];
+  const HELD = [
+    ["obsidian_move_note", { from: "A.md", to: "B.md" }],
+    ["obsidian_move_notes", { moves: [{ from: "A.md", to: "B.md" }] }],
+    ["obsidian_move_file", { from: "A.base", to: "B.base" }],
+    ["obsidian_delete_note", { path: "A.md" }],
+    ["obsidian_trash", { path: "A.md" }],
+    ["obsidian_assign_address", { path: "A.md", scope: "06" }],
+    ["obsidian_refile_address", { path: "A.md" }],
+    ["obsidian_renumber_address", { path: "A.md", to_address: "06.20" }],
+  ];
+
+  test("every create road, for every link cause, goes on at once with a sync_behind warning", async () => {
+    for (const [cause, state] of Object.entries(LINK_CAUSES)) {
+      for (const [tool, args] of CREATES) {
+        const c = clock([state]);
+        const d = await decideSync(tool, args, c.deps({}));
+        assert.ok(d && d.warn, `${tool} (${cause}): a warning, not a refusal`);
+        assert.equal(d.code, SYNC_BEHIND, tool);
+        assert.match(d.warn, /the create went on/, tool);
+        assert.equal(c.sleeps.length, 0, `${tool} (${cause}): no wait`);
+      }
+    }
+  });
+
+  test("every rename, move, delete and trash is still refused for every link cause", async () => {
+    for (const [cause, state] of Object.entries(LINK_CAUSES)) {
+      for (const [tool, args] of HELD) {
+        const d = await decideSync(tool, args, clock([state]).deps({ waitSeconds: 1, strictWaitSeconds: 1 }));
+        assert.equal(d?.refuse?.code, SYNC_BEHIND, `${tool} (${cause})`);
+      }
+    }
+  });
+
+  test("a satellite tool is a create only when it declares create: true; a structure tool without it is held, strict or not", async () => {
+    const create = { kind: "structure", strictStatus: false, destinationUnnamed: false, create: true };
+    const plain = { kind: "structure", strictStatus: false, destinationUnnamed: false };
+    const rename = { kind: "structure", strictStatus: true, destinationUnnamed: false };
+    assert.ok((await decideSync("sat_make_note", { path: "Inbox/N.md" }, clock([behind()]).deps({}), create)).warn);
+    assert.equal((await decideSync("sat_assign", { path: "A.md" }, clock([behind()]).deps({ waitSeconds: 1 }), plain)).refuse.code, SYNC_BEHIND, "no flag: it may be a move");
+    assert.equal((await decideSync("sat_rename_note", { path: "A.md" }, clock([behind()]).deps({ strictWaitSeconds: 1 }), rename)).refuse.code, SYNC_BEHIND);
+    assert.equal((await decideSync("obsidian_move_note", { from: "A.md", to: "B.md" }, clock([behind()]).deps({ strictWaitSeconds: 1 }), create)).refuse.code, SYNC_BEHIND, "a declaration never rules a tool the host knows");
+  });
+
+  test("a create whose own path has a server change waiting is still held while the link is down: it waits, then is refused", async () => {
+    const state = synced({ socketOpen: false, pendingPaths: ["Inbox/N.md"] });
+    for (const [tool, args] of [["obsidian_write_note", { path: "Inbox/N.md", overwrite: false }], ["obsidian_create_note", { folder: "Inbox", title: "N" }], ["obsidian_write_notes", { path: "Inbox/N.md", create_only: true }]]) {
+      const c = clock([state]);
+      const d = await decideSync(tool, args, c.deps({ waitSeconds: 3 }));
+      assert.equal(d.refuse.code, SYNC_BEHIND, tool);
+      assert.match(d.refuse.message, /a server change at or under 'Inbox\/N\.md'/, tool);
+      assert.equal(c.sleeps.reduce((a, b) => a + b, 0), 3000, `${tool}: waited the whole wait`);
+    }
+  });
+
+  test("a folder holding the create's path, or a change under a target folder, counts as its own path", async () => {
+    assert.equal((await decideSync("obsidian_write_note", { path: "Inbox/N.md", overwrite: false }, clock([synced({ socketOpen: false, pendingPaths: ["Inbox"] })]).deps({ waitSeconds: 0 }))).refuse.code, SYNC_BEHIND);
+    assert.ok((await decideSync("obsidian_write_note", { path: "Inbox/N.md", overwrite: false }, clock([synced({ socketOpen: false, pendingPaths: ["Other/X.md"] })]).deps({}))).warn, "a change elsewhere does not hold the create");
+  });
+
+  test("a create that does not name where it writes is held by a server change waiting anywhere", async () => {
+    const state = synced({ socketOpen: false, pendingPaths: ["Elsewhere/X.md"] });
+    for (const [tool, args] of [["obsidian_periodic_note", { period: "daily" }], ["obsidian_base_create", { path: "Bases/X.base", name: "N" }]]) {
+      const d = await decideSync(tool, args, clock([state]).deps({ waitSeconds: 0 }));
+      assert.equal(d.refuse.code, SYNC_BEHIND, tool);
+      assert.match(d.refuse.message, /does not name where it writes/, tool);
+    }
+  });
+
+  test("a create held for its path goes on with the warning once that change is pulled, even while the link stays down", async () => {
+    const c = clock([synced({ socketOpen: false, pendingPaths: ["Inbox/N.md"] }), synced({ socketOpen: false, pendingPaths: ["Inbox/N.md"] }), synced({ socketOpen: false, pendingPaths: [] })]);
+    const d = await decideSync("obsidian_write_note", { path: "Inbox/N.md", overwrite: false }, c.deps({ waitSeconds: 10 }));
+    assert.match(d.warn, /the create went on/);
+    assert.equal(c.sleeps.length, 2);
+  });
+
+  test("createMode hold: a create follows the mode again (waits, then is refused), as before this change", async () => {
+    const c = clock([behind()]);
+    const d = await decideSync("obsidian_write_note", { path: "Inbox/N.md", overwrite: false }, c.deps({ waitSeconds: 2, createMode: "hold" }));
+    assert.equal(d.refuse.code, SYNC_BEHIND);
+    assert.equal(c.sleeps.reduce((a, b) => a + b, 0), 2000);
+  });
+
+  test("mode wait and mode warn are unchanged for creates; content writes are unchanged", async () => {
+    assert.match((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, clock([behind()]).deps({ mode: "wait", waitSeconds: 1 }))).warn, /the create went on/);
+    assert.ok((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, clock([behind()]).deps({ mode: "warn" }))).warn);
+    const c = clock([behind()]);
+    assert.match((await decideSync("obsidian_append_note", { path: "N.md", content: "x" }, c.deps({ waitSeconds: 1 }))).warn, /after waiting 1 s/);
+  });
+
+  test("Sync that cannot be read still follows onUnknown for a create", async () => {
+    const unknown = { state: "unknown", why: "no instance" };
+    assert.equal((await decideSync("obsidian_write_note", { path: "N.md", overwrite: false }, clock([unknown]).deps({ onUnknown: "refuse" }))).refuse.code, SYNC_UNKNOWN);
+  });
+
+  test("createSyncGuard: a create that goes on sets no hold, so the next move still waits; a create does not clear a move's hold", async () => {
+    let t = NOW;
+    const state = behind();
+    const sleeps = [];
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 10, strictWaitSeconds: 10 }), read: () => state, now: () => t, sleep: async (ms) => { sleeps.push(ms); t += ms; }, pollMs: 1000 }));
+    assert.ok((await guard("obsidian_write_note", { path: "N.md", overwrite: false })).warn);
+    assert.equal(sleeps.length, 0);
+    assert.equal((await guard("obsidian_move_note", { from: "A.md", to: "B.md" })).refuse.code, SYNC_BEHIND);
+    const waited = sleeps.length;
+    assert.ok(waited > 0, "the move waited: no hold from the create");
+    assert.ok((await guard("obsidian_write_note", { path: "M.md", overwrite: false })).warn);
+    assert.equal((await guard("obsidian_move_note", { from: "C.md", to: "D.md" })).refuse.code, SYNC_BEHIND);
+    assert.equal(sleeps.length, waited, "the move's hold still stands after a create");
+  });
+
+  test("through makeGuarded: a create runs, and carries sync_warning on its result and its journal record", async () => {
+    const { kernel, records } = kernelHarness();
+    let t = NOW;
+    // The clock moves with each sleep, so the move's wait ends (a fixed clock would wait forever).
+    const guard = createSyncGuard(() => ({ settings: normalizeSyncGuard({ enabled: true, waitSeconds: 1, strictWaitSeconds: 1 }), read: () => behind(), now: () => t, sleep: async (ms) => { t += ms; }, pollMs: 500 }));
+    const g = makeGuarded({ getSettings: () => ({ readOnly: false, allowlist: [] }), kernel, actor: () => ACTOR, syncGuard: guard });
+    const flag = { ran: false };
+    const res = await g(RW, okHandler(flag), "obsidian_write_note")({ path: "Inbox/N.md", content: "x", overwrite: false, idempotency_key: "kc1" }, {});
+    assert.equal(flag.ran, true);
+    assert.match(res.structuredContent.sync_warning, /the create went on/);
+    assert.match(res.content.at(-1).text, /^Warning \[sync_behind\]/);
+    await tick();
+    assert.match(records().at(-1).syncWarning, /the create went on/);
+    const moved = { ran: false };
+    const m = await g(RW, okHandler(moved), "obsidian_move_note")({ from: "A.md", to: "B.md", idempotency_key: "km1" }, {});
+    assert.equal(m.isError, true);
+    assert.match(m.content[0].text, /^Error \[sync_behind\]/);
+    assert.equal(moved.ran, false);
   });
 });
