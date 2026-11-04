@@ -179,13 +179,14 @@ interface VaultMcpSettings {
    */
   enforceRecordImmutability: boolean;
   /**
-   * The refusal log (#618): journal every refused write call as one line with
-   * `outcome: "refused"`, its error `code` and its `codeFamily`, whatever
-   * stage refused it (the schema, the profile, the allowlist, the write scope,
-   * the protection, the Sync guard, the record guard, a rev conflict, the
-   * accept guard, a tool's own refusal). The line keeps no argument value, so
-   * no note text reaches it. DEFAULT OFF: off, the journal is what it was
-   * before. Read live per call.
+   * The refusal log (#618): mark refused write calls in the journal. A call
+   * refused before the queue (the schema, the profile, the allowlist, the
+   * write scope, the protection, the Sync guard, …) gets a new line with
+   * `outcome: "refused"`, `refusal` (the error code) and `codeFamily`, and no
+   * argument value. A call refused at or after dequeue (the record guard, a
+   * rev conflict, the accept guard, a tool's own refusal) keeps its own record
+   * and gains only `refusal` and `codeFamily`. Refused reads are not marked.
+   * DEFAULT OFF: off, the journal is what it was before. Read live per call.
    */
   refusalLog: boolean;
   /**

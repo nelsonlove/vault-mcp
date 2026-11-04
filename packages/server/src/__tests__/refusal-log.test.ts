@@ -54,7 +54,7 @@ type Res = { isError?: boolean; content: Array<{ text: string }>; thrown?: strin
 type Rec = { op: string; outcome: string; refusal?: string; codeFamily?: string; suppressed?: number; argsDigest?: Record<string, unknown>; target?: { path?: string; paths?: string[] }; actor: { transport: string } };
 
 /** One server with its own journal directory, so each test reads only its own lines. */
-async function harness(opts: { on?: boolean; allowWrites?: boolean; profile?: string; limiter?: { admit: (key: string, flush: (count: number) => void) => boolean } } = {}) {
+async function harness(opts: { on?: boolean; allowWrites?: boolean; profile?: string; limiter?: InstanceType<typeof import("@vault-mcp/core").RefusalRateLimiter> } = {}) {
   const dir = path.join(journalRoot, `j${++journalN}`);
   const on = opts.on ?? true;
   const kernel: FsWriteKernel = new Kernel({ journalDir: dir, identity: { vault: "test", version: "0" }, refusal: fsMode.refusalPolicy(() => on, opts.limiter as never) });
@@ -262,6 +262,75 @@ describe("review 1 of #619", () => {
     assert.equal(sup.length, 1);
     assert.equal(sup[0].suppressed, 3);
     assert.equal(sup[0].refusal, "fs_writes_disabled");
+    await h.close();
+  });
+});
+
+describe("#619 review 2 (minor findings)", () => {
+  const kernelAt = (name: string, limiter?: InstanceType<typeof import("@vault-mcp/core").RefusalRateLimiter>) =>
+    new Kernel({ journalDir: path.join(journalRoot, name), identity: { vault: "test", version: "0" }, refusal: fsMode.refusalPolicy(() => true, limiter as never) });
+  const recordsAt = async (name: string): Promise<Rec[]> => {
+    const dir = path.join(journalRoot, name);
+    let out = "";
+    try {
+      for (const f of await readdir(dir)) out += await readFile(path.join(dir, f), "utf8");
+    } catch {
+      /* none */
+    }
+    return out.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Rec);
+  };
+
+  test("a refusal returned as an envelope inside runMutation is marked like a thrown one", async () => {
+    const k = kernelAt("env-mark");
+    await k.runMutation("obsidian_replace_text", { path: "Notes/P.md" }, { path: "Notes/P.md" }, async () => ({ isError: true, content: [{ type: "text", text: "Error [no_match]: x" }] }));
+    await k.runMutation("obsidian_write_note", { path: "Notes/Q.md" }, { path: "Notes/Q.md" }, async () => ({ isError: true, content: [{ type: "text", text: "Error [create_failed]: written in part" }] }));
+    const [one, two] = await recordsAt("env-mark");
+    assert.equal(one.refusal, "no_match");
+    assert.equal(one.codeFamily, "tool");
+    assert.ok(one.argsDigest, "the record is kept whole");
+    assert.equal(two.refusal, undefined, "a code off the allow list is not marked");
+  });
+
+  test("a window keeps a summary only, never the call's arguments", async () => {
+    const limiter = new core.RefusalRateLimiter();
+    const k = kernelAt("summary", limiter);
+    await k.journalRefusal("obsidian_append_note", { path: MARK }, "fs_writes_disabled");
+    const windows = [...(limiter as unknown as { windows: Map<string, { summary: Record<string, unknown> }> }).windows.values()];
+    assert.equal(windows.length, 1);
+    assert.deepEqual(Object.keys(windows[0].summary).sort(), ["actor", "codeFamily", "op", "refusal"]);
+    assert.ok(!JSON.stringify(windows[0].summary).includes(MARK));
+  });
+
+  test("a pending suppressed count is written on a clean shutdown", async () => {
+    const limiter = new core.RefusalRateLimiter({ max: 1, schedule: () => {} });
+    const k = kernelAt("flush-exit", limiter);
+    for (let i = 0; i < 4; i++) await k.journalRefusal("obsidian_append_note", { path: "Notes/P.md" }, "fs_writes_disabled");
+    assert.equal((await recordsAt("flush-exit")).length, 1);
+    await k.flushRefusals();
+    const sup = (await recordsAt("flush-exit")).filter((r) => r.suppressed !== undefined);
+    assert.equal(sup.length, 1);
+    assert.equal(sup[0].suppressed, 3);
+  });
+
+  test("the front flushes the refusal log on SIGTERM and SIGINT, then exits with the usual code", async () => {
+    const { installRefusalFlushOnExit } = await import("../front.js");
+    const handlers = new Map<string, () => void>();
+    const exits: number[] = [];
+    let flushed = 0;
+    const proc = { once: (ev: string, fn: () => void) => { handlers.set(ev, fn); return proc; }, exit: (c: number) => { exits.push(c); } };
+    installRefusalFlushOnExit(proc as never, async () => { flushed++; });
+    assert.deepEqual([...handlers.keys()].sort(), ["SIGINT", "SIGTERM", "beforeExit"]);
+    handlers.get("SIGTERM")!();
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(flushed, 1);
+    assert.deepEqual(exits, [143]);
+  });
+
+  test("a frontmatter get refused on its path writes no line", async () => {
+    const h = await harness();
+    const r = await h.call("obsidian_manage_frontmatter", { path: "../outside.md", key: "title", op: "get" });
+    assert.ok(r.isError || r.thrown, text(r));
+    assert.equal(await h.raw(), "");
     await h.close();
   });
 });

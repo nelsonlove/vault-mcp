@@ -32,7 +32,7 @@ import {
   type AuthConfig,
 } from "./auth.js";
 import { createPresenceMonitor } from "./presence.js";
-import { createFsHandler, isFsWritesEnabled } from "./fs-mode.js";
+import { createFsHandler, isFsWritesEnabled, flushFsRefusals } from "./fs-mode.js";
 import { createLiveProxy } from "./live-proxy.js";
 import { createSemanticProxy } from "./semantic-proxy.js";
 import { loadProfileMap, createProfileGate, credentialOf, profileOf, type ProfileMap } from "./profiles.js";
@@ -320,6 +320,33 @@ export function createEbadfGuard(deps: {
   };
 }
 
+/**
+ * A clean shutdown writes the refusal log's pending `suppressed` counts first
+ * (#619 review 2): its window timers do not keep the process alive, so a count
+ * open at exit was lost. On SIGTERM or SIGINT the counts are flushed, then the
+ * process exits with the signal's usual code (143, 130), as it did before
+ * without a handler. `beforeExit` flushes too. Idempotent per process.
+ */
+export function installRefusalFlushOnExit(
+  proc: Pick<NodeJS.Process, "once"> & { exit: (code: number) => void } = process,
+  flush: () => Promise<void> = flushFsRefusals,
+): void {
+  let done = false;
+  const once = (): Promise<void> => {
+    if (done) return Promise.resolve();
+    done = true;
+    return flush().catch(() => {});
+  };
+  for (const [sig, code] of [["SIGTERM", 143], ["SIGINT", 130]] as const) {
+    proc.once(sig, () => {
+      void once().finally(() => proc.exit(code));
+    });
+  }
+  proc.once("beforeExit", () => {
+    void once();
+  });
+}
+
 /** VAULT_MCP_TRUST_PROXY: "true"/"false", a hop count, or Express's own words ("loopback", a CIDR list). */
 export function parseTrustProxy(raw: string): boolean | number | string {
   const v = raw.trim().toLowerCase();
@@ -496,4 +523,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === _thisFile) {
       `[front] listening on http://${HOST}:${PORT}/mcp — presence-aware (socket: ${socketPath})`,
     );
   });
+
+  installRefusalFlushOnExit();
 }

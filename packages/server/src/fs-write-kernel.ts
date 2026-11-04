@@ -308,6 +308,11 @@ export class FsWriteJournal {
     this.tail = next;
     return next;
   }
+
+  /** Resolves once every append made so far has been attempted. */
+  drain(): Promise<void> {
+    return this.tail;
+  }
 }
 
 // ── The refusal log's per-call mark (#618) ───────────────────────────────────
@@ -349,6 +354,14 @@ export interface FsWriteKernelOpts {
  * from @vault-mcp/core, whose vault functions bind VAULT_PATH when it is first
  * loaded, so a test that loads this module first must not pin the vault root.
  */
+/** What a `suppressed` line needs (core's RefusalSummary): never a call's arguments. */
+export interface FsRefusalSummary {
+  op: string;
+  actor: unknown;
+  refusal: string;
+  codeFamily: string;
+}
+
 export interface FsRefusalPolicy {
   /** Read per call; a throw reads as off. */
   on: () => boolean;
@@ -361,7 +374,13 @@ export interface FsRefusalPolicy {
   /** A path as a new refused line records it (core's refusalPath). */
   path: (p: string) => string;
   /** The cap on new refused lines (a core RefusalRateLimiter): `admit(key, flush)`. */
-  limiter: { admit: (key: string, flush: (count: number) => void) => boolean };
+  /** The refusal code of a RETURNED error envelope, or undefined (core's refusalCodeOf). */
+  codeOf: (result: unknown) => string | undefined;
+  /** The cap on new refused lines (a core RefusalRateLimiter). A window keeps only the summary it is given, never the args. */
+  limiter: {
+    admit: (key: string, summary: FsRefusalSummary, flush: (summary: FsRefusalSummary, count: number) => void) => boolean;
+    flushAll: () => void;
+  };
 }
 
 export class FsWriteKernel {
@@ -408,15 +427,27 @@ export class FsWriteKernel {
     const policy = this.refusal;
     if (!policy || !this.refusalLogOn() || policy.codeOfThrown({ code }) === undefined) return Promise.resolve();
     const codeFamily = policy.family(code);
-    const flush = (count: number) => {
-      void this.journal.append({ ts: this.now().toISOString(), op, target: {}, actor: this.actor(), outcome: "refused", refusal: code, codeFamily, suppressed: count, durationMs: 0, queueWaitMs: 0 });
-    };
-    if (!policy.limiter.admit(`${this.connection}|${code}`, flush)) return Promise.resolve();
+    if (!policy.limiter.admit(`${this.connection}|${code}`, { op, actor: this.actor(), refusal: code, codeFamily }, this.flushSuppressed)) return Promise.resolve();
     const capped: FsJournalTarget = {
       ...(target.path !== undefined ? { path: policy.path(target.path) } : {}),
       ...(target.paths !== undefined ? { paths: target.paths.map(policy.path) } : {}),
     };
     return this.journal.append({ ts: this.now().toISOString(), op, target: capped, actor: this.actor(), outcome: "refused", refusal: code, codeFamily, durationMs: 0, queueWaitMs: 0 });
+  }
+
+  /** The `suppressed` line of a window that ended, from the window's summary only. */
+  private readonly flushSuppressed = (s: FsRefusalSummary, count: number): void => {
+    void this.journal.append({ ts: this.now().toISOString(), op: s.op, target: {}, actor: s.actor as FsJournalActor, outcome: "refused", refusal: s.refusal, codeFamily: s.codeFamily, suppressed: count, durationMs: 0, queueWaitMs: 0 });
+  };
+
+  /**
+   * Write every pending `suppressed` count now (#619 review 2), for a clean
+   * shutdown: the window timers do not keep the process alive, so a count
+   * still open at exit would be lost. Resolves once the lines are appended.
+   */
+  async flushRefusals(): Promise<void> {
+    this.refusal?.limiter.flushAll();
+    await this.journal.drain();
   }
 
   /** mtime (ms) of a vault-relative path, or undefined (missing file, no resolver). */
@@ -457,7 +488,13 @@ export class FsWriteKernel {
       let error: string | undefined;
       let refusedCode: string | undefined;
       try {
-        return await fn();
+        const result = await fn();
+        // The refusal log (#618): a refusal RETURNED as an envelope is marked as a thrown one is (#619 review 2).
+        if (this.refusalLogOn()) {
+          const code = this.refusal?.codeOf(result);
+          if (this.refusal?.atDequeue(code)) refusedCode = code;
+        }
+        return result;
       } catch (e) {
         outcome = "error";
         error = e instanceof Error ? e.message : String(e);

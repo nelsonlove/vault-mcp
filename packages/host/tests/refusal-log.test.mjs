@@ -532,12 +532,55 @@ describe("new refused lines are capped per session and code (review 1, minor)", 
     let now = 0;
     const flushed = [];
     const lim = new RefusalRateLimiter({ max: 1, windowMs: 10, now: () => now, schedule: () => {} });
-    assert.equal(lim.admit("k", (n) => flushed.push(n)), true);
-    assert.equal(lim.admit("k", (n) => flushed.push(n)), false);
-    assert.equal(lim.admit("k", (n) => flushed.push(n)), false);
+    assert.equal(lim.admit("k", { op: "t", actor: {}, refusal: "c", codeFamily: "tool" }, (_s, n) => flushed.push(n)), true);
+    assert.equal(lim.admit("k", { op: "t", actor: {}, refusal: "c", codeFamily: "tool" }, (_s, n) => flushed.push(n)), false);
+    assert.equal(lim.admit("k", { op: "t", actor: {}, refusal: "c", codeFamily: "tool" }, (_s, n) => flushed.push(n)), false);
     now = 10;
-    assert.equal(lim.admit("k", (n) => flushed.push(n)), true);
+    assert.equal(lim.admit("k", { op: "t", actor: {}, refusal: "c", codeFamily: "tool" }, (_s, n) => flushed.push(n)), true);
     assert.deepEqual(flushed, [2]);
+  });
+});
+
+// ── #619 review 2 (minor findings) ───────────────────────────────────────────
+
+describe("#619 review 2: the limiter keeps a summary, never the args", () => {
+  test("a window holds op, actor, refusal and family only; a note body in the args stays out of memory", () => {
+    const { kernel } = memKernel(true);
+    const actor = { transport: "mcp", connection: "c", session: "s-9" };
+    kernel.journalRefusal({ op: "obsidian_append_note", args: { path: "A.md", content: MARK }, actor }, "protection_required");
+    const windows = [...kernel.refusalLimiter["windows"].values()];
+    assert.equal(windows.length, 1);
+    assert.deepEqual(windows[0].summary, { op: "obsidian_append_note", actor, refusal: "protection_required", codeFamily: "protection" });
+    assert.ok(!JSON.stringify(windows[0].summary).includes(MARK));
+  });
+
+  test("the suppressed line takes the summary of the call that opened the window, as the comment says", () => {
+    const got = [];
+    const lim = new RefusalRateLimiter({ max: 1, windowMs: 10, now: () => 0, schedule: () => {} });
+    const a = { op: "first", actor: {}, refusal: "c", codeFamily: "tool" };
+    const b = { op: "second", actor: {}, refusal: "c", codeFamily: "tool" };
+    lim.admit("k", a, (s, n) => got.push([s.op, n]));
+    lim.admit("k", b, (s, n) => got.push(["second-flush:" + s.op, n]));
+    lim.flushAll();
+    assert.deepEqual(got, [["first", 1]]);
+  });
+});
+
+describe("#619 review 2: a refused read is not marked", () => {
+  test("a frontmatter get refused by the allowlist writes no line", async () => {
+    const h = await harness(VAULT, { settings: { allowlist: ["Notes/"] } });
+    const r = await h.call("obsidian_manage_frontmatter", { path: "Other/O.md", key: "title", op: "get" });
+    assert.match(errText(r), /out_of_allowlist/);
+    assert.equal(await h.raw(), "");
+    await h.close();
+  });
+
+  test("a frontmatter set refused by the allowlist is still marked", async () => {
+    const h = await harness(VAULT, { settings: { allowlist: ["Notes/"] } });
+    await h.call("obsidian_manage_frontmatter", { path: "Other/O.md", key: "title", op: "set", value: "x", if_rev: 1 });
+    const [line] = await h.lines();
+    assert.equal(line.refusal, "out_of_allowlist");
+    await h.close();
   });
 });
 

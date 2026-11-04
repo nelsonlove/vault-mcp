@@ -67,6 +67,7 @@ import {
   refusalCodeOfThrown,
   refusalFamily,
   isDequeueRefusal,
+  isReadBranch,
   refusalPath,
   RefusalRateLimiter,
   INPUT_VALIDATION_CODE,
@@ -203,6 +204,14 @@ export function getFsWriteKernel(): FsWriteKernel {
 }
 
 /**
+ * Write the process kernel's pending `suppressed` counts (#619 review 2), for a
+ * clean shutdown. A no-op when no FS write kernel was ever made.
+ */
+export async function flushFsRefusals(): Promise<void> {
+  await processKernel?.flushRefusals();
+}
+
+/**
  * The refusal log (#618): a truthy VAULT_MCP_REFUSAL_LOG journals every
  * refused write call as one `refused` line (code and code family, no argument
  * value) in the FS write journal. The same meaning as the plugin's
@@ -216,7 +225,7 @@ export function isRefusalLogEnabled(env: NodeJS.ProcessEnv = process.env): boole
 
 /** The FS write kernel's refusal policy: a switch (default: the environment variable, per call) and core's codes. */
 export function refusalPolicy(on: () => boolean = () => isRefusalLogEnabled(), limiter: RefusalRateLimiter = new RefusalRateLimiter()): FsRefusalPolicy {
-  return { on, codeOfThrown: refusalCodeOfThrown, family: refusalFamily, atDequeue: isDequeueRefusal, path: refusalPath, limiter };
+  return { on, codeOfThrown: refusalCodeOfThrown, codeOf: refusalCodeOf, family: refusalFamily, atDequeue: isDequeueRefusal, path: refusalPath, limiter };
 }
 
 const MAX_REFUSED_PATHS = 20;
@@ -250,7 +259,7 @@ function wireRefusalLog(server: McpServer, kernelOpt: FsWriteKernel | undefined)
       try {
         return await validate(tool, args, toolName);
       } catch (e) {
-        if (mutating(tool) && on()) await kernel().journalRefusal(toolName, refusalTarget(args), INPUT_VALIDATION_CODE);
+        if (mutating(tool) && on() && !isReadBranch(toolName, args)) await kernel().journalRefusal(toolName, refusalTarget(args), INPUT_VALIDATION_CODE);
         throw e;
       }
     };
@@ -261,7 +270,8 @@ function wireRefusalLog(server: McpServer, kernelOpt: FsWriteKernel | undefined)
     if (!mutating(def)) return register(name, def, handler);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return register(name, def, async (args: any, extra: any) => {
-      if (!on()) return handler(args, extra);
+      // A write tool's read branch (a frontmatter get) is a read: its refusal is not marked.
+      if (!on() || isReadBranch(name, args)) return handler(args, extra);
       const mark = { journaled: false };
       let result: unknown;
       try {
