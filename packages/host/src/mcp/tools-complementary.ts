@@ -127,36 +127,48 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
         }
         // The record folders and the archive pattern (#482): a folder that is one, or sits inside one, is kept,
         // as the moves keep a record. The child name is one no folder can have, so only the folder's own path is judged.
-        if (inRecordFolder(`${p}/\u0000`, normalizeRecordFolders(ctx.recordFolders?.()))) {
+        const records = normalizeRecordFolders(ctx.recordFolders?.());
+        if (inRecordFolder(`${p}/\u0000`, records)) {
           return codedError("record_immutable", `'${p}' is a record folder or archive, or sits inside one; it is not trashed. Nothing was written.`);
         }
-        // What Obsidian indexes: every file, then every subfolder.
-        let files = 0;
-        const subfolders: string[] = [];
-        const walk = (f: TFolder) => {
-          for (const c of f.children ?? []) {
-            if (c instanceof TFolder) {
-              subfolders.push(c.path);
-              walk(c);
-            } else files++;
+        const notEmpty = () =>
+          codedError("folder_not_empty", `'${p}' holds at least one file; only an empty folder is trashed. Move or trash the files first. Nothing was written.`);
+        // What Obsidian indexes, read synchronously: the subfolders, and whether any file is there (it stops at the first).
+        const indexed = (): { file: boolean; subfolders: string[] } => {
+          const subfolders: string[] = [];
+          const stack: TFolder[] = [folder];
+          while (stack.length) {
+            for (const c of (stack.pop() as TFolder).children ?? []) {
+              if (c instanceof TFolder) {
+                subfolders.push(c.path);
+                stack.push(c);
+              } else return { file: true, subfolders };
+            }
           }
+          return { file: false, subfolders };
         };
-        walk(folder);
-        // What is on disk: the index leaves out dot-files and some types, so a folder that looks empty to Obsidian
-        // can still hold one. Any file there refuses the trash too, except macOS's .DS_Store.
-        const diskFiles = await diskFileCount(app, p);
-        if (files > 0 || diskFiles > 0) {
-          return codedError(
-            "folder_not_empty",
-            `'${p}' holds at least one file; only an empty folder is trashed. Move or trash the files first. Nothing was written.`
-          );
-        }
-        if (subfolders.length > 0 && include_empty_subfolders !== true) {
+        const first = indexed();
+        if (first.file) return notEmpty();
+        if (first.subfolders.length > 0 && include_empty_subfolders !== true) {
           return codedError(
             "folder_not_empty",
             `'${p}' holds subfolders (with no file in them). Pass include_empty_subfolders: true to trash them with it. Nothing was written.`
           );
         }
+        // A record folder or archive below it is kept too: trashing the parent would take it along.
+        if (first.subfolders.some((s) => inRecordFolder(`${s}/\u0000`, records))) {
+          return codedError("record_immutable", `'${p}' holds a record folder or archive; it is not trashed. Nothing was written.`);
+        }
+        // What is on disk: the index leaves out dot-files and some types, so a folder that looks empty to Obsidian
+        // can still hold one. Any file there refuses the trash too, except macOS's .DS_Store.
+        if (await diskHasFile(app, p)) return notEmpty();
+        // The disk listing awaited: look at the index once more, synchronously, right before the trash, so a file
+        // Obsidian indexed meanwhile (Sync, another plugin, the user) is not trashed with the folder. Writes through
+        // vault-mcp cannot arrive at all: this handler runs in the write queue.
+        const last = indexed();
+        if (last.file) return notEmpty();
+        const subfolders = last.subfolders;
+        if (subfolders.length > 0 && include_empty_subfolders !== true) return notEmpty();
         await app.vault.trash(folder, true); // true = system trash
         return ok({ path: p, trashed: true, subfolders: subfolders.length });
       } catch (e) { return fail(e); }
@@ -490,17 +502,16 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
   );
 }
 
-/** The files under a vault folder on disk, at any depth, not counting macOS's .DS_Store. Throws when the adapter cannot list: a trash never trusts an unknown. */
-async function diskFileCount(app: App, folder: string): Promise<number> {
+/** Whether a vault folder holds a file on disk, at any depth, not counting macOS's .DS_Store. Stops at the first.
+ *  Throws when the adapter cannot list: a trash never trusts an unknown. */
+async function diskHasFile(app: App, folder: string): Promise<boolean> {
   const adapter = app.vault.adapter as unknown as { list?: (p: string) => Promise<{ files: string[]; folders: string[] }> };
   if (typeof adapter.list !== "function") throw new Error("the vault adapter cannot list a folder on disk, so the folder's emptiness cannot be proven; nothing was trashed");
-  let n = 0;
   const queue = [folder];
   while (queue.length) {
-    const d = queue.shift() as string;
-    const { files, folders } = await adapter.list(d);
-    n += files.filter((f) => (f.split("/").pop() ?? f) !== ".DS_Store").length;
+    const { files, folders } = await adapter.list(queue.shift() as string);
+    if (files.some((f) => (f.split("/").pop() ?? f) !== ".DS_Store")) return true;
     queue.push(...folders);
   }
-  return n;
+  return false;
 }

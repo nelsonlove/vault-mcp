@@ -117,11 +117,37 @@ describe("obsidian_trash_folder", () => {
     await h.close();
   });
 
-  test("it needs idempotency_key, and takes no if_rev", async () => {
+  test("it needs idempotency_key; an if_rev passed anyway is a rev_conflict (a folder has no rev), and nothing is trashed", async () => {
     const h = await harness({ folders: ["A"] });
     assert.match(errText(await h.call({ path: "A" })), /^Error \[protection_required\].*idempotency_key/);
+    assert.match(errText(await h.call({ path: "A", if_rev: 123, idempotency_key: key() })), /^Error \[rev_conflict\]/);
     assert.equal(h.trashed.length, 0);
     await h.close();
+  });
+
+  test("a file Obsidian indexes while the disk listing runs is seen before the trash, and the trash is refused", async () => {
+    const h = await harness({ folders: ["A"] });
+    const listing = h.app.vault.adapter.list;
+    h.app.vault.adapter.list = async (p) => {
+      const r = await listing(p);
+      // Another program adds a note, and Obsidian indexes it, while the listing is awaited.
+      const f = new TFile("A/late.md");
+      h.D.get("A").children.push(f);
+      return r;
+    };
+    assert.match(errText(await h.call({ path: "A", idempotency_key: key() })), /^Error \[folder_not_empty\]/);
+    assert.equal(h.trashed.length, 0);
+    await h.close();
+  });
+
+  test("include_empty_subfolders never takes a record folder or archive below the folder", async () => {
+    const rf = { enabled: true, folders: ["A/Records"], archivePattern: "Archive$" };
+    for (const sub of ["A/Records", "A/B/Old Archive"]) {
+      const h = await harness({ folders: [sub] }, { recordFolders: rf });
+      assert.match(errText(await h.call({ path: "A", include_empty_subfolders: true, idempotency_key: key() })), /^Error \[record_immutable\]/, sub);
+      assert.equal(h.trashed.length, 0, sub);
+      await h.close();
+    }
   });
 
   test("a folder that holds a file, at any depth, is refused and nothing is trashed", async () => {
