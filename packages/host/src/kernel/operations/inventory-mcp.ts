@@ -229,6 +229,8 @@ const CORE_DIRECT: McpSurfaceRow[] = [
   { tool: "obsidian_get_command_ids", readOnly: true, module: "core", distribution: "public-default", postcondition: "Return every registered Obsidian command id and name." },
   { tool: "obsidian_append_at_heading", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Insert content at the end of a named heading's section.", protection: "key", syncKind: "content" },
   { tool: "obsidian_trash", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Move a note to the system trash, recoverably.", protection: "both", syncKind: "structure" },
+  // A folder has no rev, so it takes the key alone: the handler's own emptiness check at dequeue stands in for if_rev (#634).
+  { tool: "obsidian_trash_folder", readOnly: false, module: "core", distribution: "public-optional", paths: ["path"], discovered: "none", postcondition: "Move an empty folder to the system trash, recoverably; refused while it holds any file.", protection: "key", syncKind: "structure" },
   { tool: "obsidian_open_in_editor", readOnly: false, module: "core", distribution: "public-default", paths: ["path"], discovered: "none", postcondition: "Open a note in Obsidian's editor; changes workspace state, not vault content.", protection: "not-a-write" },
   // Generic command execution. Threat-model control #9: an opaque operation
   // whose effects cannot be inspected or bounded before execution is absent

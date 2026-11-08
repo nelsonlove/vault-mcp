@@ -188,6 +188,8 @@ export const STATUS_STRICT: ReadonlySet<string> = new Set([
   "obsidian_renumber_address",
   "obsidian_delete_note",
   "obsidian_trash",
+  // An empty folder's trash (#634) is a delete like a note's.
+  "obsidian_trash_folder",
 ]);
 
 /**

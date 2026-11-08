@@ -161,6 +161,7 @@ The refusal comes before the write queue, so a refused call is not in the journa
 | `obsidian_survey_slot` | `if_rev` |  |
 | `obsidian_toggle_view_mode` | nothing (not a vault write) |  |
 | `obsidian_trash` | `if_rev` and `idempotency_key` |  |
+| `obsidian_trash_folder` | `idempotency_key` |  |
 | `obsidian_write_file` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_note` | overwrite true: `if_rev`; any other overwrite, or none: nothing |  |
 | `obsidian_write_notes` | per item: `if_rev` to overwrite an existing note; nothing to create one |  |

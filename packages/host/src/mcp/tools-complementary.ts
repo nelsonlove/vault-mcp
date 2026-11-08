@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { assertCreateName } from "./name-checks.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type App, TFile, getAllTags } from "obsidian";
+import { type App, TFile, TFolder, getAllTags } from "obsidian";
 import {
   AcceptForbiddenError,
   acceptTransitionReason,
@@ -17,6 +17,8 @@ import { ok, fail, codedError } from "./helpers.js";
 import { noteStructure, writeIfUnchanged, type MetadataSource, type WriteTarget } from "./note-structure.js";
 import { visiblePaths } from "../guard.js";
 import type { ServerCtx } from "./tools-core.js";
+import { inRecordFolder } from "./records.js";
+import { normalizeRecordFolders } from "../kernel/record-guard.js";
 import { quickAddChoicesFrom, runCommandRefusal, runCommandSnapshotRefusal, vaultTextReader } from "./cli-policy.js";
 
 // ── accept-forbidden guard for obsidian_append_at_heading (#109) ──────────────
@@ -84,6 +86,79 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
         if (!(file instanceof TFile)) return fail(new Error(`not found: ${p}`));
         await app.vault.trash(file, true); // true = system trash
         return ok({ path: p, trashed: true });
+      } catch (e) { return fail(e); }
+    }
+  );
+
+  // ── obsidian_trash_folder (#634) ────────────────────────────────────────────
+  // A folder has no rev, so obsidian_trash (which needs if_rev) cannot take one. This tool trashes a folder
+  // only when it holds no file: the check runs here, in the handler, which the kernel runs at dequeue, one write
+  // at a time, so a file that arrives before the trash is seen and the trash is refused. Recoverable, like a file.
+  server.registerTool(
+    "obsidian_trash_folder",
+    {
+      title: "Trash an empty folder",
+      description:
+        "Move an EMPTY folder to the system trash (recoverable). Refused, and nothing is written, when the folder holds any file " +
+        "(at any depth; only macOS's own .DS_Store files are not counted), or holds a subfolder and include_empty_subfolders is not true. " +
+        "Refused for the vault root, a path with a segment that starts with a dot, a path that is not a folder, and a folder the record " +
+        "settings treat as a record folder or archive (or one inside such a folder). Needs idempotency_key; takes no if_rev, because a folder has no rev " +
+        "(the emptiness check inside the operation stands in for it). Returns {path, trashed: true, subfolders}.",
+      inputSchema: {
+        path: z.string().min(1).describe("Vault-relative path of the folder to trash."),
+        include_empty_subfolders: z
+          .boolean()
+          .default(false)
+          .describe("Also trash empty subfolders with it (a chain of folders that hold no file). Default false: any subfolder refuses the call."),
+      },
+      annotations: DESTRUCTIVE_RECOVERABLE,
+    },
+    async ({ path: raw, include_empty_subfolders }) => {
+      try {
+        const p = raw.trim().replace(/\/+/g, "/").replace(/^\/|\/$/g, "");
+        if (!p) return codedError("invalid_argument", "The vault root cannot be trashed. Nothing was written.");
+        if (p.split("/").some((seg) => seg.startsWith(".") || seg === "")) {
+          return codedError("invalid_argument", `'${raw}' has a segment that starts with a dot (a hidden or config folder). Nothing was written.`);
+        }
+        const folder = app.vault.getAbstractFileByPath(p);
+        if (!folder) return codedError("not_found", `No folder at '${p}'. Nothing was written.`);
+        if (!(folder instanceof TFolder)) {
+          return codedError("not_a_folder", `'${p}' is a file, not a folder: use obsidian_trash for a file. Nothing was written.`);
+        }
+        // The record folders and the archive pattern (#482): a folder that is one, or sits inside one, is kept,
+        // as the moves keep a record. The child name is one no folder can have, so only the folder's own path is judged.
+        if (inRecordFolder(`${p}/\u0000`, normalizeRecordFolders(ctx.recordFolders?.()))) {
+          return codedError("record_immutable", `'${p}' is a record folder or archive, or sits inside one; it is not trashed. Nothing was written.`);
+        }
+        // What Obsidian indexes: every file, then every subfolder.
+        let files = 0;
+        const subfolders: string[] = [];
+        const walk = (f: TFolder) => {
+          for (const c of f.children ?? []) {
+            if (c instanceof TFolder) {
+              subfolders.push(c.path);
+              walk(c);
+            } else files++;
+          }
+        };
+        walk(folder);
+        // What is on disk: the index leaves out dot-files and some types, so a folder that looks empty to Obsidian
+        // can still hold one. Any file there refuses the trash too, except macOS's .DS_Store.
+        const diskFiles = await diskFileCount(app, p);
+        if (files > 0 || diskFiles > 0) {
+          return codedError(
+            "folder_not_empty",
+            `'${p}' holds at least one file; only an empty folder is trashed. Move or trash the files first. Nothing was written.`
+          );
+        }
+        if (subfolders.length > 0 && include_empty_subfolders !== true) {
+          return codedError(
+            "folder_not_empty",
+            `'${p}' holds subfolders (with no file in them). Pass include_empty_subfolders: true to trash them with it. Nothing was written.`
+          );
+        }
+        await app.vault.trash(folder, true); // true = system trash
+        return ok({ path: p, trashed: true, subfolders: subfolders.length });
       } catch (e) { return fail(e); }
     }
   );
@@ -413,4 +488,19 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
       } catch (e) { return fail(e); }
     }
   );
+}
+
+/** The files under a vault folder on disk, at any depth, not counting macOS's .DS_Store. Throws when the adapter cannot list: a trash never trusts an unknown. */
+async function diskFileCount(app: App, folder: string): Promise<number> {
+  const adapter = app.vault.adapter as unknown as { list?: (p: string) => Promise<{ files: string[]; folders: string[] }> };
+  if (typeof adapter.list !== "function") throw new Error("the vault adapter cannot list a folder on disk, so the folder's emptiness cannot be proven; nothing was trashed");
+  let n = 0;
+  const queue = [folder];
+  while (queue.length) {
+    const d = queue.shift() as string;
+    const { files, folders } = await adapter.list(d);
+    n += files.filter((f) => (f.split("/").pop() ?? f) !== ".DS_Store").length;
+    queue.push(...folders);
+  }
+  return n;
 }

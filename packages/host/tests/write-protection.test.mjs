@@ -46,6 +46,8 @@ const TABLE = [
   { op: "scheme move", class: "key", calls: [["obsidian_assign_address", {}], ["obsidian_refile_address", {}], ["obsidian_renumber_address", {}]] },
   { op: "repoint a link", class: "exempt (temporary)", calls: [["obsidian_repoint_link", {}]], code: "exempt", why: "its only named path is target_path, the note links point AT, not the notes it rewrites; a token would check the wrong file" },
   { op: "trash", class: "both", calls: [["obsidian_trash", {}]] },
+  // #634 (the owner's word, 2026-11-08): an empty folder has no rev, so the key alone; the handler's emptiness check at dequeue stands in for if_rev.
+  { op: "trash an empty folder", class: "key", calls: [["obsidian_trash_folder", {}]] },
   { op: "delete", class: "both", calls: [["obsidian_delete_note", {}]] },
   { op: "run code in the application", class: "key", calls: [["obsidian_cli", {}]] },
   { op: "compile the choice configuration", class: "exempt", calls: [], note: "a satellite tool (quickadd-choices-compile)" },
