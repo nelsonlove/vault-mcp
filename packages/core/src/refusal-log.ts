@@ -52,6 +52,9 @@ const FAILURE_CODE = /(^|_)(failed|partial|partially_applied)($|_)/;
  */
 export const DEQUEUE_REFUSALS: ReadonlySet<string> = new Set([
   "rev_conflict",
+  // obsidian_trash_folder (#634): refused at dequeue, nothing trashed.
+  "folder_not_empty",
+  "not_a_folder",
   "record_immutable",
   "idempotency_mismatch",
   "protection_required",

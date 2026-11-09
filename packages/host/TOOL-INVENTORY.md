@@ -14,14 +14,14 @@ The FULL set is locked by `tests/tool-inventory.test.mjs`: the names documented
 here must equal the names registered in source, both directions, or the suite
 fails (the fs-expressible and scheme sub-locks from #25/task-6 still apply).
 
-**Count summary:** 17 fs-expressible + 41 always-live + 6 module-mounted
-(default enabled, settings-toggleable) = **64 base** tools, plus up to
+**Count summary:** 17 fs-expressible + 42 always-live + 6 module-mounted
+(default enabled, settings-toggleable) = **65 base** tools, plus up to
 6 conditional integration tools, 1 Importer-plugin-conditional import tool
 (`obsidian_import_apple_notes`), 5 CLI-binary-conditional dedicated tools
 (`obsidian_note_history`, `obsidian_note_diff`, `obsidian_base_create`,
 `obsidian_plugin_install`, `obsidian_plugin_uninstall`), and 1 settings-gated
 CLI-conditional tool (`obsidian_cli`, default OFF)
-= **up to 77 total**.  The 3 Code Mode meta-tools are an alternative
+= **up to 78 total**.  The 3 Code Mode meta-tools are an alternative
 per-connection surface and are not counted (a session sees one surface or the
 other, never both).  Nothing outside the locked `obsidian_*` family is counted
 here any more: the two always-on `governance_*` revision tools left for the
@@ -83,7 +83,7 @@ against its `FilesystemBackend`.
 
 ---
 
-## Section 2 — live-only, always registered (41)
+## Section 2 — live-only, always registered (42)
 
 These tools depend on live Obsidian `app.*` state and cannot be expressed on the
 filesystem.  They are unconditionally registered on every `buildMcpServer` call,
@@ -167,7 +167,7 @@ Three always-on rows stood here until the host/governor split: the pending-revie
 
 The names are deliberately not backticked in this file: the source↔doc lock scrapes backticked `obsidian_*` names and would read a departed one as a name this host ought to register. `packages/governor/TOOL-INVENTORY.md` carries all five in full, with their published spellings, their read-only hints, and their allowlist posture under this host's gate — which got STRICTER in the move, the same way it did at every previous extraction: an external tool's read-only claim is distrusted unless the operator lists `governor` in `trustedReadOnlyPlugins`, and under an active path allowlist the F3 gate refuses any external tool whose arguments carry no recognized path key.
 
-### `tools-complementary.ts` — `registerComplementaryTools` (9 tools)
+### `tools-complementary.ts` — `registerComplementaryTools` (10 tools)
 
 | Tool name | Description |
 |---|---|
@@ -179,6 +179,7 @@ The names are deliberately not backticked in this file: the source↔doc lock sc
 | `obsidian_run_command` | Execute an Obsidian command by ID |
 | `obsidian_tags_list` | All tags with usage counts (live metadata cache) |
 | `obsidian_trash` | Move a note to the system trash (recoverable) |
+| `obsidian_trash_folder` | Move an empty folder to the system trash (recoverable) |
 | `obsidian_vault_info` | Vault name, base path, config dir, attachment folder |
 
 ### `tools-nav.ts` — `registerNavTools` (11 tools)
@@ -435,7 +436,7 @@ this historical snapshot.
 | `packages/host/src/mcp/tools-vault-write.ts` | `registerVaultWriteTools` | 2 always-live |
 | `packages/host/src/mcp/tools-scheme-write.ts` | `registerSchemeWriteTools` | 3, while the scheme module is on |
 | `packages/host/src/mcp/tools-survey.ts` | `registerSurveyTools` | 2 always-live |
-| `packages/host/src/mcp/tools-complementary.ts` | `registerComplementaryTools` | 9 always-live |
+| `packages/host/src/mcp/tools-complementary.ts` | `registerComplementaryTools` | 10 always-live |
 | `packages/host/src/mcp/tools-nav.ts` | `registerNavTools` | 11 always-live |
 | `packages/host/src/mcp/tools-locks.ts` | `registerLockTools` | 4 always-live |
 | `packages/host/src/mcp/tools-uid.ts` | `registerUidTools` | 1 always-live |
