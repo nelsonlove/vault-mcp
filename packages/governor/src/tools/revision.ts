@@ -1,8 +1,8 @@
 // The ONE agent-expressible disposition: `governance_submit_revision` (#101, phase 1 of #221).
 //
 // A revising agent — one whose note a human sent back with `acceptance-status: revising` and a
-// `[!revision-request]` callout in the note BODY — resubmits its work: the status returns to
-// `proposed`, the addressed `[!revision-request]` callout(s) are removed, and (when a `summary`
+// `[!revision-request]` callout in the note BODY — resubmits its work: the addressed
+// `[!revision-request]` callout(s) are removed (the tool writes NO frontmatter: #599), and (when a `summary`
 // is given) a `[!revision-report]` callout is inserted below the H1 for the reviewer to read and
 // dispose of at review. The write lands in the pending channel like any other agent write: the
 // kernel journals it, so the governance pane surfaces the note for human review.
@@ -16,9 +16,8 @@
 // from here.
 //
 // IT CAN NEVER WRITE ACCEPTANCE. Three independent layers make that true:
-//   1. The only status value in this module is the literal `proposed`, written by
-//      `setAcceptanceStatusProposed` (governor/kernel/revision.ts), which takes no value
-//      parameter — there is no argument through which an accepted-family value could arrive.
+//   1. It writes no frontmatter at all (#599): the plan only edits the BODY, so none of
+//      `acceptance-status`, `accepted-by` or `accepted-on` is ever written.
 //   2. The reviewer text/summary lands as `> `-quoted callout lines in the BODY, behind the
 //      frontmatter fence recognized by the shared core recognizer — quoted lines cannot form a
 //      frontmatter fence, so a hostile summary cannot smuggle an acceptance assertion into
@@ -89,7 +88,7 @@ export function acceptanceStatusOf(fm: Record<string, unknown> | null): string |
  * The belt-and-suspenders accept check the handler runs on every write: the (before, after)
  * frontmatter transition must be clean under the SHARED accept guard. Returns the refusal
  * reason, or null when the write may proceed. Exported so the perimeter test can drive it
- * directly with a hostile `after` — the handler itself can only ever produce `proposed`, so a
+ * directly with a hostile `after` — the handler itself writes no frontmatter, so a
  * live call cannot exercise the refusing branch.
  */
 export function revisionWriteRefusalReason(before: string, after: string): string | null {
@@ -110,12 +109,12 @@ export function buildRevisionTools(source: RevisionSource, listing: RevisionList
         "CONTRACT: the human's feedback lives in the NOTE BODY — read the `[!revision-request]` callout(s) below " +
         "the H1, plus any other inline notes the reviewer left — NOT in any frontmatter field (there is no " +
         "`requested-changes` property). After you have revised the note (via the ordinary write tools), call this " +
-        "to hand it back: it sets `acceptance-status: proposed`, removes the addressed `[!revision-request]` " +
-        "callout(s), and — when `summary` is given — inserts a `> [!revision-report]` callout below the H1 " +
+        "to hand it back: it removes the addressed `[!revision-request]` " +
+        "callout(s) (it writes no frontmatter, so `acceptance-status` is left as it is), and — when `summary` is given — inserts a `> [!revision-report]` callout below the H1 " +
         "describing what you changed (the reviewer disposes of it at review). The note then lands in the pending " +
         "channel for human review like any other agent write. Refuses with Error [not_revising] when the note is " +
-        "not in the revising state (nothing to submit). This tool cannot accept anything: it writes only " +
-        "`proposed`, and the accept-forbidden guard re-checks the write — acceptance is a human gesture in the " +
+        "not in the revising state (nothing to submit). This tool cannot accept anything: it writes no " +
+        "frontmatter, and the accept-forbidden guard re-checks the write — acceptance is a human gesture in the " +
         "review pane, never an API call. Pass `intent` (the standard kernel argument) if you want the write " +
         "journal to carry your summary of why.",
       inputSchema: {
@@ -161,16 +160,12 @@ export function buildRevisionTools(source: RevisionSource, listing: RevisionList
         refuse(
           "not_revising",
           `${path} has acceptance-status ${status === null ? "(none)" : `'${status}'`} — nothing to submit. ` +
-            "Only a note a human marked 'revising' (via the review pane's Request changes) can be resubmitted."
+            "Only a note a human marked 'revising' can be resubmitted."
         );
       }
 
       const date = source.now().toISOString().slice(0, 10);
       const plan = planSubmitRevision(before, { summary, date });
-      if (plan === null) {
-        // Unreachable after the status gate above except on a malformed-frontmatter race; fail closed.
-        refuse("not_revising", `${path} carries no acceptance-status to transition`);
-      }
 
       // Belt-and-suspenders: the (before, after) transition through the SHARED accept guard.
       const refusal = revisionWriteRefusalReason(before, plan.content);
@@ -179,7 +174,6 @@ export function buildRevisionTools(source: RevisionSource, listing: RevisionList
       await source.write(path, plan.content);
       return {
         path,
-        acceptance_status: "proposed",
         removed_requests: plan.removedRequests,
         report_inserted: plan.reportInserted,
         // The guarded.ts effects convention: the journal records what actually changed.

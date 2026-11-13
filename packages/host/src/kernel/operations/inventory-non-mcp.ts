@@ -240,7 +240,7 @@ export function nonMcpBindings(): SurfaceBinding[] {
 // A surface is something a caller can invoke, something that runs by itself, or
 // something that writes outside the vault. A function invoked only as the
 // implementation of an already-declared action is NOT a surface; it is that
-// action's body. `stampAcceptedFrontmatter`, `buildAcceptDeps`, `appendLog`,
+// action's body. `buildAcceptDeps`, `appendLog`,
 // `saveAllowlist` and the baseline-store writers are all in that category —
 // they are how `governance.accept` and its siblings do their work, and
 // declaring them again would double-count one door.

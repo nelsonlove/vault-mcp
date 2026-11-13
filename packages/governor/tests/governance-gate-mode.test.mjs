@@ -13,12 +13,8 @@ function fakeDeps(overrides = {}) {
     deps: {
       readNote: async () => content,
       store: { setBaseline: async (path, c, by, ts) => ({ path, hash: "h" + c.length, acceptedBy: by, acceptedAt: ts }) },
-      stampAccepted: async () => {
-        content = content.replace("acceptance-status: proposed", "acceptance-status: accepted\naccepted-by: Nelson\naccepted-on: 2026-08-19T12:00");
-      },
       appendLog: async (r) => { log.push(r); },
       now: () => "2026-08-19T12:00:00Z",
-      nowLocal: () => "2026-08-19T12:00",
       user: "Nelson",
       requiredFrontmatterKeys: ["uid", "description"],
       ...overrides,
@@ -46,18 +42,16 @@ describe("acceptNote gateOverride", () => {
     assert.equal(log.length, 0);
   });
 
-  test("with gateOverride: the same note stamps and advances", async () => {
-    const { deps } = fakeDeps();
+  test("with gateOverride: the same note advances its baseline, and the note is not edited", async () => {
+    const { deps, log } = fakeDeps();
     const res = await acceptNote(deps, "N.md", { gateOverride: true });
-    assert.equal(res.stamped, true);
+    assert.equal(res.baseline.hash, "h" + NOTE.length);
+    assert.equal(log.length, 1);
   });
 
-  test("override is per-call only — after an overridden accept whose stamp did not land, the next un-overridden call still gates", async () => {
-    // A no-op stamp keeps the note `proposed`, so the overridden call runs the
-    // gate-skipped path but fails the fold check — and the FOLLOWING plain call
-    // must still gate: the override never persists anywhere.
-    const { deps } = fakeDeps({ stampAccepted: async () => {} });
-    await assert.rejects(() => acceptNote(deps, "N.md", { gateOverride: true })); // fold failure, not gate
+  test("override is per-call only — an overridden accept does not stop the next plain call gating", async () => {
+    const { deps } = fakeDeps();
+    await acceptNote(deps, "N.md", { gateOverride: true });
     await assert.rejects(() => acceptNote(deps, "N.md"), AcceptGateError); // gate is back
   });
 });

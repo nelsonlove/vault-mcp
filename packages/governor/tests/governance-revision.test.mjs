@@ -13,7 +13,7 @@
  *     (including [!revision-report]) and all surrounding content survive
  *     byte-for-byte, and insert→remove round-trips to the original body;
  *   • CRLF notes keep CRLF for inserted lines;
- *   • setAcceptanceStatusProposed writes the literal `proposed` only (it takes
+ *   • (setAcceptanceStatusProposed was removed by #599; nothing writes the status) (it takes
  *     no value parameter — structurally cannot write an accepted family value)
  *     and preserves the rest of the frontmatter block verbatim;
  *   • planSubmitRevision = proposed + requests removed + optional report.
@@ -23,7 +23,6 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   splitNote,
-  setAcceptanceStatusProposed,
   buildRevisionCallout,
   h1LineIndex,
   insertCalloutBelowH1,
@@ -67,39 +66,6 @@ describe("splitNote — frontmatter boundary via the shared core recognizer", ()
       const { head, body } = splitNote(c);
       assert.equal(head + body, c);
     }
-  });
-});
-
-// ── setAcceptanceStatusProposed ──────────────────────────────────────────────
-
-describe("setAcceptanceStatusProposed — the ONE status this module can write", () => {
-  test("revising → proposed; every other frontmatter byte preserved", () => {
-    const out = setAcceptanceStatusProposed(FM + "# T\nbody\n");
-    assert.equal(out, "---\nacceptance-status: proposed\nuid: abc\n---\n# T\nbody\n");
-  });
-
-  test("CRLF frontmatter keeps CRLF", () => {
-    const out = setAcceptanceStatusProposed("---\r\nacceptance-status: revising\r\n---\r\nbody");
-    assert.equal(out, "---\r\nacceptance-status: proposed\r\n---\r\nbody");
-  });
-
-  test("the note's own key spelling (acceptance_status) is preserved", () => {
-    const out = setAcceptanceStatusProposed("---\nacceptance_status: revising\n---\nbody");
-    assert.equal(out, "---\nacceptance_status: proposed\n---\nbody");
-  });
-
-  test("no frontmatter / no acceptance-status key ⇒ null (nothing to transition)", () => {
-    assert.equal(setAcceptanceStatusProposed("just a body"), null);
-    assert.equal(setAcceptanceStatusProposed("---\ntitle: x\n---\nbody"), null);
-  });
-
-  test("an INDENTED acceptance-status line is a continuation, not the key — untouched", () => {
-    assert.equal(setAcceptanceStatusProposed("---\nnested:\n  acceptance-status: revising\n---\n"), null);
-  });
-
-  test("BOM note: status still flips, BOM preserved", () => {
-    const out = setAcceptanceStatusProposed(BOM + FM + "b");
-    assert.equal(out, BOM + "---\nacceptance-status: proposed\nuid: abc\n---\nb");
   });
 });
 
@@ -266,25 +232,25 @@ describe("insert → withdraw round-trips to the original content", () => {
 
 // ── planSubmitRevision ───────────────────────────────────────────────────────
 
-describe("planSubmitRevision — proposed + request removed + optional report", () => {
+describe("planSubmitRevision — request removed + optional report, frontmatter untouched", () => {
   const revising =
     FM + "# T\n\n> [!revision-request] Requested changes (2026-08-01)\n> fix the intro\n\nContent\n";
 
-  test("full flow with a summary: status flips, request removed, report inserted below H1", () => {
+  test("full flow with a summary: status untouched, request removed, report inserted below H1", () => {
     const plan = planSubmitRevision(revising, { summary: "rewrote the intro", date: "2026-08-18" });
     assert.equal(plan.removedRequests, 1);
     assert.equal(plan.reportInserted, true);
     assert.equal(
       plan.content,
-      "---\nacceptance-status: proposed\nuid: abc\n---\n" +
+      "---\nacceptance-status: revising\nuid: abc\n---\n" +
         "# T\n\n> [!revision-report] Revision report (2026-08-18)\n> rewrote the intro\n\nContent\n",
     );
   });
 
-  test("no summary: no report callout, requests still removed, status still flips", () => {
+  test("no summary: no report callout, requests still removed, status untouched", () => {
     const plan = planSubmitRevision(revising, { date: "2026-08-18" });
     assert.equal(plan.reportInserted, false);
-    assert.equal(plan.content, "---\nacceptance-status: proposed\nuid: abc\n---\n# T\n\nContent\n");
+    assert.equal(plan.content, "---\nacceptance-status: revising\nuid: abc\n---\n# T\n\nContent\n");
   });
 
   test("a whitespace-only summary counts as no summary", () => {
@@ -292,9 +258,11 @@ describe("planSubmitRevision — proposed + request removed + optional report", 
     assert.equal(plan.reportInserted, false);
   });
 
-  test("no acceptance-status key ⇒ null (fail closed; the tool refuses before this)", () => {
-    assert.equal(planSubmitRevision("---\ntitle: x\n---\nbody", { date: "2026-08-18" }), null);
-    assert.equal(planSubmitRevision("no frontmatter", { date: "2026-08-18" }), null);
+  test("the plan writes none of acceptance-status, accepted-by, accepted-on: the frontmatter is byte-identical (#599)", () => {
+    const plan = planSubmitRevision(revising, { summary: "x", date: "2026-08-18" });
+    const fm = (c) => c.slice(0, c.indexOf("\n---", 4));
+    assert.equal(fm(plan.content), fm(revising));
+    assert.ok(!/accepted-by|accepted-on/.test(plan.content));
   });
 
   test("multiple outstanding requests are ALL removed on submit", () => {
@@ -321,6 +289,6 @@ describe("planSubmitRevision — proposed + request removed + optional report", 
       "---\r\nacceptance-status: revising\r\n---\r\n# T\r\n\r\n> [!revision-request] R (d)\r\n> x\r\n\r\nC\r\n";
     const plan = planSubmitRevision(crlf, { summary: "done", date: "2026-08-18" });
     assert.ok(!plan.content.replace(/\r\n/g, "").includes("\n"), "no bare LF may appear in a CRLF note");
-    assert.match(plan.content, /acceptance-status: proposed\r\n/);
+    assert.match(plan.content, /acceptance-status: revising\r\n/);
   });
 });

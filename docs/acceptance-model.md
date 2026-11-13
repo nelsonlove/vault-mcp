@@ -42,13 +42,13 @@ reviewer can send a change back for another pass:
 
 - **Request changes…** (pane, gesture-gated): the reviewer's feedback is inserted into the
   note as a `> [!revision-request] Requested changes (YYYY-MM-DD)` callout directly below
-  the H1 (top of body when the note has no H1), and `acceptance-status` becomes `revising`.
+  the H1 (top of body when the note has no H1). Since #599 `acceptance-status` is left alone.
   There is no `requested-changes` frontmatter property — the feedback lives in the note
   body, and that is where a revising agent reads it.
 - **Withdraw** (pane, gesture-gated, in the Revising section): removes the
-  `[!revision-request]` callout(s) the pane inserted and sets the status back to `proposed`.
-- **`governance_submit_revision`** (the one agent verb): a revising agent resubmits — status
-  back to `proposed`, addressed `[!revision-request]` callout(s) removed, optional summary
+  `[!revision-request]` callout(s) the pane inserted (since #599 it leaves the frontmatter alone).
+- **`governance_submit_revision`** (the one agent verb): a revising agent resubmits — addressed
+  `[!revision-request]` callout(s) removed (the tool leaves the frontmatter alone since #599, so the status stays as it was), optional summary
   inserted as a `> [!revision-report]` callout for the reviewer to dispose of at review. It
   is an ordinary guarded mutating tool (read-only mode, path allowlist, write queue, write
   journal all apply), it refuses `not_revising` when there is nothing to submit, and the
@@ -62,65 +62,53 @@ standing is a human gesture; a mechanical, reversible write is agent-expressible
 stays non-writing on the body: it advances the baseline and touches no callout, so the
 reviewer prunes `[!revision-report]` callouts at review or keeps them as history.
 
-## The acceptance convergence — the pane's Accept is the ONE accept (#221/#164)
+## The acceptance convergence — the pane's Accept is the ONE accept (#221/#164, #599)
 
 The vault used to have **two** acceptance lifecycles: the pane's baseline lifecycle
 (pending → Accept → baseline advanced) and the frontmatter lifecycle
 (`acceptance-status: proposed` → a human stamps `accepted` by hand or via a QuickAdd macro).
-They are now converged: the pane's gesture-gated **Accept is context-aware** and serves both.
+The convergence made the pane's gesture-gated **Accept** serve both, and for a while it
+stamped the retired accepted family into a `proposed` note.
+
+**Since #599 (Nelson's ruling of 2026-10-20) Accept stamps nothing.** The keys
+`acceptance-status: accepted`, `accepted-by` and `accepted-on` are retired; what confirms a
+note is a `verified` entry, which only Nelson writes, so the governor does not write it and
+the stamp could not be moved onto it. One Accept click does this, whatever the note's status:
 
 | Note's `acceptance-status` | What one Accept click does |
 | --- | --- |
-| `proposed` | Conformance-gate check, then **stamp** `acceptance-status: accepted`, `accepted-by: <configured identity>`, `accepted-on: <YYYY-MM-DDTHH:mm local>` (minutes precision — date-only was a fixed bug) via Obsidian's own `app.fileManager.processFrontMatter`, then advance the baseline **from the post-stamp content** |
-| absent / any other value | Advance the baseline exactly as before — the note is **byte-untouched** |
-| `revising` | Never stamped (baseline advance only) — a revising note goes through withdraw / `governance_submit_revision` back to `proposed` first |
+| `proposed` | Conformance-gate check (refuses with no write if a required key is missing), then advance the baseline from the note's current content |
+| absent / any other value | Advance the baseline — the note is **byte-untouched** |
 
-**Ordering is the load-bearing part**: the stamp itself changes the note, so `acceptNote`
-(`packages/governor/src/kernel/accept.ts`) stamps FIRST, re-reads, **verifies the fold** — status now
-`accepted`, body byte-identical to pre-stamp, and the non-stamp frontmatter **key set**
-unchanged; a foreign write racing into the accept window that changes the body or adds or
-removes a frontmatter key aborts the accept with no baseline advance — and only then
-advances the baseline from those post-stamp bytes. The stamp therefore can never re-enter
-the pending queue as a fresh unreviewed change, and there is no state where the baseline
-advanced but the queue re-shows the stamp.
+`acceptNote` (`packages/governor/src/kernel/accept.ts`) therefore reads the note, runs the
+gate for a `proposed` note, advances the baseline and appends the log record. The accept
+writes nothing into the note, so the fold verification and the stamp-then-baseline ordering of
+the old design are gone, and the baseline holds the exact current bytes. The accept also clears the genuine-human-input record for the path (#228's
+race discipline), so a stale human-input record does not launder a later unrelated write
+into a silent baseline advance. Log records written by earlier builds may carry
+`stamped: true`; the field is still read, never written.
 
-*Honest limit of the fold verification:* a foreign **value** change to a pre-existing
-non-stamp key, landing inside the sub-second read→stamp→re-read window of a human's Accept
-click, passes the fold checks and is folded into the accepted snapshot. Verifying value equality would
-false-abort legitimate accepts: `processFrontMatter` re-serializes the whole frontmatter,
-so post-stamp values legitimately differ in form.
-Such a write is journaled (it went through MCP) but no surface flags it; this value-level
-sliver is the same inherent race window the pre-convergence accept already had (which read,
-wrote and baselined without any re-verification at all — and clobbered a racing frontmatter
-write instead of accepting it). A failure between the stamp and the baseline advance leaves the note
-stamped with the old baseline; the retry Accept sees `accepted` and takes the advance-only
-branch, so a double-stamp is impossible. The accept also clears the genuine-human-input
-record for the path (#228's race discipline), so a stale human-input record does not launder
-a later unrelated write into a silent baseline advance — the reconciler falls back to its
-fail-safe ambiguous classification instead.
-
-**This does not touch the agent-side guarantee.** The stamp is an in-app,
-human-gesture-gated `processFrontMatter` call (`stampAcceptedFrontmatter`, module-scope and
-unexported in `packages/governor/src/wiring/wiring.ts`, reachable only through the gesture-gated accept
-handler) — it **bypasses MCP entirely** and is exactly the human path the accept-forbidden
-guard reserves. Every agent transport still refuses the accepted family; `@vault-mcp/core`
-is unchanged.
+The pane's request-changes and withdraw dispositions no longer write `acceptance-status`
+either: request-changes inserts the `[!revision-request]` callout, withdraw removes it, and
+neither touches the frontmatter. `governance_submit_revision` (the agent resubmit) leaves the
+frontmatter alone too: it removes the addressed callouts and inserts the optional report.
+The note stays at whatever `acceptance-status` it had, so the reviewer or Nelson moves it on.
 
 The pane also gains a **Proposed section**: notes with `acceptance-status: proposed` and no
 pending write delta (built from the metadata cache like the Revising section, deduped
 against the pending queue — a pending proposed note shows Accept in its queue row only —
 and respecting the excluded roots). Row actions: the same context-aware Accept, and the
-existing Request changes… disposition. The Accept controls surface what will be stamped
-(tooltip + notice with the configured identity) — still exactly one click.
+existing Request changes… disposition. The Accept tooltip says it advances the baseline only —
+still exactly one click.
 
-Two acceptance-module config fields parameterize the convergence
+Two acceptance-module config fields parameterize Accept
 (`modules.acceptance.config`, rendered in the settings tab like the badge fields —
 human-only by construction):
 
-- **`acceptedBy`** (text, default `local-human`) — the identity stamped as `accepted-by`
-  and recorded in the acceptance log.
+- **`acceptedBy`** (text, default `local-human`) — the identity recorded on the baseline and
+  in the acceptance log. Accept does not write it into the note.
 - **`requiredFrontmatterKeys`** (CSV, default **empty = no gate**) — the conformance gate:
-  when set, Accept on a `proposed` note **refuses with no partial write** (no stamp AND no
+  when set, Accept on a `proposed` note **refuses with no partial write** (no
   baseline advance) while any listed key is missing or empty. The legacy QuickAdd
   accept-macro gated acceptance on vault-specific checks (uuid7 `uid`, `title`,
   `description`); that gate maps onto this config — per-vault configuration, never a
