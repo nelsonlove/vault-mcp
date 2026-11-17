@@ -172,15 +172,17 @@ function parseFlag(argv: string[], name: string): string | undefined {
 //   fatal — waiting cannot help (multiple live vaults, none pinned). Fail now.
 export type Target =
   | { kind: "ok"; chosen: Discovery }
-  | { kind: "wait"; for?: string }
+  | { kind: "wait"; for?: string; why?: string }
   | { kind: "fatal"; message: string };
 
 export function resolveTarget(
   live: Discovery[],
   pick: string | undefined,
   cwd?: string,
-  fallback?: string
+  fallback?: string,
+  rootOf: (dir: string) => string | undefined = vaultRootOf
 ): Target {
+  if (fallback === "") fallback = undefined;
   if (pick) {
     const hit = live.find((d) => d.vault_name === pick);
     // A pinned vault that isn't live yet is retryable — it may still register.
@@ -191,13 +193,18 @@ export function resolveTarget(
   // registration serves whichever vault the session runs in.
   const here = cwd === undefined ? undefined : vaultForDir(live, cwd);
   if (here) return { kind: "ok", chosen: here };
-  // Outside every live vault: the registration's soft default. When it is
+  // The session runs inside a vault folder that is not live: its plugin is
+  // reloading (a reload deletes the discovery file) or the vault is closed.
+  // Wait for it; never hand its session to another vault (#643).
+  const root = cwd === undefined ? undefined : rootOf(cwd);
+  if (root !== undefined) return { kind: "wait", for: path.basename(root), why: "the session runs inside it" };
+  // Outside every vault: the registration's soft default. When it is
   // not live (its plugin reloading, Obsidian restarting) the bridge waits for
   // it; it never takes "the only vault open" instead, which would send this
   // session's writes to a vault nobody chose (#643).
   if (fallback !== undefined) {
     const dflt = live.find((d) => d.vault_name === fallback);
-    return dflt ? { kind: "ok", chosen: dflt } : { kind: "wait", for: fallback };
+    return dflt ? { kind: "ok", chosen: dflt } : { kind: "wait", for: fallback, why: "set by --default-vault" };
   }
   if (live.length === 1) return { kind: "ok", chosen: live[0] };
   return {
@@ -232,6 +239,31 @@ export function vaultForDir(
   return best;
 }
 
+/**
+ * The nearest folder at or above `dir` that holds an Obsidian config folder
+ * (`.obsidian`), that is, the root of the vault the directory is in, whether
+ * or not that vault is serving now. Undefined outside every vault folder.
+ */
+export function vaultRootOf(
+  dir: string,
+  isVaultRoot: (p: string) => boolean = (p) => {
+    try {
+      return fs.statSync(path.join(p, ".obsidian")).isDirectory();
+    } catch {
+      return false;
+    }
+  },
+  real: (p: string) => string = realOrResolved
+): string | undefined {
+  let cur = real(dir);
+  for (;;) {
+    if (isVaultRoot(cur)) return cur;
+    const up = path.dirname(cur);
+    if (up === cur) return undefined;
+    cur = up;
+  }
+}
+
 function realOrResolved(p: string): string {
   try {
     return fs.realpathSync(p);
@@ -263,10 +295,11 @@ export function deadlineMessage(
   return noLiveMessage(all);
 }
 
-export function defaultMissingMessage(name: string): string {
+export function defaultMissingMessage(name: string, why = "set by --default-vault"): string {
+  const source = why === "set by --default-vault" ? "set by --default-vault or VAULT_MCP_DEFAULT_VAULT" : why;
   return (
-    `vault-mcp: the default vault '${name}' (--default-vault) is not open, and the session's directory is in no open vault.\n` +
-    `  Fix: open '${name}' in Obsidian, run the session inside an open vault, or pass --vault <name>.`
+    `vault-mcp: the vault this session should use, '${name}' (${source}), is not serving MCP.\n` +
+    `  Fix: open '${name}' in Obsidian with the 'Vault MCP' plugin on, or pass --vault <name>.`
   );
 }
 
@@ -934,7 +967,11 @@ async function waitForVault(
       // Socket file present but not accepting yet — fall through and retry.
     }
     if (Date.now() >= deadline) {
-      throw new Error(target.kind === "wait" && target.for !== undefined ? defaultMissingMessage(target.for) : deadlineMessage(all, pick));
+      throw new Error(
+        target.kind === "wait" && target.for !== undefined
+          ? defaultMissingMessage(target.for, target.why)
+          : deadlineMessage(all, pick)
+      );
     }
     await sleep(POLL_MS);
   }
@@ -949,7 +986,7 @@ export function parseMultiFlag(argv: string[], env?: string): boolean {
 
 export type MuxDefault =
   | { name: string; reason: string }
-  | { missing: string; reason: string }
+  | { missing: string; reason: string; path?: string }
   | undefined;
 
 /**
@@ -965,14 +1002,20 @@ export function muxDefault(
   connected: Discovery[],
   pick: string | undefined,
   cwd: string,
-  fallback: string | undefined
+  fallback: string | undefined,
+  rootOf: (dir: string) => string | undefined = vaultRootOf
 ): MuxDefault {
+  if (pick === "") pick = undefined;
+  if (fallback === "") fallback = undefined;
   const has = (n: string): boolean => connected.some((d) => d.vault_name === n);
   if (pick !== undefined) {
     return has(pick) ? { name: pick, reason: "set by --vault" } : { missing: pick, reason: "set by --vault" };
   }
   const here = vaultForDir(connected, cwd);
   if (here) return { name: here.vault_name, reason: "the session runs inside it" };
+  // Inside a vault folder that is not connected (reloading, or closed).
+  const root = rootOf(cwd);
+  if (root !== undefined) return { missing: path.basename(root), reason: "the session runs inside it", path: root };
   if (fallback !== undefined) {
     return has(fallback)
       ? { name: fallback, reason: "set by --default-vault" }
@@ -984,9 +1027,16 @@ export function muxDefault(
 
 // Wait, up to the deadline, for one more vault to become connectable. Used
 // when the session's intended default is not among those connected at start.
-async function connectOne(name: string, deadline: number): Promise<{ d: Discovery; sock: net.Socket } | undefined> {
+async function connectOne(
+  want: { missing: string; path?: string },
+  deadline: number
+): Promise<{ d: Discovery; sock: net.Socket } | undefined> {
+  const matches = (x: Discovery): boolean =>
+    want.path !== undefined
+      ? typeof x.vault_path === "string" && realOrResolved(x.vault_path) === want.path
+      : x.vault_name === want.missing;
   for (;;) {
-    const d = filterLive(loadDiscoveries()).find((x) => x.vault_name === name);
+    const d = filterLive(loadDiscoveries()).find(matches);
     if (d) {
       const sock = await tryConnect(d);
       if (sock) return { d, sock };
@@ -1000,6 +1050,11 @@ async function connectOne(name: string, deadline: number): Promise<{ d: Discover
 // their sockets. A stale socket file (a deleted vault) refuses at once and is
 // skipped; this only bounds vaults that are mid-launch.
 const MULTI_SETTLE_MS = envMs(process.env.VAULT_MCP_MULTI_SETTLE_MS, 2000);
+
+// How long multi mode waits for the session's intended default vault before it
+// answers the client without it. Kept well under a client's MCP start-up
+// timeout, so the open vaults stay usable; a plugin reload takes seconds.
+const MULTI_DEFAULT_WAIT_MS = envMs(process.env.VAULT_MCP_MULTI_DEFAULT_WAIT_MS, 10000);
 
 async function connectAll(deadline: number): Promise<{ d: Discovery; sock: net.Socket }[]> {
   const got = new Map<string, { d: Discovery; sock: net.Socket }>();
@@ -1053,8 +1108,8 @@ async function runMultiVault(
     // The intended default is not up yet (a plugin reload, a deploy): wait for
     // it rather than let another vault take its calls.
     log(`multi-vault: waiting for the default vault '${dflt.missing}' (${dflt.reason})`);
-    const late = await connectOne(dflt.missing, deadline);
-    if (late) {
+    const late = await connectOne(dflt, Math.min(deadline, Date.now() + MULTI_DEFAULT_WAIT_MS));
+    if (late && !connected.some((c) => c.d.vault_name === late.d.vault_name)) {
       connected.push(late);
       connected.sort((a, b) => a.d.vault_name.localeCompare(b.d.vault_name));
       dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
@@ -1128,8 +1183,8 @@ async function runMultiVault(
 // Entry point (skipped under test import; runs when executed as a script).
 if (process.argv[1] && process.argv[1].endsWith("bridge.mjs") && parseMultiFlag(process.argv, process.env.VAULT_MCP_MULTI)) {
   runMultiVault(
-    parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT,
-    parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT,
+    (parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT) || undefined,
+    (parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT) || undefined,
     parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE),
     profileFromEnv(process.env.VAULT_MCP_PROFILE)
   ).catch((e) => {
@@ -1137,10 +1192,10 @@ if (process.argv[1] && process.argv[1].endsWith("bridge.mjs") && parseMultiFlag(
     fail(msg.startsWith("vault-mcp") ? msg : `vault-mcp bridge: ${msg}`);
   });
 } else if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
-  const pick = parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT;
+  const pick = (parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT) || undefined;
   // A soft default: used only when several vaults are open and the session's
   // directory is inside none of them. `--vault` is the hard pin.
-  const fallback = parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT;
+  const fallback = (parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT) || undefined;
   // Code Mode: register this session with the compact search/describe/call
   // meta-tool surface instead of the full tool set (token-lean; see preamble.ts).
   const codeModeWanted = parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE);

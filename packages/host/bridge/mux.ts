@@ -332,6 +332,12 @@ export class VaultMux {
       this.routeCall(id, m, line);
       return;
     }
+    // With the intended default not open, only a ping may go elsewhere: a
+    // resource, prompt or completion request would act on a vault nobody chose.
+    if (this.defaultVault === undefined && this.missingDefault !== undefined && m.method !== "ping") {
+      this.reply(rpcError(id, -32000, `vault-mcp: this session's default vault ${JSON.stringify(this.missingDefault.name)} (${this.missingDefault.reason}) is not open; ${m.method} has no vault to go to`));
+      return;
+    }
     const to = this.defaultVault ?? this.live()[0];
     if (to === undefined || this.dead.has(to)) {
       this.reply(rpcError(id, -32000, `vault-mcp: no vault available for ${m.method}`));
