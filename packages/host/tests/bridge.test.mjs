@@ -13,6 +13,7 @@ import {
   vaultForDir,
   sessionDir,
   deadlineMessage,
+  defaultMissingMessage,
   loadDiscoveryDir,
 } from "../bridge/bridge.ts";
 
@@ -101,8 +102,29 @@ test("resolveTarget: cwd in none falls back to the default vault", () => {
 test("resolveTarget: cwd beats the default vault", () => {
   assert.deepEqual(resolveTarget([PA, PB], undefined, "/v/alpha/x", "beta"), { kind: "ok", chosen: PA });
 });
-test("resolveTarget: a default that is not open stays fatal", () => {
-  assert.equal(resolveTarget([PA, PB], undefined, "/elsewhere", "gamma").kind, "fatal");
+test("resolveTarget: a default that is not open waits for it, never picks another vault (#643)", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/elsewhere", "gamma"), { kind: "wait", for: "gamma" });
+});
+test("resolveTarget: the default vault reloading does not hand the session to the only other vault (#643)", () => {
+  // The session runs inside the default vault, whose plugin is mid-reload, so
+  // only the other vault is live: wait for the default, never take the other.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/beta/notes", "beta"), { kind: "wait", for: "beta" });
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere", "beta"), { kind: "wait", for: "beta" });
+});
+test("resolveTarget: one live vault with no default and no pin is still chosen", () => {
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere"), { kind: "ok", chosen: PA });
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere", "alpha"), { kind: "ok", chosen: PA });
+});
+test("defaultMissingMessage names the default vault and the ways out", () => {
+  const m = defaultMissingMessage("beta");
+  assert.match(m, /default vault 'beta' \(--default-vault\) is not open/);
+  assert.match(m, /--vault <name>/);
+});
+test("vaultForDir: a subfolder whose name starts with '..' is still inside", () => {
+  assert.equal(vaultForDir([PA], "/v/alpha/..notes/x", id), PA);
+});
+test("vaultForDir: the parent of a vault is not inside it", () => {
+  assert.equal(vaultForDir([PA], "/v", id), undefined);
 });
 test("vaultForDir: vault root itself matches", () => {
   assert.equal(vaultForDir([PA, PB], "/v/alpha", id), PA);

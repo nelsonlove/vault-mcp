@@ -172,7 +172,7 @@ function parseFlag(argv: string[], name: string): string | undefined {
 //   fatal — waiting cannot help (multiple live vaults, none pinned). Fail now.
 export type Target =
   | { kind: "ok"; chosen: Discovery }
-  | { kind: "wait" }
+  | { kind: "wait"; for?: string }
   | { kind: "fatal"; message: string };
 
 export function resolveTarget(
@@ -186,15 +186,20 @@ export function resolveTarget(
     // A pinned vault that isn't live yet is retryable — it may still register.
     return hit ? { kind: "ok", chosen: hit } : { kind: "wait" };
   }
-  if (live.length === 1) return { kind: "ok", chosen: live[0] };
   if (live.length === 0) return { kind: "wait" };
-  // Several live, none pinned: the session's directory decides, so one
-  // unpinned registration serves whichever vault the session runs in.
+  // None pinned: the session's directory decides, so one unpinned
+  // registration serves whichever vault the session runs in.
   const here = cwd === undefined ? undefined : vaultForDir(live, cwd);
   if (here) return { kind: "ok", chosen: here };
-  // Outside every vault: the registration's soft default, if it is open.
-  const dflt = fallback === undefined ? undefined : live.find((d) => d.vault_name === fallback);
-  if (dflt) return { kind: "ok", chosen: dflt };
+  // Outside every live vault: the registration's soft default. When it is
+  // not live (its plugin reloading, Obsidian restarting) the bridge waits for
+  // it; it never takes "the only vault open" instead, which would send this
+  // session's writes to a vault nobody chose (#643).
+  if (fallback !== undefined) {
+    const dflt = live.find((d) => d.vault_name === fallback);
+    return dflt ? { kind: "ok", chosen: dflt } : { kind: "wait", for: fallback };
+  }
+  if (live.length === 1) return { kind: "ok", chosen: live[0] };
   return {
     kind: "fatal",
     message: `vault-mcp: multiple vaults open; specify --vault <name> or run inside one of them: ${live
@@ -218,7 +223,7 @@ export function vaultForDir(
     if (typeof d.vault_path !== "string" || d.vault_path === "") continue;
     const root = real(d.vault_path);
     const rel = path.relative(root, target);
-    const inside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+    const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
     if (inside && root.length > bestLen) {
       best = d;
       bestLen = root.length;
@@ -256,6 +261,13 @@ export function deadlineMessage(
   // Exactly one discovery we still couldn't reach: name it and its socket.
   if (all.length === 1) return connectFailMessage(all[0]);
   return noLiveMessage(all);
+}
+
+export function defaultMissingMessage(name: string): string {
+  return (
+    `vault-mcp: the default vault '${name}' (--default-vault) is not open, and the session's directory is in no open vault.\n` +
+    `  Fix: open '${name}' in Obsidian, run the session inside an open vault, or pass --vault <name>.`
+  );
 }
 
 // Synchronous write to fd 2 so the message flushes before exit even when stderr
@@ -921,7 +933,9 @@ async function waitForVault(
       if (sock) return { sock, chosen: target.chosen };
       // Socket file present but not accepting yet — fall through and retry.
     }
-    if (Date.now() >= deadline) throw new Error(deadlineMessage(all, pick));
+    if (Date.now() >= deadline) {
+      throw new Error(target.kind === "wait" && target.for !== undefined ? defaultMissingMessage(target.for) : deadlineMessage(all, pick));
+    }
     await sleep(POLL_MS);
   }
 }
@@ -933,30 +947,53 @@ export function parseMultiFlag(argv: string[], env?: string): boolean {
   return argv.includes("--multi-vault") || ["1", "true", "yes", "on"].includes((env ?? "").toLowerCase());
 }
 
+export type MuxDefault =
+  | { name: string; reason: string }
+  | { missing: string; reason: string }
+  | undefined;
+
 /**
  * The vault a call without `vault` goes to, among the connected ones, and why:
  * the pin, then the vault holding the session's directory, then the soft
  * default, then the only vault. Undefined when none of these applies.
- * A `--vault` pin is a hard pin, as in single-vault mode: when the pinned
- * vault is not open there is no default at all, never a fall-through to
- * another vault (#643). The mux then refuses calls without `vault`.
+ * The pin and the soft default never fall through (#643): when the vault
+ * they name is not connected the result is `missing`, the bridge waits for
+ * it, and if it never comes the mux refuses calls without `vault` rather than
+ * sending them to a vault nobody chose.
  */
 export function muxDefault(
   connected: Discovery[],
   pick: string | undefined,
   cwd: string,
   fallback: string | undefined
-): { name: string; reason: string } | undefined {
+): MuxDefault {
+  const has = (n: string): boolean => connected.some((d) => d.vault_name === n);
   if (pick !== undefined) {
-    return connected.some((d) => d.vault_name === pick) ? { name: pick, reason: "set by --vault" } : undefined;
+    return has(pick) ? { name: pick, reason: "set by --vault" } : { missing: pick, reason: "set by --vault" };
   }
   const here = vaultForDir(connected, cwd);
   if (here) return { name: here.vault_name, reason: "the session runs inside it" };
-  if (fallback !== undefined && connected.some((d) => d.vault_name === fallback)) {
-    return { name: fallback, reason: "set by --default-vault" };
+  if (fallback !== undefined) {
+    return has(fallback)
+      ? { name: fallback, reason: "set by --default-vault" }
+      : { missing: fallback, reason: "set by --default-vault" };
   }
   if (connected.length === 1) return { name: connected[0].vault_name, reason: "the only vault open" };
   return undefined;
+}
+
+// Wait, up to the deadline, for one more vault to become connectable. Used
+// when the session's intended default is not among those connected at start.
+async function connectOne(name: string, deadline: number): Promise<{ d: Discovery; sock: net.Socket } | undefined> {
+  for (;;) {
+    const d = filterLive(loadDiscoveries()).find((x) => x.vault_name === name);
+    if (d) {
+      const sock = await tryConnect(d);
+      if (sock) return { d, sock };
+    }
+    if (Date.now() >= deadline) return undefined;
+    await sleep(POLL_MS);
+  }
 }
 
 // How long, after the first vault answers, to wait for others still binding
@@ -1009,16 +1046,30 @@ async function runMultiVault(
       /* ignore */
     }
   };
-  const connected = await connectAll(Date.now() + WAIT_MS);
-  const dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
+  const deadline = Date.now() + WAIT_MS;
+  const connected = await connectAll(deadline);
+  let dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
+  if (dflt !== undefined && "missing" in dflt) {
+    // The intended default is not up yet (a plugin reload, a deploy): wait for
+    // it rather than let another vault take its calls.
+    log(`multi-vault: waiting for the default vault '${dflt.missing}' (${dflt.reason})`);
+    const late = await connectOne(dflt.missing, deadline);
+    if (late) {
+      connected.push(late);
+      connected.sort((a, b) => a.d.vault_name.localeCompare(b.d.vault_name));
+      dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
+    }
+  }
+  const missingDefault = dflt !== undefined && "missing" in dflt ? { name: dflt.missing, reason: dflt.reason } : undefined;
+  const chosenDefault = dflt !== undefined && "name" in dflt ? dflt : undefined;
   log(
     `multi-vault: ${connected.map((c) => c.d.vault_name).join(", ")}` +
-      (dflt ? `; default ${dflt.name} (${dflt.reason})` : "; no default vault")
+      (chosenDefault
+        ? `; default ${chosenDefault.name} (${chosenDefault.reason})`
+        : missingDefault
+          ? `; the default vault '${missingDefault.name}' (${missingDefault.reason}) is not open: calls without "vault" are refused`
+          : "; no default vault")
   );
-  const missingPin = pick !== undefined && dflt === undefined ? pick : undefined;
-  if (missingPin !== undefined) {
-    log(`multi-vault: the pinned vault '${missingPin}' (--vault) is not open; calls without "vault" are refused`);
-  }
   const backends = connected.map(({ d }) => ({
     name: d.vault_name,
     path: typeof d.vault_path === "string" ? d.vault_path : undefined,
@@ -1028,7 +1079,7 @@ async function runMultiVault(
   const mux = new VaultMux(
     { clientIn: process.stdin, clientOut: process.stdout, log },
     backends,
-    { defaultVault: dflt?.name, defaultReason: dflt?.reason, missingPin }
+    { defaultVault: chosenDefault?.name, defaultReason: chosenDefault?.reason, missingDefault }
   );
   let exiting = false;
   const exitAll = (code: number): void => {
