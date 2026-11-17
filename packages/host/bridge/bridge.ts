@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { PassThrough } from "node:stream";
+import { VaultMux } from "./mux.js";
 
 export interface Discovery {
   vault_name: string;
@@ -924,8 +926,157 @@ async function waitForVault(
   }
 }
 
+// --- Multi-vault mode: one session, every open vault (see mux.ts) ---
+
+/** `--multi-vault` or VAULT_MCP_MULTI=1|true|yes|on. */
+export function parseMultiFlag(argv: string[], env?: string): boolean {
+  return argv.includes("--multi-vault") || ["1", "true", "yes", "on"].includes((env ?? "").toLowerCase());
+}
+
+/**
+ * The vault a call without `vault` goes to, among the connected ones, and why:
+ * the pin, then the vault holding the session's directory, then the soft
+ * default, then the only vault. Undefined when none of these applies.
+ */
+export function muxDefault(
+  connected: Discovery[],
+  pick: string | undefined,
+  cwd: string,
+  fallback: string | undefined
+): { name: string; reason: string } | undefined {
+  if (pick !== undefined && connected.some((d) => d.vault_name === pick)) return { name: pick, reason: "set by --vault" };
+  const here = vaultForDir(connected, cwd);
+  if (here) return { name: here.vault_name, reason: "the session runs inside it" };
+  if (fallback !== undefined && connected.some((d) => d.vault_name === fallback)) {
+    return { name: fallback, reason: "set by --default-vault" };
+  }
+  if (connected.length === 1) return { name: connected[0].vault_name, reason: "the only vault open" };
+  return undefined;
+}
+
+// How long, after the first vault answers, to wait for others still binding
+// their sockets. A stale socket file (a deleted vault) refuses at once and is
+// skipped; this only bounds vaults that are mid-launch.
+const MULTI_SETTLE_MS = envMs(process.env.VAULT_MCP_MULTI_SETTLE_MS, 2000);
+
+async function connectAll(deadline: number): Promise<{ d: Discovery; sock: net.Socket }[]> {
+  const got = new Map<string, { d: Discovery; sock: net.Socket }>();
+  let settleBy = Infinity;
+  for (;;) {
+    const live = filterLive(loadDiscoveries());
+    const names = live.map((d) => d.vault_name);
+    const dup = names.find((n, i) => names.indexOf(n) !== i);
+    if (dup !== undefined) {
+      for (const c of got.values()) c.sock.destroy();
+      throw new Error(`vault-mcp: two open vaults are both named "${dup}"; multi-vault mode needs distinct names`);
+    }
+    for (const d of live) {
+      if (got.has(d.vault_name)) continue;
+      const sock = await tryConnect(d);
+      if (sock) got.set(d.vault_name, { d, sock });
+    }
+    if (got.size > 0 && settleBy === Infinity) settleBy = Date.now() + MULTI_SETTLE_MS;
+    if (got.size > 0 && (got.size === live.length || Date.now() >= settleBy)) break;
+    if (Date.now() >= deadline) {
+      if (got.size > 0) break;
+      throw new Error(noLiveMessage(loadDiscoveries()));
+    }
+    await sleep(POLL_MS);
+  }
+  return [...got.values()].sort((a, b) => a.d.vault_name.localeCompare(b.d.vault_name));
+}
+
+async function runMultiVault(
+  pick: string | undefined,
+  fallback: string | undefined,
+  codeModeWanted: boolean,
+  profileWanted: string | undefined
+): Promise<void> {
+  // A profile narrows the tool surface and must fail closed; merging surfaces
+  // across vaults would widen it, so the two are not combined.
+  if (profileWanted !== undefined) {
+    throw new Error("vault-mcp: --multi-vault cannot be combined with a connection profile (VAULT_MCP_PROFILE)");
+  }
+  const log = (msg: string): void => {
+    try {
+      fs.writeSync(2, `vault-mcp: ${msg}\n`);
+    } catch {
+      /* ignore */
+    }
+  };
+  const connected = await connectAll(Date.now() + WAIT_MS);
+  const dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
+  log(
+    `multi-vault: ${connected.map((c) => c.d.vault_name).join(", ")}` +
+      (dflt ? `; default ${dflt.name} (${dflt.reason})` : "; no default vault")
+  );
+  const backends = connected.map(({ d }) => ({
+    name: d.vault_name,
+    path: typeof d.vault_path === "string" ? d.vault_path : undefined,
+    input: new PassThrough(),
+    output: new PassThrough(),
+  }));
+  const mux = new VaultMux(
+    { clientIn: process.stdin, clientOut: process.stdout, log },
+    backends,
+    { defaultVault: dflt?.name, defaultReason: dflt?.reason }
+  );
+  let exiting = false;
+  const exitAll = (code: number): void => {
+    if (exiting) return;
+    exiting = true;
+    let done = false;
+    const go = (): void => {
+      if (done) return;
+      done = true;
+      process.exit(code);
+    };
+    process.stdout.write("", go);
+    const t = setTimeout(go, 5000);
+    (t as { unref?: () => void }).unref?.();
+  };
+  connected.forEach(({ d, sock }, i) => {
+    const name = d.vault_name;
+    const b = backends[i];
+    let preamble: string | undefined;
+    if (codeModeWanted) {
+      if (supportsPreamble(d)) preamble = buildPreamble({ codeMode: true });
+      else log(`code mode requested but vault '${name}' runs plugin ${d.plugin_version ?? "unknown"} without preamble support — full tool surface there`);
+    }
+    const relay = new BridgeRelay(
+      {
+        clientIn: b.input,
+        clientOut: b.output,
+        log: (msg) => log(`[${name}] ${msg}`),
+        // One vault giving up must not end the session for the others; the
+        // last one out takes the process with it. Deferred a tick so the error
+        // lines it just wrote reach the client first.
+        exit: (code) =>
+          setImmediate(() => {
+            mux.markDead(name);
+            if (mux.liveCount() === 0) exitAll(code);
+          }),
+      },
+      async () => (await waitForVault(name, Date.now() + RECONNECT_MS)).sock,
+      { queueGraceMs: QUEUE_GRACE_MS, maxPending: MAX_PENDING, preamble }
+    );
+    relay.start(sock);
+  });
+  mux.start();
+}
+
 // Entry point (skipped under test import; runs when executed as a script).
-if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
+if (process.argv[1] && process.argv[1].endsWith("bridge.mjs") && parseMultiFlag(process.argv, process.env.VAULT_MCP_MULTI)) {
+  runMultiVault(
+    parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT,
+    parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT,
+    parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE),
+    profileFromEnv(process.env.VAULT_MCP_PROFILE)
+  ).catch((e) => {
+    const msg = (e as Error).message;
+    fail(msg.startsWith("vault-mcp") ? msg : `vault-mcp bridge: ${msg}`);
+  });
+} else if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
   const pick = parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT;
   // A soft default: used only when several vaults are open and the session's
   // directory is inside none of them. `--vault` is the hard pin.
