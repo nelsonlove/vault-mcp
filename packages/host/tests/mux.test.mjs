@@ -98,6 +98,10 @@ test("muxDefault: pin, then directory, then soft default, then the only vault", 
   // A session inside a vault folder that is reloading waits for that vault, not the default.
   const roots = (dir) => (dir.startsWith("/v/b") ? "/v/b" : dir.startsWith("/v/a") ? "/v/a" : undefined);
   assert.deepEqual(muxDefault([A], undefined, "/v/b/notes", "a", roots), { missing: "b", reason: "the session runs inside it", path: "/v/b" });
+  // Nested: a reloading inner vault keeps its session from the live outer one.
+  const nested = (dir) => (dir.startsWith("/v/a/inner") ? "/v/a/inner" : dir.startsWith("/v/a") ? "/v/a" : undefined);
+  assert.deepEqual(muxDefault([A], undefined, "/v/a/inner/x", undefined, nested), { missing: "inner", reason: "the session runs inside it", path: "/v/a/inner" });
+  assert.equal(muxDefault([A], undefined, "/v/a/x", undefined, nested).name, "a");
   // Empty values are no pin and no default.
   assert.equal(muxDefault([A, B], "", "/elsewhere", ""), undefined);
 });
@@ -132,6 +136,7 @@ function fakeVault(name, tools, opts = {}) {
       else if (m.method === "tools/list") out({ tools });
       else if (m.method === "tools/call") out({ content: [{ type: "text", text: `${name}:${m.params.name}:${JSON.stringify(m.params.arguments ?? {})}` }] });
       else if (m.method === "ping") out({ from: name });
+      else if (m.method?.endsWith("/list")) out({ from: name, items: [] });
     }
   });
   return { backend: { name, input, output, path: `/v/${name}` }, seen, output };
@@ -232,6 +237,8 @@ test("VaultMux: with the default not open, other requests are refused but ping i
   const r = await h.answer(40);
   assert.match(r.error.message, /default vault "gone" \(set by --vault\) is not open; prompts\/get/);
   assert.equal(a.seen.length + b.seen.length, 0);
+  h.send({ id: 42, method: "resources/list" });
+  assert.ok(!(await h.answer(42)).error, "a listing is not refused");
   h.send({ id: 41, method: "ping" });
   assert.equal((await h.answer(41)).result.from, "a");
 });

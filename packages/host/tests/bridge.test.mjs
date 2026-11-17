@@ -132,6 +132,16 @@ test("resolveTarget: a session inside a vault that is reloading waits for it, no
     why: "the session runs inside it",
   });
 });
+test("resolveTarget: a reloading vault nested inside a live one keeps its session (#645 review 2)", () => {
+  // PA at /v/alpha is live; /v/alpha/inner is a second vault whose plugin is mid-reload.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/alpha/inner/x", undefined, rootsAt("/v/alpha", "/v/alpha/inner")), {
+    kind: "wait",
+    for: "inner",
+    why: "the session runs inside it",
+  });
+  // Outside the inner vault, the outer one is still chosen.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/alpha/x", undefined, rootsAt("/v/alpha", "/v/alpha/inner")), { kind: "ok", chosen: PA });
+});
 test("resolveTarget: outside every vault folder, the default still decides", () => {
   assert.deepEqual(resolveTarget([PA, PB], undefined, "/elsewhere", "beta", rootsAt("/v/alpha", "/v/beta")), { kind: "ok", chosen: PB });
 });

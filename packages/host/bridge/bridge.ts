@@ -192,11 +192,12 @@ export function resolveTarget(
   // None pinned: the session's directory decides, so one unpinned
   // registration serves whichever vault the session runs in.
   const here = cwd === undefined ? undefined : vaultForDir(live, cwd);
-  if (here) return { kind: "ok", chosen: here };
   // The session runs inside a vault folder that is not live: its plugin is
   // reloading (a reload deletes the discovery file) or the vault is closed.
-  // Wait for it; never hand its session to another vault (#643).
+  // Wait for it; never hand its session to another vault (#643). A live vault
+  // that only contains that folder (nested vaults) does not count.
   const root = cwd === undefined ? undefined : rootOf(cwd);
+  if (here && !deeperThan(root, here)) return { kind: "ok", chosen: here };
   if (root !== undefined) return { kind: "wait", for: path.basename(root), why: "the session runs inside it" };
   // Outside every vault: the registration's soft default. When it is
   // not live (its plugin reloading, Obsidian restarting) the bridge waits for
@@ -262,6 +263,12 @@ export function vaultRootOf(
     if (up === cur) return undefined;
     cur = up;
   }
+}
+
+// True when the vault folder `root` lies strictly inside `d`'s vault (nested
+// vaults): then `root`, not `d`, is the vault the session runs in.
+function deeperThan(root: string | undefined, d: Discovery): boolean {
+  return root !== undefined && typeof d.vault_path === "string" && root.length > realOrResolved(d.vault_path).length;
 }
 
 function realOrResolved(p: string): string {
@@ -991,12 +998,13 @@ export type MuxDefault =
 
 /**
  * The vault a call without `vault` goes to, among the connected ones, and why:
- * the pin, then the vault holding the session's directory, then the soft
- * default, then the only vault. Undefined when none of these applies.
- * The pin and the soft default never fall through (#643): when the vault
- * they name is not connected the result is `missing`, the bridge waits for
- * it, and if it never comes the mux refuses calls without `vault` rather than
- * sending them to a vault nobody chose.
+ * the pin; then the vault folder the session runs in (the deepest one, found
+ * on disk by `vaultRootOf` whether or not it is connected); then the soft
+ * default; then the only vault. Undefined when none of these applies.
+ * Nothing falls through (#643): when the pin, the session's vault folder or
+ * the soft default is not connected the result is `missing` (with `path` for
+ * the folder case), the bridge waits for it, and if it never comes the mux
+ * refuses calls without `vault` rather than sending them to a vault nobody chose.
  */
 export function muxDefault(
   connected: Discovery[],
@@ -1012,9 +1020,10 @@ export function muxDefault(
     return has(pick) ? { name: pick, reason: "set by --vault" } : { missing: pick, reason: "set by --vault" };
   }
   const here = vaultForDir(connected, cwd);
-  if (here) return { name: here.vault_name, reason: "the session runs inside it" };
-  // Inside a vault folder that is not connected (reloading, or closed).
+  // Inside a vault folder that is not connected (reloading, or closed), and
+  // deeper than any connected vault that contains it.
   const root = rootOf(cwd);
+  if (here && !deeperThan(root, here)) return { name: here.vault_name, reason: "the session runs inside it" };
   if (root !== undefined) return { missing: path.basename(root), reason: "the session runs inside it", path: root };
   if (fallback !== undefined) {
     return has(fallback)
@@ -1109,7 +1118,12 @@ async function runMultiVault(
     // it rather than let another vault take its calls.
     log(`multi-vault: waiting for the default vault '${dflt.missing}' (${dflt.reason})`);
     const late = await connectOne(dflt, Math.min(deadline, Date.now() + MULTI_DEFAULT_WAIT_MS));
-    if (late && !connected.some((c) => c.d.vault_name === late.d.vault_name)) {
+    if (late && connected.some((c) => c.d.vault_name === late.d.vault_name)) {
+      // Two folders with one name: the mux keys vaults by name, so this one
+      // cannot join. Close it, and the default stays missing.
+      log(`multi-vault: vault '${late.d.vault_name}' at ${late.d.vault_path} has the same name as a connected vault; not joined`);
+      late.sock.destroy();
+    } else if (late) {
       connected.push(late);
       connected.sort((a, b) => a.d.vault_name.localeCompare(b.d.vault_name));
       dflt = muxDefault(connected.map((c) => c.d), pick, sessionDir(), fallback);
@@ -1183,8 +1197,8 @@ async function runMultiVault(
 // Entry point (skipped under test import; runs when executed as a script).
 if (process.argv[1] && process.argv[1].endsWith("bridge.mjs") && parseMultiFlag(process.argv, process.env.VAULT_MCP_MULTI)) {
   runMultiVault(
-    (parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT) || undefined,
-    (parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT) || undefined,
+    parseFlag(process.argv, "vault") || process.env.VAULT_MCP_VAULT || undefined,
+    parseFlag(process.argv, "default-vault") || process.env.VAULT_MCP_DEFAULT_VAULT || undefined,
     parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE),
     profileFromEnv(process.env.VAULT_MCP_PROFILE)
   ).catch((e) => {
@@ -1192,10 +1206,10 @@ if (process.argv[1] && process.argv[1].endsWith("bridge.mjs") && parseMultiFlag(
     fail(msg.startsWith("vault-mcp") ? msg : `vault-mcp bridge: ${msg}`);
   });
 } else if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
-  const pick = (parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT) || undefined;
-  // A soft default: used only when several vaults are open and the session's
-  // directory is inside none of them. `--vault` is the hard pin.
-  const fallback = (parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT) || undefined;
+  const pick = parseFlag(process.argv, "vault") || process.env.VAULT_MCP_VAULT || undefined;
+  // A soft default: used when the session's directory is inside no vault
+  // folder (see resolveTarget). `--vault` is the hard pin.
+  const fallback = parseFlag(process.argv, "default-vault") || process.env.VAULT_MCP_DEFAULT_VAULT || undefined;
   // Code Mode: register this session with the compact search/describe/call
   // meta-tool surface instead of the full tool set (token-lean; see preamble.ts).
   const codeModeWanted = parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE);
