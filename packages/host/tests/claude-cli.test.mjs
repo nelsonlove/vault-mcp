@@ -9,10 +9,10 @@ test("registerArgs omits --vault when no vault name", () => {
   );
 });
 
-test("registerArgs pins --vault when given (spaces kept intact — argv, not shell)", () => {
+test("registerArgs passes --default-vault when given, not a hard --vault pin (spaces kept intact — argv, not shell)", () => {
   assert.deepEqual(
     registerArgs("/p/bridge.mjs", "My Vault"),
-    ["mcp", "add", "--scope", "user", "vault-mcp", "--", "node", "/p/bridge.mjs", "--vault", "My Vault"]
+    ["mcp", "add", "--scope", "user", "vault-mcp", "--", "node", "/p/bridge.mjs", "--default-vault", "My Vault"]
   );
 });
 

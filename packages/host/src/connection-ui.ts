@@ -217,15 +217,15 @@ export function addAllowOpaqueEntry(
 // S7.)
 
 export function registerCommandFor(app: App): string {
-  // Pin the current vault so the command stays unambiguous once a second vault
-  // starts serving MCP. To point Claude Code at a different vault, re-run this
-  // from that vault (or edit the `--vault <name>` value in the registered config).
+  // Name the current vault as the default, for sessions outside every vault
+  // once a second vault starts serving MCP. A session inside a vault gets that
+  // vault whatever the default is.
   return buildRegisterCommand({ bridgePath: bridgeDestPath(), vaultName: app.vault.getName() });
 }
 
-// Shown alongside the manual command so the pinned `--vault` isn't a surprise.
+// Shown alongside the manual command so the `--default-vault` isn't a surprise.
 export const SWITCH_VAULT_NOTE =
-  "This command pins Claude Code to this vault via `--vault`. To switch vaults later, run Connect from the other vault, or edit the `--vault <name>` value in the config.";
+  "With several vaults open, a Claude Code session gets the vault it runs inside. This command makes this vault the default for sessions outside every vault (`--default-vault`). To pin one vault everywhere, use `--vault <name>` instead.";
 
 async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text);

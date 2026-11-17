@@ -11,5 +11,5 @@ function shellQuote(s: string): string {
 // multi-vault case, where it appends `--vault <name>`.
 export function buildRegisterCommand(opts: { bridgePath: string; vaultName?: string }): string {
   const base = `claude mcp add --scope user ${MCP_SERVER_NAME} -- node ${shellQuote(opts.bridgePath)}`;
-  return opts.vaultName ? `${base} --vault ${shellQuote(opts.vaultName)}` : base;
+  return opts.vaultName ? `${base} --default-vault ${shellQuote(opts.vaultName)}` : base;
 }
