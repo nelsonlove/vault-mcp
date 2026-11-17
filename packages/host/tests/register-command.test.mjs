@@ -10,10 +10,10 @@ test("generic command omits --vault", () => {
   );
 });
 
-test("named command appends --vault, quoting spaces", () => {
+test("named command appends --default-vault, quoting spaces", () => {
   assert.equal(
     buildRegisterCommand({ bridgePath: "/p/bridge.mjs", vaultName: "My Vault" }),
-    "claude mcp add --scope user vault-mcp -- node /p/bridge.mjs --vault 'My Vault'"
+    "claude mcp add --scope user vault-mcp -- node /p/bridge.mjs --default-vault 'My Vault'"
   );
 });
 

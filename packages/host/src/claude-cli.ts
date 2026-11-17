@@ -90,12 +90,13 @@ export async function claudeLegacyIsRegistered(bin: string, opts?: { exec?: Prob
   return mcpEntryExists(bin, LEGACY_MCP_SERVER_NAME, opts?.exec);
 }
 
-// Pure + testable: the `claude mcp add` argv. Pins `--vault <name>` when given
-// so the bridge is unambiguous once a second vault starts serving MCP (without
-// it, the bridge aborts with "multiple vaults open; specify --vault").
+// Pure + testable: the `claude mcp add` argv. Passes `--default-vault <name>`
+// when given: with several vaults open the bridge serves the one containing the
+// session's directory, and this vault when the session is inside none of them.
+// A hard `--vault` pin would hide every other vault from the one registration.
 export function registerArgs(bridgePath: string, vaultName?: string): string[] {
   const args = ["mcp", "add", "--scope", "user", MCP_SERVER_NAME, "--", "node", bridgePath];
-  if (vaultName) args.push("--vault", vaultName);
+  if (vaultName) args.push("--default-vault", vaultName);
   return args;
 }
 

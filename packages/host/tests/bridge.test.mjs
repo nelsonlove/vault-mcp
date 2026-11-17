@@ -10,6 +10,8 @@ import {
   staleRequestedMessage,
   connectFailMessage,
   resolveTarget,
+  vaultForDir,
+  sessionDir,
   deadlineMessage,
   loadDiscoveryDir,
 } from "../bridge/bridge.ts";
@@ -76,6 +78,57 @@ test("resolveTarget: multiple live + no pick is fatal (waiting can't disambiguat
   assert.equal(t.kind, "fatal");
   assert.match(t.message, /multiple vaults open/);
 });
+// --- cwd selection: several live, none pinned, the session's dir decides ---
+const id = (p) => path.resolve(p);
+const PA = { vault_name: "alpha", socket_path: "/a.sock", vault_path: "/v/alpha" };
+const PB = { vault_name: "beta", socket_path: "/b.sock", vault_path: "/v/beta" };
+const PN = { vault_name: "nested", socket_path: "/n.sock", vault_path: "/v/alpha/inner" };
+
+test("resolveTarget: multiple live + cwd inside one picks it", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/v/beta/notes/x"), { kind: "ok", chosen: PB });
+});
+test("resolveTarget: multiple live + cwd in none stays fatal", () => {
+  const t = resolveTarget([PA, PB], undefined, "/elsewhere");
+  assert.equal(t.kind, "fatal");
+  assert.match(t.message, /multiple vaults open/);
+});
+test("resolveTarget: a pin beats the cwd", () => {
+  assert.deepEqual(resolveTarget([PA, PB], "alpha", "/v/beta"), { kind: "ok", chosen: PA });
+});
+test("resolveTarget: cwd in none falls back to the default vault", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/elsewhere", "beta"), { kind: "ok", chosen: PB });
+});
+test("resolveTarget: cwd beats the default vault", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/v/alpha/x", "beta"), { kind: "ok", chosen: PA });
+});
+test("resolveTarget: a default that is not open stays fatal", () => {
+  assert.equal(resolveTarget([PA, PB], undefined, "/elsewhere", "gamma").kind, "fatal");
+});
+test("vaultForDir: vault root itself matches", () => {
+  assert.equal(vaultForDir([PA, PB], "/v/alpha", id), PA);
+});
+test("vaultForDir: a sibling sharing a name prefix does not match", () => {
+  assert.equal(vaultForDir([PA], "/v/alphabet", id), undefined);
+});
+test("vaultForDir: deepest containing vault wins", () => {
+  assert.equal(vaultForDir([PA, PN], "/v/alpha/inner/x", id), PN);
+  assert.equal(vaultForDir([PN, PA], "/v/alpha/other", id), PA);
+});
+test("vaultForDir: entries without vault_path are skipped", () => {
+  assert.equal(vaultForDir([A, B], "/a", id), undefined);
+});
+test("vaultForDir: resolves symlinks on both sides", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vfd-")));
+  fs.mkdirSync(path.join(root, "real", "sub"), { recursive: true });
+  fs.symlinkSync(path.join(root, "real"), path.join(root, "link"));
+  const V = { vault_name: "v", socket_path: "/v.sock", vault_path: path.join(root, "link") };
+  assert.equal(vaultForDir([V], path.join(root, "real", "sub")), V);
+});
+test("sessionDir: CLAUDE_PROJECT_DIR wins, cwd is the fallback", () => {
+  assert.equal(sessionDir({ CLAUDE_PROJECT_DIR: "/p" }, () => "/c"), "/p");
+  assert.equal(sessionDir({}, () => "/c"), "/c");
+});
+
 test("resolveTarget: pinned vault present is chosen", () => {
   assert.deepEqual(resolveTarget([A, B], "beta"), { kind: "ok", chosen: B });
 });

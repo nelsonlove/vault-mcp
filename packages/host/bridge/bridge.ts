@@ -175,7 +175,9 @@ export type Target =
 
 export function resolveTarget(
   live: Discovery[],
-  pick: string | undefined
+  pick: string | undefined,
+  cwd?: string,
+  fallback?: string
 ): Target {
   if (pick) {
     const hit = live.find((d) => d.vault_name === pick);
@@ -184,12 +186,58 @@ export function resolveTarget(
   }
   if (live.length === 1) return { kind: "ok", chosen: live[0] };
   if (live.length === 0) return { kind: "wait" };
+  // Several live, none pinned: the session's directory decides, so one
+  // unpinned registration serves whichever vault the session runs in.
+  const here = cwd === undefined ? undefined : vaultForDir(live, cwd);
+  if (here) return { kind: "ok", chosen: here };
+  // Outside every vault: the registration's soft default, if it is open.
+  const dflt = fallback === undefined ? undefined : live.find((d) => d.vault_name === fallback);
+  if (dflt) return { kind: "ok", chosen: dflt };
   return {
     kind: "fatal",
-    message: `vault-mcp: multiple vaults open; specify --vault <name>: ${live
+    message: `vault-mcp: multiple vaults open; specify --vault <name> or run inside one of them: ${live
       .map((d) => d.vault_name)
       .join(", ")}`,
   };
+}
+
+// The vault whose `vault_path` contains `dir` (the deepest one, if vaults
+// nest). Paths compare after realpath where possible, so a symlinked checkout
+// or macOS's /private/var alias still matches. Undefined when none contains it.
+export function vaultForDir(
+  vaults: Discovery[],
+  dir: string,
+  real: (p: string) => string = realOrResolved
+): Discovery | undefined {
+  const target = real(dir);
+  let best: Discovery | undefined;
+  let bestLen = -1;
+  for (const d of vaults) {
+    if (typeof d.vault_path !== "string" || d.vault_path === "") continue;
+    const root = real(d.vault_path);
+    const rel = path.relative(root, target);
+    const inside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+    if (inside && root.length > bestLen) {
+      best = d;
+      bestLen = root.length;
+    }
+  }
+  return best;
+}
+
+function realOrResolved(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+// The directory the client session runs in. Claude Code sets
+// CLAUDE_PROJECT_DIR for the processes it spawns; the bridge's own cwd is the
+// fallback (stdio MCP servers inherit the session's working directory).
+export function sessionDir(env: NodeJS.ProcessEnv = process.env, cwd: () => string = process.cwd): string {
+  return env.CLAUDE_PROJECT_DIR || cwd();
 }
 
 // The diagnostic to emit once the wait budget is exhausted, mirroring the
@@ -856,14 +904,15 @@ const MAX_PENDING = envMs(process.env.VAULT_MCP_MAX_PENDING, 10000);
 // diagnostic the one-shot bridge reported.
 async function waitForVault(
   pick: string | undefined,
-  deadline: number
+  deadline: number,
+  fallback?: string
 ): Promise<{ sock: net.Socket; chosen: Discovery }> {
   for (;;) {
     const all = loadDiscoveries();
     // When pinned, only the matching vault can ever be chosen — don't touch
     // (or later, probe) unrelated vaults on every poll tick.
     const candidates = pick ? all.filter((d) => d.vault_name === pick) : all;
-    const target = resolveTarget(filterLive(candidates), pick);
+    const target = resolveTarget(filterLive(candidates), pick, sessionDir(), fallback);
     if (target.kind === "fatal") throw new Error(target.message);
     if (target.kind === "ok") {
       const sock = await tryConnect(target.chosen);
@@ -878,13 +927,16 @@ async function waitForVault(
 // Entry point (skipped under test import; runs when executed as a script).
 if (process.argv[1] && process.argv[1].endsWith("bridge.mjs")) {
   const pick = parseFlag(process.argv, "vault") ?? process.env.VAULT_MCP_VAULT;
+  // A soft default: used only when several vaults are open and the session's
+  // directory is inside none of them. `--vault` is the hard pin.
+  const fallback = parseFlag(process.argv, "default-vault") ?? process.env.VAULT_MCP_DEFAULT_VAULT;
   // Code Mode: register this session with the compact search/describe/call
   // meta-tool surface instead of the full tool set (token-lean; see preamble.ts).
   const codeModeWanted = parseCodeModeFlag(process.argv, process.env.VAULT_MCP_CODE_MODE);
   // The remote front's connection profile (#521); a local bridge has none and is unchanged.
   const profileWanted = profileFromEnv(process.env.VAULT_MCP_PROFILE);
   (async () => {
-    const { sock, chosen } = await waitForVault(pick, Date.now() + WAIT_MS);
+    const { sock, chosen } = await waitForVault(pick, Date.now() + WAIT_MS, fallback);
     // Pin reconnects to the vault we first connected to, so another vault
     // appearing mid-session can neither divert nor ambiguate the reconnect.
     const pinned = chosen.vault_name;
