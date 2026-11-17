@@ -13,6 +13,8 @@ import {
   vaultForDir,
   sessionDir,
   deadlineMessage,
+  defaultMissingMessage,
+  vaultRootOf,
   loadDiscoveryDir,
 } from "../bridge/bridge.ts";
 
@@ -101,8 +103,62 @@ test("resolveTarget: cwd in none falls back to the default vault", () => {
 test("resolveTarget: cwd beats the default vault", () => {
   assert.deepEqual(resolveTarget([PA, PB], undefined, "/v/alpha/x", "beta"), { kind: "ok", chosen: PA });
 });
-test("resolveTarget: a default that is not open stays fatal", () => {
-  assert.equal(resolveTarget([PA, PB], undefined, "/elsewhere", "gamma").kind, "fatal");
+test("resolveTarget: a default that is not open waits for it, never picks another vault (#643)", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/elsewhere", "gamma"), { kind: "wait", for: "gamma", why: "set by --default-vault" });
+});
+test("resolveTarget: the default vault reloading does not hand the session to the only other vault (#643)", () => {
+  // The session runs inside the default vault, whose plugin is mid-reload, so
+  // only the other vault is live: wait for the default, never take the other.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/beta/notes", "beta"), { kind: "wait", for: "beta", why: "set by --default-vault" });
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere", "beta"), { kind: "wait", for: "beta", why: "set by --default-vault" });
+});
+test("resolveTarget: one live vault with no default and no pin is still chosen", () => {
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere"), { kind: "ok", chosen: PA });
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere", "alpha"), { kind: "ok", chosen: PA });
+});
+test("defaultMissingMessage names the vault, why it was wanted, and the ways out", () => {
+  const m = defaultMissingMessage("beta");
+  assert.match(m, /'beta' \(set by --default-vault or VAULT_MCP_DEFAULT_VAULT\), is not serving MCP/);
+  assert.match(m, /--vault <name>/);
+  assert.match(defaultMissingMessage("beta", "the session runs inside it"), /'beta' \(the session runs inside it\)/);
+});
+// A fake vault-root finder: folders listed in `roots` hold a .obsidian folder.
+const rootsAt = (...roots) => (dir) => vaultRootOf(dir, (p) => roots.includes(p), id);
+test("resolveTarget: a session inside a vault that is reloading waits for it, not for --default-vault (#643)", () => {
+  // beta's plugin is mid-reload, so its discovery is gone and only alpha is live.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/beta/notes", "alpha", rootsAt("/v/alpha", "/v/beta")), {
+    kind: "wait",
+    for: "beta",
+    why: "the session runs inside it",
+  });
+});
+test("resolveTarget: a reloading vault nested inside a live one keeps its session (#645 review 2)", () => {
+  // PA at /v/alpha is live; /v/alpha/inner is a second vault whose plugin is mid-reload.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/alpha/inner/x", undefined, rootsAt("/v/alpha", "/v/alpha/inner")), {
+    kind: "wait",
+    for: "inner",
+    why: "the session runs inside it",
+  });
+  // Outside the inner vault, the outer one is still chosen.
+  assert.deepEqual(resolveTarget([PA], undefined, "/v/alpha/x", undefined, rootsAt("/v/alpha", "/v/alpha/inner")), { kind: "ok", chosen: PA });
+});
+test("resolveTarget: outside every vault folder, the default still decides", () => {
+  assert.deepEqual(resolveTarget([PA, PB], undefined, "/elsewhere", "beta", rootsAt("/v/alpha", "/v/beta")), { kind: "ok", chosen: PB });
+});
+test("resolveTarget: an empty --default-vault is no default", () => {
+  assert.deepEqual(resolveTarget([PA], undefined, "/elsewhere", ""), { kind: "ok", chosen: PA });
+});
+test("vaultRootOf: the nearest folder holding .obsidian, or undefined", () => {
+  const isRoot = (p) => p === "/v/alpha";
+  assert.equal(vaultRootOf("/v/alpha/a/b", isRoot, id), "/v/alpha");
+  assert.equal(vaultRootOf("/v/alpha", isRoot, id), "/v/alpha");
+  assert.equal(vaultRootOf("/v/beta/a", isRoot, id), undefined);
+});
+test("vaultForDir: a subfolder whose name starts with '..' is still inside", () => {
+  assert.equal(vaultForDir([PA], "/v/alpha/..notes/x", id), PA);
+});
+test("vaultForDir: the parent of a vault is not inside it", () => {
+  assert.equal(vaultForDir([PA], "/v", id), undefined);
 });
 test("vaultForDir: vault root itself matches", () => {
   assert.equal(vaultForDir([PA, PB], "/v/alpha", id), PA);

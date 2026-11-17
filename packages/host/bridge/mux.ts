@@ -63,6 +63,12 @@ export interface MuxOpts {
   defaultVault?: string;
   /** Why that vault is the default, for the instructions text. */
   defaultReason?: string;
+  /**
+   * The intended default (a `--vault` pin or `--default-vault`) when that
+   * vault is not open. Calls without `vault` are then refused with a message
+   * naming it, never sent to another vault (#643).
+   */
+  missingDefault?: { name: string; reason: string };
   /** How long a fan-out waits for slow vaults before answering with the rest (ms). */
   fanoutTimeoutMs?: number;
 }
@@ -136,12 +142,15 @@ export function mergeToolLists(
 export function muxInstructions(
   backends: { name: string; path?: string }[],
   defaultVault: string | undefined,
-  defaultReason?: string
+  defaultReason?: string,
+  missingDefault?: { name: string; reason: string }
 ): string {
   const list = backends.map((b) => `"${b.name}"${b.path ? ` (${b.path})` : ""}`).join(", ");
   const dflt = defaultVault !== undefined
     ? `Without it, tools act on "${defaultVault}"${defaultReason ? ` (${defaultReason})` : ""}.`
-    : "This session has no default vault: every tool call must name one.";
+    : missingDefault !== undefined
+      ? `This session's default vault "${missingDefault.name}" (${missingDefault.reason}) is not open: every tool call must name an open vault.`
+      : "This session has no default vault: every tool call must name one.";
   return (
     `This server spans ${backends.length} Obsidian vaults: ${list}. ` +
     `Every tool takes an optional "${VAULT_ARG}" argument naming the vault to act on. ${dflt}`
@@ -203,6 +212,7 @@ export class VaultMux {
   private inBuf = "";
   private readonly defaultVault: string | undefined;
   private readonly defaultReason: string | undefined;
+  private readonly missingDefault: { name: string; reason: string } | undefined;
   private readonly fanoutTimeoutMs: number;
 
   constructor(private io: MuxIO, backends: MuxBackend[], opts: MuxOpts = {}) {
@@ -213,6 +223,7 @@ export class VaultMux {
     this.order = backends.map((b) => b.name);
     this.defaultVault = opts.defaultVault !== undefined && this.backends.has(opts.defaultVault) ? opts.defaultVault : undefined;
     this.defaultReason = opts.defaultReason;
+    this.missingDefault = this.defaultVault === undefined ? opts.missingDefault : undefined;
     this.fanoutTimeoutMs = opts.fanoutTimeoutMs ?? 15000;
   }
 
@@ -321,6 +332,13 @@ export class VaultMux {
       this.routeCall(id, m, line);
       return;
     }
+    // With the intended default not open, only a ping or a listing may go
+    // elsewhere: a resource, prompt or completion request would act on a vault
+    // nobody chose.
+    if (this.defaultVault === undefined && this.missingDefault !== undefined && m.method !== "ping" && !(typeof m.method === "string" && m.method.endsWith("/list"))) {
+      this.reply(rpcError(id, -32000, `vault-mcp: this session's default vault ${JSON.stringify(this.missingDefault.name)} (${this.missingDefault.reason}) is not open; ${m.method} has no vault to go to`));
+      return;
+    }
     const to = this.defaultVault ?? this.live()[0];
     if (to === undefined || this.dead.has(to)) {
       this.reply(rpcError(id, -32000, `vault-mcp: no vault available for ${m.method}`));
@@ -344,6 +362,9 @@ export class VaultMux {
       to = asked;
     } else if (this.defaultVault !== undefined) {
       to = this.defaultVault;
+    } else if (this.missingDefault !== undefined) {
+      this.reply(toolError(id, `vault-mcp: this session's default vault ${JSON.stringify(this.missingDefault.name)} (${this.missingDefault.reason}) is not open; open it and start a new session, or pass "${VAULT_ARG}" as one of ${names}.`));
+      return;
     } else {
       this.reply(toolError(id, `vault-mcp: this session has no default vault; pass "${VAULT_ARG}" as one of ${names}.`));
       return;
@@ -393,7 +414,7 @@ export class VaultMux {
     try {
       const result = f.method === "initialize"
         ? mergeInitialize(f.results, this.order, this.defaultVault,
-            muxInstructions(this.order.map((v) => ({ name: v, path: this.backends.get(v)!.path })), this.defaultVault, this.defaultReason))
+            muxInstructions(this.order.map((v) => ({ name: v, path: this.backends.get(v)!.path })), this.defaultVault, this.defaultReason, this.missingDefault))
         : mergeToolLists(f.results, this.order, this.defaultVault);
       this.reply(JSON.stringify({ jsonrpc: "2.0", id, result }));
     } catch (e) {

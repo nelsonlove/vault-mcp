@@ -87,7 +87,23 @@ test("muxDefault: pin, then directory, then soft default, then the only vault", 
   assert.equal(muxDefault([A, B], undefined, "/elsewhere", "b").name, "b");
   assert.equal(muxDefault([A, B], undefined, "/elsewhere", undefined), undefined);
   assert.equal(muxDefault([A], undefined, "/elsewhere", undefined).name, "a");
-  assert.equal(muxDefault([A, B], "gone", "/elsewhere", undefined), undefined, "a pin to a vault not open is no default");
+  // #643: the pin and the soft default never fall through to another vault.
+  const pinMissing = { missing: "gone", reason: "set by --vault" };
+  assert.deepEqual(muxDefault([A, B], "gone", "/elsewhere", undefined), pinMissing);
+  assert.deepEqual(muxDefault([A, B], "gone", "/v/a/x", "b"), pinMissing, "not to the directory's vault, nor to --default-vault");
+  assert.deepEqual(muxDefault([A], "gone", "/elsewhere", undefined), pinMissing, "nor to the only vault open");
+  const dfltMissing = { missing: "b", reason: "set by --default-vault" };
+  assert.deepEqual(muxDefault([A], undefined, "/v/b/notes", "b"), dfltMissing, "the default reloading: not the only vault open");
+  assert.deepEqual(muxDefault([A], undefined, "/elsewhere", "b"), dfltMissing);
+  // A session inside a vault folder that is reloading waits for that vault, not the default.
+  const roots = (dir) => (dir.startsWith("/v/b") ? "/v/b" : dir.startsWith("/v/a") ? "/v/a" : undefined);
+  assert.deepEqual(muxDefault([A], undefined, "/v/b/notes", "a", roots), { missing: "b", reason: "the session runs inside it", path: "/v/b" });
+  // Nested: a reloading inner vault keeps its session from the live outer one.
+  const nested = (dir) => (dir.startsWith("/v/a/inner") ? "/v/a/inner" : dir.startsWith("/v/a") ? "/v/a" : undefined);
+  assert.deepEqual(muxDefault([A], undefined, "/v/a/inner/x", undefined, nested), { missing: "inner", reason: "the session runs inside it", path: "/v/a/inner" });
+  assert.equal(muxDefault([A], undefined, "/v/a/x", undefined, nested).name, "a");
+  // Empty values are no pin and no default.
+  assert.equal(muxDefault([A, B], "", "/elsewhere", ""), undefined);
 });
 test("parseMultiFlag: flag or env", () => {
   assert.equal(parseMultiFlag(["node", "b", "--multi-vault"]), true);
@@ -120,6 +136,7 @@ function fakeVault(name, tools, opts = {}) {
       else if (m.method === "tools/list") out({ tools });
       else if (m.method === "tools/call") out({ content: [{ type: "text", text: `${name}:${m.params.name}:${JSON.stringify(m.params.arguments ?? {})}` }] });
       else if (m.method === "ping") out({ from: name });
+      else if (m.method?.endsWith("/list")) out({ from: name, items: [] });
     }
   });
   return { backend: { name, input, output, path: `/v/${name}` }, seen, output };
@@ -192,6 +209,44 @@ test("VaultMux: unknown vault and missing default are tool errors naming the cho
   assert.match(r.result.content[0].text, /no open vault named "zz"; choose one of "a", "b"/);
   h.send({ id: 6, method: "tools/call", params: { name: "read", arguments: {} } });
   assert.match((await h.answer(6)).result.content[0].text, /no default vault/);
+});
+
+test("VaultMux: a pinned vault that is not open refuses calls without vault, naming the pin and the open vaults (#643)", async () => {
+  const a = fakeVault("a", [tool("read")]), b = fakeVault("b", [tool("read")]);
+  const h = harness([a, b], { missingDefault: { name: "gone", reason: "set by --vault" } });
+  h.send({ id: 30, method: "tools/call", params: { name: "read", arguments: { p: 1 } } });
+  const r = await h.answer(30);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /default vault "gone" \(set by --vault\) is not open/);
+  assert.match(r.result.content[0].text, /"a", "b"/);
+  assert.equal(a.seen.length + b.seen.length, 0, "no vault got the call");
+  h.send({ id: 31, method: "initialize", params: {} });
+  assert.match((await h.answer(31)).result.instructions, /default vault "gone" \(set by --vault\) is not open/);
+});
+test("VaultMux: with the pin not open, an explicit vault argument still works (#643)", async () => {
+  const a = fakeVault("a", [tool("read")]), b = fakeVault("b", [tool("read")]);
+  const h = harness([a, b], { missingDefault: { name: "gone", reason: "set by --vault" } });
+  h.send({ id: 32, method: "tools/call", params: { name: "read", arguments: { vault: "b", p: 1 } } });
+  assert.equal((await h.answer(32)).result.content[0].text, 'b:read:{"p":1}');
+  assert.equal(a.seen.length, 0);
+});
+test("VaultMux: with the default not open, other requests are refused but ping is answered (#643)", async () => {
+  const a = fakeVault("a", []), b = fakeVault("b", []);
+  const h = harness([a, b], { missingDefault: { name: "gone", reason: "set by --vault" } });
+  h.send({ id: 40, method: "prompts/get", params: { name: "x" } });
+  const r = await h.answer(40);
+  assert.match(r.error.message, /default vault "gone" \(set by --vault\) is not open; prompts\/get/);
+  assert.equal(a.seen.length + b.seen.length, 0);
+  h.send({ id: 42, method: "resources/list" });
+  assert.ok(!(await h.answer(42)).error, "a listing is not refused");
+  h.send({ id: 41, method: "ping" });
+  assert.equal((await h.answer(41)).result.from, "a");
+});
+test("VaultMux: missingDefault is ignored when a default is set", async () => {
+  const a = fakeVault("a", [tool("read")]);
+  const h = harness([a], { defaultVault: "a", missingDefault: { name: "gone", reason: "set by --vault" } });
+  h.send({ id: 33, method: "tools/call", params: { name: "read", arguments: {} } });
+  assert.equal((await h.answer(33)).result.content[0].text, "a:read:{}");
 });
 
 test("VaultMux: other requests go to the default vault", async () => {

@@ -218,8 +218,7 @@ export function addAllowOpaqueEntry(
 
 export function registerCommandFor(app: App): string {
   // Name the current vault as the default, for sessions outside every vault
-  // once a second vault starts serving MCP. A session inside a vault gets that
-  // vault whatever the default is.
+  // folder. A session inside a vault gets that vault whatever the default is.
   return buildRegisterCommand({ bridgePath: bridgeDestPath(), vaultName: app.vault.getName() });
 }
 

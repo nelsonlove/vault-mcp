@@ -7,8 +7,8 @@ function shellQuote(s: string): string {
   return /^[A-Za-z0-9._/-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-// Generic by default (single vault auto-selects). vaultName only for the
-// multi-vault case, where it appends `--vault <name>`.
+// Generic by default (single vault auto-selects). With vaultName it appends
+// `--default-vault <name>`: the vault for sessions outside every open vault.
 export function buildRegisterCommand(opts: { bridgePath: string; vaultName?: string }): string {
   const base = `claude mcp add --scope user ${MCP_SERVER_NAME} -- node ${shellQuote(opts.bridgePath)}`;
   return opts.vaultName ? `${base} --default-vault ${shellQuote(opts.vaultName)}` : base;
