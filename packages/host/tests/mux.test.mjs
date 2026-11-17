@@ -88,6 +88,9 @@ test("muxDefault: pin, then directory, then soft default, then the only vault", 
   assert.equal(muxDefault([A, B], undefined, "/elsewhere", undefined), undefined);
   assert.equal(muxDefault([A], undefined, "/elsewhere", undefined).name, "a");
   assert.equal(muxDefault([A, B], "gone", "/elsewhere", undefined), undefined, "a pin to a vault not open is no default");
+  // #643: a pin is hard; a closed pinned vault never falls through to another vault.
+  assert.equal(muxDefault([A, B], "gone", "/v/a/x", "b"), undefined, "not to the directory's vault, nor to --default-vault");
+  assert.equal(muxDefault([A], "gone", "/elsewhere", undefined), undefined, "nor to the only vault open");
 });
 test("parseMultiFlag: flag or env", () => {
   assert.equal(parseMultiFlag(["node", "b", "--multi-vault"]), true);
@@ -192,6 +195,32 @@ test("VaultMux: unknown vault and missing default are tool errors naming the cho
   assert.match(r.result.content[0].text, /no open vault named "zz"; choose one of "a", "b"/);
   h.send({ id: 6, method: "tools/call", params: { name: "read", arguments: {} } });
   assert.match((await h.answer(6)).result.content[0].text, /no default vault/);
+});
+
+test("VaultMux: a pinned vault that is not open refuses calls without vault, naming the pin and the open vaults (#643)", async () => {
+  const a = fakeVault("a", [tool("read")]), b = fakeVault("b", [tool("read")]);
+  const h = harness([a, b], { missingPin: "gone" });
+  h.send({ id: 30, method: "tools/call", params: { name: "read", arguments: { p: 1 } } });
+  const r = await h.answer(30);
+  assert.equal(r.result.isError, true);
+  assert.match(r.result.content[0].text, /pinned to vault "gone" \(--vault\), which is not open/);
+  assert.match(r.result.content[0].text, /"a", "b"/);
+  assert.equal(a.seen.length + b.seen.length, 0, "no vault got the call");
+  h.send({ id: 31, method: "initialize", params: {} });
+  assert.match((await h.answer(31)).result.instructions, /pinned to vault "gone" \(--vault\), which is not open/);
+});
+test("VaultMux: with the pin not open, an explicit vault argument still works (#643)", async () => {
+  const a = fakeVault("a", [tool("read")]), b = fakeVault("b", [tool("read")]);
+  const h = harness([a, b], { missingPin: "gone" });
+  h.send({ id: 32, method: "tools/call", params: { name: "read", arguments: { vault: "b", p: 1 } } });
+  assert.equal((await h.answer(32)).result.content[0].text, 'b:read:{"p":1}');
+  assert.equal(a.seen.length, 0);
+});
+test("VaultMux: missingPin is ignored when a default is set", async () => {
+  const a = fakeVault("a", [tool("read")]);
+  const h = harness([a], { defaultVault: "a", missingPin: "gone" });
+  h.send({ id: 33, method: "tools/call", params: { name: "read", arguments: {} } });
+  assert.equal((await h.answer(33)).result.content[0].text, "a:read:{}");
 });
 
 test("VaultMux: other requests go to the default vault", async () => {

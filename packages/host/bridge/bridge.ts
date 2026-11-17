@@ -937,6 +937,9 @@ export function parseMultiFlag(argv: string[], env?: string): boolean {
  * The vault a call without `vault` goes to, among the connected ones, and why:
  * the pin, then the vault holding the session's directory, then the soft
  * default, then the only vault. Undefined when none of these applies.
+ * A `--vault` pin is a hard pin, as in single-vault mode: when the pinned
+ * vault is not open there is no default at all, never a fall-through to
+ * another vault (#643). The mux then refuses calls without `vault`.
  */
 export function muxDefault(
   connected: Discovery[],
@@ -944,7 +947,9 @@ export function muxDefault(
   cwd: string,
   fallback: string | undefined
 ): { name: string; reason: string } | undefined {
-  if (pick !== undefined && connected.some((d) => d.vault_name === pick)) return { name: pick, reason: "set by --vault" };
+  if (pick !== undefined) {
+    return connected.some((d) => d.vault_name === pick) ? { name: pick, reason: "set by --vault" } : undefined;
+  }
   const here = vaultForDir(connected, cwd);
   if (here) return { name: here.vault_name, reason: "the session runs inside it" };
   if (fallback !== undefined && connected.some((d) => d.vault_name === fallback)) {
@@ -1010,6 +1015,10 @@ async function runMultiVault(
     `multi-vault: ${connected.map((c) => c.d.vault_name).join(", ")}` +
       (dflt ? `; default ${dflt.name} (${dflt.reason})` : "; no default vault")
   );
+  const missingPin = pick !== undefined && dflt === undefined ? pick : undefined;
+  if (missingPin !== undefined) {
+    log(`multi-vault: the pinned vault '${missingPin}' (--vault) is not open; calls without "vault" are refused`);
+  }
   const backends = connected.map(({ d }) => ({
     name: d.vault_name,
     path: typeof d.vault_path === "string" ? d.vault_path : undefined,
@@ -1019,7 +1028,7 @@ async function runMultiVault(
   const mux = new VaultMux(
     { clientIn: process.stdin, clientOut: process.stdout, log },
     backends,
-    { defaultVault: dflt?.name, defaultReason: dflt?.reason }
+    { defaultVault: dflt?.name, defaultReason: dflt?.reason, missingPin }
   );
   let exiting = false;
   const exitAll = (code: number): void => {
