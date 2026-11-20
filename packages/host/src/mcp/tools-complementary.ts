@@ -181,7 +181,7 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
     {
       title: "Read note (parsed)",
       description:
-        "Return structured metadata from Obsidian's live cache: frontmatter, headings, links, tags, plus the body (content minus the frontmatter block). Read-only.",
+        "Return structured metadata from Obsidian's live cache: frontmatter, headings, links (body `[[…]]` links), embeds (body `![[…]]` transclusions, which Obsidian caches apart from links), frontmatterLinks (links in property values, each with its key), tags, plus the body (content minus the frontmatter block). Embeds are listed, not expanded: the body keeps the `![[…]]` text. Read-only.",
       inputSchema: {
         path: z.string().min(1).describe("Vault-relative path, e.g. 'Projects/Roadmap.md'."),
       },
@@ -216,6 +216,21 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
             link: l.link,
             displayText: l.displayText,
             line: l.position.start.line,
+          })),
+          // Obsidian keeps `![[…]]` in `embeds`, not `links`; without this an
+          // embedded note (or a section embed) was invisible to a reader of
+          // this tool, with nothing saying anything was left out.
+          embeds: (cache?.embeds ?? []).map((e) => ({
+            link: e.link,
+            displayText: e.displayText,
+            line: e.position.start.line,
+          })),
+          // Links in property values (`up: "[[X]]"`, a `related:` list) live in
+          // `frontmatterLinks`; they carry the property key, not a body line.
+          frontmatterLinks: (cache?.frontmatterLinks ?? []).map((l) => ({
+            key: l.key,
+            link: l.link,
+            displayText: l.displayText,
           })),
           tags: cache?.tags ?? [],
           body,
