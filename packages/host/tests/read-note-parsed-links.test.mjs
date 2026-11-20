@@ -1,6 +1,6 @@
 /**
- * read-note-parsed-links.test.mjs — obsidian_read_note_parsed reports every
- * kind of link Obsidian caches, each in its own field.
+ * read-note-parsed-links.test.mjs — obsidian_read_note_parsed reports body
+ * links, embeds and frontmatter links, each in its own field.
  *
  * Obsidian keeps body `[[…]]` links in `cache.links`, `![[…]]` transclusions
  * in `cache.embeds`, and links in property values in `cache.frontmatterLinks`.
@@ -49,33 +49,42 @@ function parsedServer(notes, caches) {
 const pos = (line) => ({ start: { line, col: 0, offset: 0 }, end: { line, col: 0, offset: 0 } });
 
 describe("obsidian_read_note_parsed: links, embeds and frontmatter links", () => {
-  const content = "---\nup: \"[[Parent]]\"\n---\n# Spec\n\nSee [[Other]].\n\n![[Rule one]]\n\n![[Board.base#Open]]\n";
+  const content = "---\nup: \"[[Parent]]\"\nrelated:\n  - \"[[A]]\"\n  - \"[[B]]\"\n---\n# Spec\n\nSee [[Other]].\n\n![[Rule one]]\n\n![[Board.base#Open]]\n";
   const cache = {
-    frontmatter: { up: "[[Parent]]" },
-    links: [{ link: "Other", displayText: "Other", original: "[[Other]]", position: pos(5) }],
+    frontmatter: { up: "[[Parent]]", related: ["[[A]]", "[[B]]"] },
+    links: [{ link: "Other", displayText: "Other", original: "[[Other]]", position: pos(8) }],
     embeds: [
-      { link: "Rule one", displayText: "Rule one", original: "![[Rule one]]", position: pos(7) },
-      { link: "Board.base#Open", displayText: "Board.base#Open", original: "![[Board.base#Open]]", position: pos(9) },
+      { link: "Rule one", displayText: "", original: "![[Rule one]]", position: pos(10) },
+      { link: "Board.base#Open", displayText: "", original: "![[Board.base#Open]]", position: pos(12) },
     ],
-    frontmatterLinks: [{ key: "up", link: "Parent", displayText: "Parent", original: "[[Parent]]" }],
+    // Obsidian keys a list item by its path: `related.0`, `related.1`.
+    frontmatterLinks: [
+      { key: "up", link: "Parent", displayText: "Parent", original: "[[Parent]]" },
+      { key: "related.0", link: "A", displayText: "A", original: "[[A]]" },
+      { key: "related.1", link: "B", displayText: "B", original: "[[B]]" },
+    ],
   };
 
   test("embeds are reported in their own field, with their lines", async () => {
     const res = await parsedServer({ "N.md": content }, { "N.md": cache })("N.md");
     assert.deepEqual(res.structuredContent.embeds, [
-      { link: "Rule one", displayText: "Rule one", line: 7 },
-      { link: "Board.base#Open", displayText: "Board.base#Open", line: 9 },
+      { link: "Rule one", displayText: "", line: 10 },
+      { link: "Board.base#Open", displayText: "", line: 12 },
     ]);
   });
 
   test("links stay body links only, as before", async () => {
     const res = await parsedServer({ "N.md": content }, { "N.md": cache })("N.md");
-    assert.deepEqual(res.structuredContent.links, [{ link: "Other", displayText: "Other", line: 5 }]);
+    assert.deepEqual(res.structuredContent.links, [{ link: "Other", displayText: "Other", line: 8 }]);
   });
 
-  test("frontmatter links are reported with their property key", async () => {
+  test("frontmatter links are reported with their property path, list items indexed", async () => {
     const res = await parsedServer({ "N.md": content }, { "N.md": cache })("N.md");
-    assert.deepEqual(res.structuredContent.frontmatterLinks, [{ key: "up", link: "Parent", displayText: "Parent" }]);
+    assert.deepEqual(res.structuredContent.frontmatterLinks, [
+      { key: "up", link: "Parent", displayText: "Parent" },
+      { key: "related.0", link: "A", displayText: "A" },
+      { key: "related.1", link: "B", displayText: "B" },
+    ]);
   });
 
   test("the body keeps the embed text: embeds are listed, not expanded", async () => {
