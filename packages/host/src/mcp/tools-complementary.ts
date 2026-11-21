@@ -181,7 +181,7 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
     {
       title: "Read note (parsed)",
       description:
-        "Return structured metadata from Obsidian's live cache: frontmatter, headings, links, tags, plus the body (content minus the frontmatter block). Read-only.",
+        "Return structured metadata from Obsidian's live cache: frontmatter, headings, links (body links, `[[…]]` and markdown `[x](note.md)`), embeds (body embeds, `![[…]]` and `![](…)`, notes and attachments alike, which Obsidian caches apart from links), frontmatterLinks (links in property values; `key` is the property path, so a list item is `related.0` and a nested value `a.b`), tags, plus the body (content minus the frontmatter block). Every `line` is 0-based in the whole file, frontmatter included, not in `body`. Embeds are listed, not expanded: the body keeps the embed text. Read-only.",
       inputSchema: {
         path: z.string().min(1).describe("Vault-relative path, e.g. 'Projects/Roadmap.md'."),
       },
@@ -204,6 +204,10 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
         // frontmatter ⇒ content passes through byte-identically.
         const body = cache?.frontmatter ? stripLeadingFrontmatter(content) : content;
 
+        // One shape for body links and embeds: same fields, same line rule.
+        const refs = (xs: { link: string; displayText?: string; position: { start: { line: number } } }[] | undefined) =>
+          (xs ?? []).map((r) => ({ link: r.link, displayText: r.displayText, line: r.position.start.line }));
+
         return ok({
           path: p,
           frontmatter: cache?.frontmatter ?? null,
@@ -212,10 +216,18 @@ export function registerComplementaryTools(server: McpServer, app: App, ctx: Ser
             level: h.level,
             line: h.position.start.line,
           })),
-          links: (cache?.links ?? []).map((l) => ({
+          links: refs(cache?.links),
+          // Obsidian keeps embeds in `embeds`, not `links`; without this an
+          // embedded note (or a section embed) was invisible to a reader of
+          // this tool, with nothing saying anything was left out.
+          embeds: refs(cache?.embeds),
+          // Links in property values (`up: "[[X]]"`, a `related:` list) live in
+          // `frontmatterLinks`; `key` is the property path (`related.0` for a
+          // list item), not a body line.
+          frontmatterLinks: (cache?.frontmatterLinks ?? []).map((l) => ({
+            key: l.key,
             link: l.link,
             displayText: l.displayText,
-            line: l.position.start.line,
           })),
           tags: cache?.tags ?? [],
           body,
